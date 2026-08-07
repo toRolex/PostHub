@@ -1,0 +1,17 @@
+[project]
+name = "posthub-daemon"
+version = "0.1.0"
+description = "PostHub 常驻 Python 守护进程：本地 IPC + 任务执行引擎 seam"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
