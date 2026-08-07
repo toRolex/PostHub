@@ -4,10 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
 import AccountsCard from "./components/AccountsCard.vue";
 import PublishCard from "./components/PublishCard.vue";
+import TasksCard from "./components/TasksCard.vue";
+import LogsCard from "./components/LogsCard.vue";
 
 const store = useDaemonStore();
 const autostart = ref(false);
 const autostartLoading = ref(false);
+const activeTab = ref("overview");
 let timer: number | undefined;
 
 const isTauri = () =>
@@ -78,53 +81,65 @@ onUnmounted(() => {
       <p class="page__subtitle">一个视频，一键 / 定时发布到 抖音、小红书、视频号</p>
     </header>
 
-    <el-card class="card" shadow="never">
-      <template #header>
-        <div class="card__header">
-          <span>守护进程</span>
-          <el-tag :type="statusTagType" size="small">{{ statusText }}</el-tag>
-        </div>
-      </template>
+    <el-tabs v-model="activeTab" class="page__tabs">
+      <el-tab-pane label="总览" name="overview">
+        <el-card class="card" shadow="never">
+          <template #header>
+            <div class="card__header">
+              <span>守护进程</span>
+              <el-tag :type="statusTagType" size="small">{{ statusText }}</el-tag>
+            </div>
+          </template>
 
-      <el-descriptions :column="1" border size="small">
-        <el-descriptions-item label="健康接口">
-          <code>{{ store.url }}/health</code>
-        </el-descriptions-item>
-        <el-descriptions-item label="版本">
-          {{ store.health?.version ?? "-" }}
-        </el-descriptions-item>
-        <el-descriptions-item label="监听端口">
-          {{ store.health?.port ?? "-" }}
-        </el-descriptions-item>
-        <el-descriptions-item label="最近错误">
-          {{ store.error || "无" }}
-        </el-descriptions-item>
-      </el-descriptions>
+          <el-descriptions :column="1" border size="small">
+            <el-descriptions-item label="健康接口">
+              <code>{{ store.url }}/health</code>
+            </el-descriptions-item>
+            <el-descriptions-item label="版本">
+              {{ store.health?.version ?? "-" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="监听端口">
+              {{ store.health?.port ?? "-" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="最近错误">
+              {{ store.error || "无" }}
+            </el-descriptions-item>
+          </el-descriptions>
 
-      <div class="card__actions">
-        <el-button size="small" :loading="store.checking" @click="refresh">
-          立即检查
-        </el-button>
-      </div>
-    </el-card>
+          <div class="card__actions">
+            <el-button size="small" :loading="store.checking" @click="refresh">
+              立即检查
+            </el-button>
+          </div>
+        </el-card>
 
-    <el-card class="card" shadow="never">
-      <template #header>
-        <span>开机自启</span>
-      </template>
-      <el-switch
-        v-model="autostart"
-        :loading="autostartLoading"
-        :disabled="!isTauri()"
-        @change="toggleAutostart"
-      />
-      <span class="card__hint">
-        随系统启动常驻（托盘 / 菜单栏）。仅桌面应用环境可用。
-      </span>
-    </el-card>
+        <el-card class="card" shadow="never">
+          <template #header>
+            <span>开机自启</span>
+          </template>
+          <el-switch
+            v-model="autostart"
+            :loading="autostartLoading"
+            :disabled="!isTauri()"
+            @change="toggleAutostart"
+          />
+          <span class="card__hint">
+            随系统启动常驻（托盘 / 菜单栏）。仅桌面应用环境可用。
+          </span>
+        </el-card>
 
-    <AccountsCard />
-    <PublishCard />
+        <AccountsCard />
+        <PublishCard />
+      </el-tab-pane>
+
+      <el-tab-pane label="任务" name="tasks">
+        <TasksCard />
+      </el-tab-pane>
+
+      <el-tab-pane label="日志" name="logs">
+        <LogsCard />
+      </el-tab-pane>
+    </el-tabs>
 
     <footer class="page__footer">
       MIT License · 参考 <a href="https://github.com/dreammis/social-auto-upload">social-auto-upload</a>
@@ -150,6 +165,10 @@ onUnmounted(() => {
   margin: 0 0 24px;
   color: #909399;
   font-size: 14px;
+}
+
+.page__tabs {
+  margin-bottom: 16px;
 }
 
 .card {
