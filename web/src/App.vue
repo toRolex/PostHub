@@ -2,13 +2,17 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
+import { useInterventionsStore } from "./stores/interventions";
 import AccountsCard from "./components/AccountsCard.vue";
 import PublishCard from "./components/PublishCard.vue";
+import TaskCard from "./components/TaskCard.vue";
 
 const store = useDaemonStore();
+const interventions = useInterventionsStore();
 const autostart = ref(false);
 const autostartLoading = ref(false);
 let timer: number | undefined;
+let interventionsTimer: number | undefined;
 
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -60,14 +64,25 @@ async function refresh(): Promise<void> {
   await store.checkHealth();
 }
 
+async function pollInterventions(): Promise<void> {
+  if (!store.connected) return;
+  // 检测到新的人工介入事件（验证码挂起 / 需重新扫码）→ 触发 Tauri 弹窗提示
+  await interventions.poll();
+}
+
 onMounted(() => {
   void refresh();
   void loadAutostart();
   timer = window.setInterval(() => void store.checkHealth(), store.pollIntervalMs);
+  interventionsTimer = window.setInterval(
+    () => void pollInterventions(),
+    store.pollIntervalMs,
+  );
 });
 
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
+  if (interventionsTimer !== undefined) window.clearInterval(interventionsTimer);
 });
 </script>
 
@@ -124,6 +139,7 @@ onUnmounted(() => {
     </el-card>
 
     <AccountsCard />
+    <TaskCard />
     <PublishCard />
 
     <footer class="page__footer">

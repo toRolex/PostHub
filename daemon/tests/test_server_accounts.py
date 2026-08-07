@@ -234,3 +234,80 @@ def test_sqlite_store_works_through_threaded_server(tmp_path) -> None:
         httpd.shutdown()
         httpd.server_close()
         store.close()
+
+
+# ---- issue #21：重登引导（relogin）+ 账号状态恢复 ----
+
+def test_relogin_launches_chrome_for_account(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts", {"platform": "douyin", "name": "a"})
+    account_id = body["account"]["id"]
+    profile_dir = body["account"]["profile_dir"]
+
+    server_ctx["launcher"].launch_calls.clear()
+    rstatus, rbody = post(server_ctx["url"], f"/accounts/{account_id}/relogin", {})
+    assert rstatus == 200
+    assert rbody["ok"] is True
+
+    launcher = server_ctx["launcher"]
+    assert len(launcher.launch_calls) == 1
+    call = launcher.launch_calls[0]
+    assert call["platform"] == "douyin"
+    assert call["profile_dir"] == profile_dir
+    assert call["cdp_port"] == body["account"]["cdp_port"]
+
+
+def test_relogin_missing_account_returns_404(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts/999/relogin", {})
+    assert status == 404
+    assert "账号" in body["error"]
+
+
+def test_relogin_invalid_id_returns_400(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts/not-a-number/relogin", {})
+    assert status == 400
+    assert "整数" in body["error"]
+
+
+def test_relogin_chrome_missing_returns_warning(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts", {"platform": "douyin", "name": "a"})
+    account_id = body["account"]["id"]
+    server_ctx["launcher"].launch_raises = ChromeNotFoundError("未找到 Chrome/Edge")
+
+    rstatus, rbody = post(server_ctx["url"], f"/accounts/{account_id}/relogin", {})
+    assert rstatus == 200
+    assert rbody["ok"] is True
+    assert "launch_warning" in rbody
+
+
+def test_set_account_status_active(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts", {"platform": "douyin", "name": "a"})
+    account_id = body["account"]["id"]
+    server_ctx["store"].set_status(account_id, "needs_relogin")
+
+    sstatus, sbody = post(
+        server_ctx["url"],
+        f"/accounts/{account_id}/status",
+        {"status": "active"},
+    )
+    assert sstatus == 200
+    assert sbody["ok"] is True
+    assert server_ctx["store"].get(account_id).status == "active"
+
+
+def test_set_account_status_invalid_status_returns_400(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts", {"platform": "douyin", "name": "a"})
+    account_id = body["account"]["id"]
+
+    sstatus, sbody = post(
+        server_ctx["url"],
+        f"/accounts/{account_id}/status",
+        {"status": "bogus"},
+    )
+    assert sstatus == 400
+    assert "status" in sbody["error"]
+
+
+def test_set_account_status_missing_account_returns_404(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/accounts/999/status", {"status": "active"})
+    assert status == 404
+    assert "账号" in body["error"]

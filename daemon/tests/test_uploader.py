@@ -22,6 +22,7 @@ from posthub.uploader import (
     UpstreamUploadExecutor,
     account_cookie_file,
     build_uploader,
+    resolve_headless,
 )
 
 
@@ -161,3 +162,40 @@ def test_executor_maps_uploader_exception_to_unknown() -> None:
     assert result.ok is False
     assert result.error_type == "unknown"
     assert result.message == "boom"
+
+
+# ---- resolve_headless：强风控平台默认可见浏览器，配置可覆盖（issue #21 seam #2） ----
+
+class FakeConf:
+    """测试用 conf：提供 LOCAL_CHROME_HEADLESS 字段。"""
+
+    def __init__(self, headless: bool) -> None:
+        self.LOCAL_CHROME_HEADLESS = headless
+
+
+def test_resolve_headless_high_risk_platforms_visible_by_default() -> None:
+    from posthub.uploader import HIGH_RISK_PLATFORMS
+
+    # 本域判定：三平台全部强风控（CONTEXT.md 平台约束注册表），默认可见（headless=False）
+    assert HIGH_RISK_PLATFORMS == {"douyin", "xiaohongshu", "wechat"}
+    for platform in ("douyin", "xiaohongshu", "wechat"):
+        assert resolve_headless(platform, FakeConf(headless=False)) is False
+
+
+def test_resolve_headless_config_override_to_headless() -> None:
+    # 用户显式设置 LOCAL_CHROME_HEADLESS=True → 覆盖平台默认，全部后台运行
+    assert resolve_headless("douyin", FakeConf(headless=True)) is True
+    assert resolve_headless("xiaohongshu", FakeConf(headless=True)) is True
+
+
+def test_resolve_headless_non_risk_platform_headless_by_default() -> None:
+    # 未来非强风控平台：默认 headless=True（静默），仅强风控平台默认可见
+    assert resolve_headless("kuaishou", FakeConf(headless=False)) is True
+
+
+def test_build_uploader_uses_resolve_headless_visible_for_douyin() -> None:
+    # 集成：build_uploader 按 resolve_headless 决策 headless（抖音强风控默认可见）
+    spec = make_spec()
+    app = build_uploader("douyin", spec)
+    assert app.headless is False
+

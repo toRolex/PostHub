@@ -19,7 +19,7 @@ const STATUS_META: Record<
   { label: string; type: "success" | "warning" | "info" | "danger" }
 > = {
   active: { label: "可用", type: "success" },
-  needs_relogin: { label: "需重新登录", type: "warning" },
+  needs_relogin: { label: "需重新扫码", type: "warning" },
   disabled: { label: "已停用", type: "info" },
 };
 
@@ -68,6 +68,30 @@ async function removeAccount(account: Account): Promise<void> {
   try {
     await store.removeAccount(account.id);
     ElMessage.success("账号已删除");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function reloginAccount(account: Account): Promise<void> {
+  try {
+    const result = await store.relogin(account.id);
+    if (result.launch_warning) {
+      ElMessage.warning(`拉起 Chrome 失败：${result.launch_warning}`);
+    } else {
+      ElMessage.success(
+        `已拉起「${platformLabel(account.platform)}」的 Chrome，请完成扫码登录后点「恢复可用」`,
+      );
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function markActive(account: Account): Promise<void> {
+  try {
+    await store.setStatus(account.id, "active");
+    ElMessage.success("账号已恢复可用");
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : String(e));
   }
@@ -155,8 +179,26 @@ watch(
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="90" align="right">
+      <el-table-column label="操作" width="190" align="right">
         <template #default="{ row }">
+          <el-button
+            v-if="row.status === 'needs_relogin'"
+            size="small"
+            text
+            type="warning"
+            @click="reloginAccount(row)"
+          >
+            重新扫码
+          </el-button>
+          <el-button
+            v-if="row.status === 'needs_relogin'"
+            size="small"
+            text
+            type="success"
+            @click="markActive(row)"
+          >
+            恢复可用
+          </el-button>
           <el-button
             size="small"
             text

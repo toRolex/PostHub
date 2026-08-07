@@ -26,8 +26,10 @@ from posthub.engine import ExecutionContext, TaskSpec, UploadResult
 
 __all__ = [
     "PLATFORM_UPLOADERS",
+    "HIGH_RISK_PLATFORMS",
     "account_cookie_file",
     "build_uploader",
+    "resolve_headless",
     "UpstreamUploadExecutor",
 ]
 
@@ -39,8 +41,28 @@ PLATFORM_UPLOADERS: dict[str, tuple[str, str]] = {
     "wechat": ("uploader.tencent_uploader.main", "TencentVideo"),
 }
 
+# 强风控平台集合（issue #21）：抖音 / 小红书 / 视频号三平台统一判定为强风控，
+# 默认使用可见浏览器（headless=False）以降低机器判定风险；待真实账号实测数据后再细分。
+HIGH_RISK_PLATFORMS: frozenset[str] = frozenset(
+    {"douyin", "xiaohongshu", "wechat"}
+)
+
 # 上游三个平台的立即发布策略常量统一为 "immediate"
 _PUBLISH_STRATEGY_IMMEDIATE = "immediate"
+
+
+def resolve_headless(platform: str, conf) -> bool:
+    """按平台决策浏览器可见性（issue #21 seam #2）。
+
+    强风控平台默认可见浏览器（headless=False）以降低机器判定风险；配置可覆盖：
+    `conf.LOCAL_CHROME_HEADLESS=True`（用户显式要求后台静默）→ 全部平台 headless。
+    非强风控平台默认 headless=True（静默）。
+
+    `conf` 鸭子类型：只需 `LOCAL_CHROME_HEADLESS` 字段（真实传 `conf` 模块）。
+    """
+    if getattr(conf, "LOCAL_CHROME_HEADLESS", False):
+        return True
+    return platform not in HIGH_RISK_PLATFORMS
 
 
 def account_cookie_file(account_id: str) -> str:
@@ -63,7 +85,7 @@ def _uploader_kwargs(platform: str, spec: TaskSpec) -> dict[str, Any]:
         "desc": spec.caption,
         "publish_strategy": _PUBLISH_STRATEGY_IMMEDIATE,
         "debug": conf.DEBUG_MODE,
-        "headless": conf.LOCAL_CHROME_HEADLESS,
+        "headless": resolve_headless(platform, conf),
     }
 
 

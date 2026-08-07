@@ -43,6 +43,8 @@ __all__ = [
     "PlatformJob",
     "NewTaskSpec",
     "PlatformJobSpec",
+    "TaskFilters",
+    "TaskDetail",
     "TaskStore",
     "TaskValidationError",
     "UnknownAccountError",
@@ -195,10 +197,36 @@ class PlatformJob:
         }
 
 
+@dataclass(frozen=True)
+class TaskFilters:
+    """任务列表查询筛选（#21 / #18：平台 / 状态 / 创建时间区间）。"""
+
+    platform: Platform | None = None
+    status: str | None = None
+    from_ts: str | None = None
+    to_ts: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskDetail:
+    """一条任务 + 其全部平台子任务明细（任务列表 / 详情数据）。"""
+
+    task: Task
+    jobs: list[PlatformJob]
+
+    def to_dict(self) -> dict:
+        return {
+            "task": self.task.to_dict(),
+            "jobs": [j.to_dict() for j in self.jobs],
+        }
+
+
 class TaskStore(Protocol):
     """任务存储 seam：创建任务（task + jobs）并支持回读。InMemory / SQLite 可互换。
 
     扩展（#17 调度器原语）：frontier 领取 + 状态迁移持久化 + missed 扫描。
+    扩展（#21 任务状态可查）：list_tasks 供 daemon `GET /tasks` 暴露 job 状态，
+    使 manual / needs_relogin 在任务 UI 明确呈现；与 #18 任务管理页共用同一方法。
     调度 / 状态机为纯领域逻辑（scheduler.py），存储层只做原子持久化。
     """
 
@@ -210,6 +238,9 @@ class TaskStore(Protocol):
 
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         ...
+
+    def list_tasks(self, filters: "TaskFilters | None" = None) -> list["TaskDetail"]:
+        """任务列表（含各 job 明细），新在前；按平台 / 状态 / 创建时间筛选。"""
 
     def claim_eligible_jobs(
         self,
@@ -365,6 +396,28 @@ class InMemoryTaskStore:
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         with self._lock:
             return list(self._jobs.get(task_id, []))
+
+    # ---- #21 任务状态可查 ----
+
+    def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
+        filters = filters or TaskFilters()
+        with self._lock:
+            details: list[TaskDetail] = []
+            for task in self._tasks.values():
+                if filters.status is not None and task.status != filters.status:
+                    continue
+                if filters.from_ts is not None and task.created_at < filters.from_ts:
+                    continue
+                if filters.to_ts is not None and task.created_at > filters.to_ts:
+                    continue
+                jobs = self._jobs.get(task.id, [])
+                if filters.platform is not None and not any(
+                    j.platform == filters.platform for j in jobs
+                ):
+                    continue
+                details.append(TaskDetail(task=task, jobs=list(jobs)))
+            details.sort(key=lambda d: d.task.id, reverse=True)  # 新在前
+            return details
 
     # ---- #17 调度器原语 ----
 
@@ -754,6 +807,38 @@ class SqliteTaskStore:
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         with self._lock:
             return self._list_jobs(task_id)
+
+    # ---- #21 任务状态可查 ----
+
+    def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
+        filters = filters or TaskFilters()
+        with self._lock:
+            conditions: list[str] = []
+            params: list[object] = []
+            if filters.platform is not None:
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM platform_job j WHERE j.task_id = t.id"
+                    " AND j.platform = ?)"
+                )
+                params.append(filters.platform)
+            if filters.status is not None:
+                conditions.append("t.status = ?")
+                params.append(filters.status)
+            if filters.from_ts is not None:
+                conditions.append("t.created_at >= ?")
+                params.append(filters.from_ts)
+            if filters.to_ts is not None:
+                conditions.append("t.created_at <= ?")
+                params.append(filters.to_ts)
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            rows = self._conn.execute(
+                f"SELECT t.* FROM task t {where} ORDER BY t.id DESC", params
+            ).fetchall()
+            details: list[TaskDetail] = []
+            for row in rows:
+                task = self._row_to_task(row)
+                details.append(TaskDetail(task=task, jobs=self._list_jobs(task.id)))
+            return details
 
     # ---- #17 调度器原语 ----
 
