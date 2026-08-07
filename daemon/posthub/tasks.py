@@ -200,7 +200,7 @@ class PlatformJob:
 
 @dataclass(frozen=True)
 class TaskFilters:
-    """任务列表查询筛选（#18 任务管理页：平台 / 状态 / 创建时间区间）。"""
+    """任务列表查询筛选（#18 任务管理页 / #21：平台 / 状态 / 创建时间区间）。"""
 
     platform: Platform | None = None
     status: str | None = None
@@ -210,7 +210,7 @@ class TaskFilters:
 
 @dataclass(frozen=True)
 class TaskDetail:
-    """一条任务 + 其全部平台子任务明细（任务管理页列表/详情数据）。"""
+    """一条任务 + 其全部平台子任务明细（任务列表 / 任务管理页列表/详情数据）。"""
 
     task: Task
     jobs: list[PlatformJob]
@@ -227,6 +227,8 @@ class TaskStore(Protocol):
 
     扩展（#17 调度器原语）：frontier 领取 + 状态迁移持久化 + missed 扫描。
     扩展（#18 任务管理）：list_tasks / get_task_detail / get_job + 日志读写。
+    扩展（#21 任务状态可查）：list_tasks 供 daemon `GET /tasks` 暴露 job 状态，
+    使 manual / needs_relogin 在任务 UI 明确呈现；与 #18 任务管理页共用同一方法。
     调度 / 状态机为纯领域逻辑（scheduler.py），存储层只做原子持久化。
     """
 
@@ -238,6 +240,9 @@ class TaskStore(Protocol):
 
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         ...
+
+    def list_tasks(self, filters: "TaskFilters | None" = None) -> list["TaskDetail"]:
+        """任务列表（含各 job 明细），新在前；按平台 / 状态 / 创建时间筛选。"""
 
     def claim_eligible_jobs(
         self,
@@ -414,7 +419,7 @@ class InMemoryTaskStore:
         with self._lock:
             return list(self._jobs.get(task_id, []))
 
-    # ---- #18 任务管理 + 日志 ----
+    # ---- #18 任务管理 + 日志 / #21 任务状态可查 ----
 
     def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
         filters = filters or TaskFilters()
@@ -875,7 +880,7 @@ class SqliteTaskStore:
         with self._lock:
             return self._list_jobs(task_id)
 
-    # ---- #18 任务管理 + 日志 ----
+    # ---- #18 任务管理 + 日志 / #21 任务状态可查 ----
 
     def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
         filters = filters or TaskFilters()

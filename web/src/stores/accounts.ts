@@ -106,5 +106,48 @@ export const useAccountsStore = defineStore("accounts", {
         throw e;
       }
     },
+
+    /** 重登引导（issue #21）：拉起该账号 Chrome 供重新扫码。 */
+    async relogin(id: number): Promise<{ ok: boolean; launch_warning?: string }> {
+      const daemon = useDaemonStore();
+      try {
+        const res = await fetch(`${daemon.url}/accounts/${id}/relogin`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        this.error = "";
+        return body as { ok: boolean; launch_warning?: string };
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        throw e;
+      }
+    },
+
+    /** 更新账号状态（issue #21）：重新扫码后恢复 active，或手动停用。 */
+    async setStatus(id: number, status: AccountStatus): Promise<void> {
+      const daemon = useDaemonStore();
+      try {
+        const res = await fetch(`${daemon.url}/accounts/${id}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        this.accounts = this.accounts.map((a) =>
+          a.id === id ? { ...a, status } : a,
+        );
+        this.error = "";
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        throw e;
+      }
+    },
   },
 });

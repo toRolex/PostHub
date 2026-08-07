@@ -23,11 +23,13 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_dialog::init())
         .manage(DaemonGuard(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             get_daemon_url,
             get_autostart,
-            set_autostart
+            set_autostart,
+            show_intervention_dialog
         ])
         .setup(|app| {
             build_tray(app)?;
@@ -175,6 +177,31 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
         app.autolaunch().disable().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 人工介入弹窗（issue #21）：验证码挂起 / 需重新扫码 时由前端 invoke。
+///
+/// `kind` 为 `manual`（需人工）或 `needs_relogin`（需重新扫码），决定弹窗类型。
+/// 使用 `tauri-plugin-dialog` 的原生消息框；用户点「知道了」关闭。
+#[tauri::command]
+fn show_intervention_dialog(
+    app: AppHandle,
+    title: String,
+    message: String,
+    kind: String,
+) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    let dialog_kind = if kind == "needs_relogin" {
+        MessageDialogKind::Error
+    } else {
+        MessageDialogKind::Warning
+    };
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(dialog_kind)
+        .show(|_| {});
 }
 
 #[cfg(test)]

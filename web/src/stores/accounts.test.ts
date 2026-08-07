@@ -133,4 +133,90 @@ describe("accounts store（账号管理）", () => {
 
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:9999/accounts");
   });
+
+  it("relogin 调用 POST /accounts/{id}/relogin", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const daemon = useDaemonStore();
+    daemon.url = "http://127.0.0.1:9999";
+    const store = useAccountsStore();
+    const result = await store.relogin(7);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9999/accounts/7/relogin",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("relogin 返回 launch_warning 时透传", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ ok: true, launch_warning: "未找到 Chrome" }),
+      ),
+    );
+
+    const store = useAccountsStore();
+    const result = await store.relogin(1);
+
+    expect(result.launch_warning).toBe("未找到 Chrome");
+  });
+
+  it("setStatus 调用 POST /accounts/{id}/status 并更新本地状态", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({ accounts: [] });
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = useAccountsStore();
+    store.accounts = [
+      {
+        id: 3,
+        platform: "douyin",
+        name: "抖音一号",
+        profile_dir: "/p",
+        cdp_port: 9222,
+        status: "needs_relogin",
+      },
+    ] as never;
+
+    await store.setStatus(3, "active");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8756/accounts/3/status",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(store.accounts[0].status).toBe("active");
+  });
+
+  it("setStatus 失败 -> 抛出错误且本地状态不变", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ error: "status 非法" }, false, 400)),
+    );
+
+    const store = useAccountsStore();
+    store.accounts = [
+      {
+        id: 3,
+        platform: "douyin",
+        name: "抖音一号",
+        profile_dir: "/p",
+        cdp_port: 9222,
+        status: "needs_relogin",
+      },
+    ] as never;
+
+    await expect(store.setStatus(3, "active")).rejects.toThrow("status 非法");
+    expect(store.accounts[0].status).toBe("needs_relogin");
+  });
 });

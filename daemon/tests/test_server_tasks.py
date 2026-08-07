@@ -15,7 +15,7 @@ import pytest
 
 from posthub.accounts import InMemoryAccountStore, NewAccount
 from posthub.server import make_server
-from posthub.tasks import InMemoryTaskStore
+from posthub.tasks import InMemoryTaskStore, NewTaskSpec, PlatformJobSpec
 
 
 def make_accounts(store) -> None:
@@ -227,3 +227,93 @@ def test_create_task_invalid_json_returns_400(server_ctx) -> None:
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(req, timeout=5)
     assert excinfo.value.code == 400
+
+
+# ---- issue #21：任务状态可查（manual / needs_relogin 呈现的前提）+ 手动重试 ----
+
+def test_get_tasks_lists_tasks_with_jobs(server_ctx) -> None:
+    post(
+        server_ctx["url"],
+        "/tasks",
+        {
+            "title": "A",
+            "video_path": "/tmp/a.mp4",
+            "jobs": [{"platform": "douyin", "account_id": 1}],
+        },
+    )
+    post(
+        server_ctx["url"],
+        "/tasks",
+        {
+            "title": "B",
+            "video_path": "/tmp/b.mp4",
+            "jobs": [
+                {"platform": "xiaohongshu", "account_id": 2},
+                {"platform": "wechat", "account_id": 3},
+            ],
+        },
+    )
+
+    status, body = get(server_ctx["url"], "/tasks")
+    assert status == 200
+    tasks = body["tasks"]
+    assert len(tasks) == 2
+    by_title = {t["task"]["title"]: t for t in tasks}
+    assert by_title["A"]["task"]["status"] == "pending"
+    assert len(by_title["A"]["jobs"]) == 1
+    assert by_title["A"]["jobs"][0]["platform"] == "douyin"
+    assert by_title["B"]["task"]["status"] == "pending"
+    assert len(by_title["B"]["jobs"]) == 2
+
+
+def test_get_tasks_empty(server_ctx) -> None:
+    status, body = get(server_ctx["url"], "/tasks")
+    assert status == 200
+    assert body["tasks"] == []
+
+
+def test_retry_job_resets_terminal_to_pending(server_ctx) -> None:
+    task_store = server_ctx["task_store"]
+    task, jobs = task_store.create_task(
+        NewTaskSpec(
+            title="验证码挂起",
+            video_path="/tmp/v.mp4",
+            jobs=[PlatformJobSpec(platform="douyin", account_id=1)],
+        )
+    )
+    # 调度层产生终态 manual（验证码）
+    task_store.apply_terminal(jobs[0].id, "2026-08-08 00:00:00", "manual", "验证码", "risk_control")
+    assert task_store.list_jobs(task.id)[0].status == "manual"
+
+    status, body = post(
+        server_ctx["url"],
+        f"/tasks/{task.id}/jobs/{jobs[0].id}/retry",
+        {},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert task_store.list_jobs(task.id)[0].status == "pending"
+
+
+def test_retry_job_only_terminal_states(server_ctx) -> None:
+    task_store = server_ctx["task_store"]
+    task, jobs = task_store.create_task(
+        NewTaskSpec(
+            title="进行中不可重试",
+            video_path="/tmp/v.mp4",
+            jobs=[PlatformJobSpec(platform="douyin", account_id=1)],
+        )
+    )
+    status, body = post(
+        server_ctx["url"],
+        f"/tasks/{task.id}/jobs/{jobs[0].id}/retry",
+        {},
+    )
+    assert status == 400
+    assert "可手动重试" in body["error"]
+
+
+def test_retry_missing_job_returns_404(server_ctx) -> None:
+    status, body = post(server_ctx["url"], "/tasks/1/jobs/999/retry", {})
+    assert status == 404
+    assert "不存在" in body["error"]

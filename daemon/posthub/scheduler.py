@@ -29,6 +29,11 @@ from posthub.engine import (
     UploadResult,
     execute,
 )
+from posthub.interventions import (
+    InterventionNotifier,
+    NewIntervention,
+    NoopInterventionNotifier,
+)
 from posthub.state import (
     add_seconds,
     effective_publish_at,
@@ -38,7 +43,11 @@ from posthub.tasks import TaskStore
 
 
 class Scheduler:
-    """调度器：一个 tick = 一个调度周期（missed 扫描 + 领取 + 并发执行 + 结果落库）。"""
+    """调度器：一个 tick = 一个调度周期（missed 扫描 + 领取 + 并发执行 + 结果落库）。
+
+    `notifier`（issue #21）：job 进入 `manual` / `needs_relogin` 终态时发出人工介入
+    事件（验证码弹窗 / 重登提示的可观测通道），默认空实现不阻塞调度。
+    """
 
     def __init__(
         self,
@@ -46,6 +55,7 @@ class Scheduler:
         account_store: AccountStore,
         executor: BrowserExecutor,
         *,
+        notifier: InterventionNotifier | None = None,
         scheduler_id: str = "scheduler-1",
         concurrency: int = 3,
         rate_limit_seconds: int = 300,
@@ -57,6 +67,7 @@ class Scheduler:
         self.task_store = task_store
         self.account_store = account_store
         self.executor = executor
+        self.notifier: InterventionNotifier = notifier or NoopInterventionNotifier()
         self.scheduler_id = scheduler_id
         self.concurrency = concurrency
         self.rate_limit_seconds = rate_limit_seconds
@@ -244,6 +255,20 @@ class Scheduler:
             task_id=task.id,
             job_id=job.id,
         )
+        if terminal.status in ("manual", "needs_relogin"):
+            # issue #21：人工介入事件（验证码挂起 / 登录态失效 → Tauri 弹窗 / 重登提示）
+            self.notifier.notify(
+                NewIntervention(
+                    kind=terminal.status,  # type: ignore[arg-type]
+                    job_id=job.id,
+                    task_id=job.task_id,
+                    account_id=job.account_id,
+                    platform=job.platform,
+                    message=terminal.message,
+                    error_type=terminal.error_type,
+                    created_at=now,
+                )
+            )
         return [publishing, terminal]
 
     @staticmethod
