@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
+import AccountsCard from "./components/AccountsCard.vue";
 
 const store = useDaemonStore();
 const autostart = ref(false);
@@ -121,6 +122,8 @@ onUnmounted(() => {
       </span>
     </el-card>
 
+    <AccountsCard />
+
     <footer class="page__footer">
       MIT License · 参考 <a href="https://github.com/dreammis/social-auto-upload">social-auto-upload</a>
     </footer>
@@ -129,7 +132,7 @@ onUnmounted(() => {
 
 <style scoped>
 .page {
-  max-width: 640px;
+  max-width: 720px;
   margin: 0 auto;
   padding: 32px 20px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",

@@ -9,12 +9,13 @@ import urllib.request
 
 import pytest
 
+from posthub.accounts import InMemoryAccountStore
 from posthub.server import make_server
 
 
 @pytest.fixture()
 def server_url():
-    httpd = make_server(port=0)
+    httpd = make_server(port=0, store=InMemoryAccountStore())
     port = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
