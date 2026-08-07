@@ -1,0 +1,31 @@
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db
+
+# --- IDE / 编辑器 ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Node / 前端 (Vue 3 + Vite) ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- Rust / Tauri ---
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# --- Python / uv ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- 敏感配置 ---
+.env
+.env.*
