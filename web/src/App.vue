@@ -6,6 +6,7 @@ import AccountsCard from "./components/AccountsCard.vue";
 import PublishCard from "./components/PublishCard.vue";
 import TasksCard from "./components/TasksCard.vue";
 import LogsCard from "./components/LogsCard.vue";
+import BatchImportCard from "./components/BatchImportCard.vue";
 
 const store = useDaemonStore();
 const autostart = ref(false);
@@ -130,6 +131,7 @@ onUnmounted(() => {
 
         <AccountsCard />
         <PublishCard />
+        <BatchImportCard />
       </el-tab-pane>
 
       <el-tab-pane label="任务" name="tasks">
