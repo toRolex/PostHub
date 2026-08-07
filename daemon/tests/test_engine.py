@@ -104,6 +104,18 @@ def test_execute_unknown_error_maps_to_manual() -> None:
     assert updates[-1].status == "manual"
 
 
+def test_execute_error_update_carries_error_type() -> None:
+    """调度器重试判定依赖 JobUpdate.error_type。"""
+    fake = FakeExecutor(UploadResult(ok=False, error_type="network", message="timeout"))
+    updates = run(execute(make_spec(), make_context(), fake))
+    assert updates[-1].error_type == "network"
+    assert updates[-1].message == "timeout"
+    fake2 = FakeExecutor(UploadResult(ok=True, post_id="p1"))
+    updates2 = run(execute(make_spec(), make_context(), fake2))
+    assert updates2[-1].error_type is None
+    assert updates2[-1].post_id == "p1"
+
+
 def test_executor_is_injected_not_imported() -> None:
     """seam 之外不应依赖任何真实浏览器实现；注入即可替换。"""
     fake = FakeExecutor(UploadResult(ok=True))

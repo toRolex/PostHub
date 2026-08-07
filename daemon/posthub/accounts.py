@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sqlite3
 import threading
@@ -135,6 +136,12 @@ class AccountStore(Protocol):
     def delete(self, account_id: int) -> bool:
         ...
 
+    def set_status(self, account_id: int, status: AccountStatus) -> bool:
+        """更新账号状态（调度器在 job → needs_relogin 时顺带置位）。"""
+
+    def set_last_publish_at(self, account_id: int, ts: str) -> bool:
+        """回写账号最近发布时间（限速 5 分钟的判定依据）。"""
+
     def close(self) -> None:
         ...
 
@@ -183,6 +190,25 @@ class InMemoryAccountStore:
     def delete(self, account_id: int) -> bool:
         with self._lock:
             return self._rows.pop(account_id, None) is not None
+
+    def set_status(self, account_id: int, status: AccountStatus) -> bool:
+        with self._lock:
+            acc = self._rows.get(account_id)
+            if acc is None:
+                return False
+            ts = now_str()
+            self._rows[account_id] = dataclasses.replace(acc, status=status, updated_at=ts)
+            return True
+
+    def set_last_publish_at(self, account_id: int, ts: str) -> bool:
+        with self._lock:
+            acc = self._rows.get(account_id)
+            if acc is None:
+                return False
+            self._rows[account_id] = dataclasses.replace(
+                acc, last_publish_at=ts, updated_at=ts
+            )
+            return True
 
     def close(self) -> None:
         pass
@@ -294,6 +320,25 @@ class SqliteAccountStore:
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM account WHERE id = ?", (account_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def set_status(self, account_id: int, status: AccountStatus) -> bool:
+        with self._lock:
+            ts = now_str()
+            cur = self._conn.execute(
+                "UPDATE account SET status = ?, updated_at = ? WHERE id = ?",
+                (status, ts, account_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def set_last_publish_at(self, account_id: int, ts: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE account SET last_publish_at = ?, updated_at = ? WHERE id = ?",
+                (ts, ts, account_id),
             )
             self._conn.commit()
             return cur.rowcount > 0

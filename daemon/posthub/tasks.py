@@ -14,6 +14,7 @@ InMemory 与 SQLite 实现可互换（复用 accounts.py 的连接管理模式�
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 import threading
@@ -24,6 +25,13 @@ from typing import Literal, Protocol
 
 from posthub.accounts import AccountStore, now_str
 from posthub.constraints import validate_schedule
+from posthub.state import (
+    add_seconds,
+    derive_task_status,
+    diff_seconds,
+    effective_publish_at,
+    effective_publish_mode,
+)
 
 Platform = Literal["douyin", "xiaohongshu", "wechat"]
 SchedulePolicy = Literal["immediate", "scheduled"]
@@ -137,6 +145,7 @@ class PlatformJob:
     schedule_policy: str | None      # 可空 = 继承 task
     publish_mode: str | None
     publish_at: str | None
+    retry_at: str | None             # 网络类退避：到此刻前不领取（NULL = 立即可领取）
     title: str | None
     caption: str | None
     tags: str | None
@@ -165,6 +174,7 @@ class PlatformJob:
             "schedule_policy": self.schedule_policy,
             "publish_mode": self.publish_mode,
             "publish_at": self.publish_at,
+            "retry_at": self.retry_at,
             "title": self.title,
             "caption": self.caption,
             "tags": self.tags,
@@ -186,7 +196,11 @@ class PlatformJob:
 
 
 class TaskStore(Protocol):
-    """任务存储 seam：创建任务（task + jobs）并支持回读。InMemory / SQLite 可互换。"""
+    """任务存储 seam：创建任务（task + jobs）并支持回读。InMemory / SQLite 可互换。
+
+    扩展（#17 调度器原语）：frontier 领取 + 状态迁移持久化 + missed 扫描。
+    调度 / 状态机为纯领域逻辑（scheduler.py），存储层只做原子持久化。
+    """
 
     def create_task(self, new: NewTaskSpec) -> tuple[Task, list[PlatformJob]]:
         ...
@@ -196,6 +210,47 @@ class TaskStore(Protocol):
 
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         ...
+
+    def claim_eligible_jobs(
+        self,
+        now: str,
+        limit: int,
+        scheduler_id: str,
+        *,
+        rate_limit_seconds: int = 300,
+    ) -> list[PlatformJob]:
+        """Frontier 查询 + 乐观锁领取一批可执行 job。
+
+        领取成功者 status → publishing，attempt_count+1，locked_* / started_at 置 now。
+        同账号严格串行（无 publishing、取 MIN(pending)）、跨平台并发上限 limit、
+        限速（距 last_publish_at >= rate_limit_seconds）、仅 active 账号、
+        publish_at/retry_at 已到期。
+        """
+
+    def apply_success(self, job_id: int, now: str, post_id: str | None = None,
+                      post_url: str | None = None) -> None:
+        """job → success，回写账号 last_publish_at，同事务重算 task.status。"""
+
+    def apply_terminal(self, job_id: int, now: str, status: str,
+                       message: str | None = None, error_type: str | None = None) -> None:
+        """job → failed / manual / needs_relogin；needs_relogin 顺带账号置位；
+        同事务重算 task.status。"""
+
+    def requeue(self, job_id: int, now: str, retry_at: str,
+                message: str | None = None, error_type: str | None = None) -> None:
+        """job → pending（网络类退避重试），写 retry_at，重算 task.status。"""
+
+    def mark_missed(self, job_id: int, now: str) -> None:
+        """job → missed（定时窗口错过 / publishing 超时兜底），重算 task.status。"""
+
+    def retry_job(self, job_id: int, now: str) -> bool:
+        """终态（failed/manual/needs_relogin）手动重试 → pending；重试次数保留。"""
+
+    def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
+        """local_time 定时且 publish_at 已过超过容忍窗口仍 pending 的 jobs（候选 missed）。"""
+
+    def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
+        """publishing 超过超时阈值无心跳（按 updated_at）的 jobs（兜底 missed）。"""
 
     def close(self) -> None:
         ...
@@ -277,6 +332,7 @@ class InMemoryTaskStore:
                     schedule_policy=None,
                     publish_mode=None,
                     publish_at=None,
+                    retry_at=None,
                     title=None,
                     caption=None,
                     tags=None,
@@ -309,6 +365,207 @@ class InMemoryTaskStore:
     def list_jobs(self, task_id: int) -> list[PlatformJob]:
         with self._lock:
             return list(self._jobs.get(task_id, []))
+
+    # ---- #17 调度器原语 ----
+
+    def _all_jobs(self) -> list[PlatformJob]:
+        return [job for jobs in self._jobs.values() for job in jobs]
+
+    def _find_job(self, job_id: int) -> PlatformJob | None:
+        for job in self._all_jobs():
+            if job.id == job_id:
+                return job
+        return None
+
+    def _update_job(self, job_id: int, **changes) -> PlatformJob | None:
+        job = self._find_job(job_id)
+        if job is None:
+            return None
+        new = dataclasses.replace(job, **changes)
+        jobs = self._jobs[job.task_id]
+        for i, j in enumerate(jobs):
+            if j.id == job_id:
+                jobs[i] = new
+                break
+        return new
+
+    def _recompute_task_status(self, task_id: int, now: str) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        status = derive_task_status(self._jobs.get(task_id, []))
+        self._tasks[task_id] = dataclasses.replace(task, status=status, updated_at=now)
+
+    def claim_eligible_jobs(
+        self,
+        now: str,
+        limit: int,
+        scheduler_id: str,
+        *,
+        rate_limit_seconds: int = 300,
+    ) -> list[PlatformJob]:
+        with self._lock:
+            candidates: list[PlatformJob] = []
+            for job in self._all_jobs():
+                if job.status != "pending":
+                    continue
+                task = self._tasks.get(job.task_id)
+                if task is None:
+                    continue
+                pub_at = effective_publish_at(job, task)
+                if pub_at is not None and pub_at > now:
+                    continue  # 定时未到点
+                if job.retry_at is not None and job.retry_at > now:
+                    continue  # 退避未到期
+                candidates.append(job)
+
+            def account_eligible(job: PlatformJob) -> bool:
+                acc = self._accounts.get(job.account_id)
+                if acc is None or acc.status != "active":
+                    return False
+                if acc.last_publish_at is not None and diff_seconds(now, acc.last_publish_at) < rate_limit_seconds:
+                    return False
+                return True
+
+            publishing_accounts = {
+                j.account_id for j in self._all_jobs() if j.status == "publishing"
+            }
+            pending_min: dict[int, int] = {}
+            for job in candidates:
+                cur = pending_min.get(job.account_id)
+                if cur is None or job.id < cur:
+                    pending_min[job.account_id] = job.id
+
+            def serial_eligible(job: PlatformJob) -> bool:
+                # 同账号严格串行：无 publishing 且是本账号 pending 中最先创建
+                return (
+                    job.account_id not in publishing_accounts
+                    and job.id == pending_min[job.account_id]
+                )
+
+            candidates = [j for j in candidates if account_eligible(j) and serial_eligible(j)]
+            # ORDER BY (publish_at IS NULL) DESC, publish_at ASC, id ASC
+            candidates.sort(key=lambda j: (j.publish_at is not None, j.publish_at or "", j.id))
+
+            claimed: list[PlatformJob] = []
+            for job in candidates:
+                if len(claimed) >= limit:
+                    break
+                updated = self._update_job(
+                    job.id,
+                    status="publishing",
+                    locked_at=now,
+                    locked_by=scheduler_id,
+                    started_at=now,
+                    attempt_count=job.attempt_count + 1,
+                    updated_at=now,
+                )
+                if updated is not None:
+                    claimed.append(updated)
+            return claimed
+
+    def apply_success(self, job_id: int, now: str, post_id: str | None = None,
+                      post_url: str | None = None) -> None:
+        with self._lock:
+            job = self._find_job(job_id)
+            if job is None:
+                return
+            self._update_job(
+                job_id,
+                status="success",
+                post_id=post_id,
+                post_url=post_url,
+                finished_at=now,
+                updated_at=now,
+            )
+            self._accounts.set_last_publish_at(job.account_id, now)
+            self._recompute_task_status(job.task_id, now)
+
+    def apply_terminal(self, job_id: int, now: str, status: str,
+                       message: str | None = None, error_type: str | None = None) -> None:
+        with self._lock:
+            job = self._find_job(job_id)
+            if job is None:
+                return
+            self._update_job(
+                job_id,
+                status=status,
+                last_error=message,
+                last_error_type=error_type,
+                finished_at=now,
+                updated_at=now,
+            )
+            if status == "needs_relogin":
+                self._accounts.set_status(job.account_id, "needs_relogin")
+            self._recompute_task_status(job.task_id, now)
+
+    def requeue(self, job_id: int, now: str, retry_at: str,
+                message: str | None = None, error_type: str | None = None) -> None:
+        with self._lock:
+            job = self._find_job(job_id)
+            if job is None:
+                return
+            self._update_job(
+                job_id,
+                status="pending",
+                retry_at=retry_at,
+                last_error=message,
+                last_error_type=error_type,
+                locked_at=None,
+                locked_by=None,
+                started_at=None,
+                updated_at=now,
+            )
+            self._recompute_task_status(job.task_id, now)
+
+    def mark_missed(self, job_id: int, now: str) -> None:
+        with self._lock:
+            job = self._find_job(job_id)
+            if job is None:
+                return
+            self._update_job(job_id, status="missed", finished_at=now, updated_at=now)
+            self._recompute_task_status(job.task_id, now)
+
+    def retry_job(self, job_id: int, now: str) -> bool:
+        with self._lock:
+            job = self._find_job(job_id)
+            if job is None or job.status not in ("failed", "manual", "needs_relogin"):
+                return False
+            self._update_job(
+                job_id,
+                status="pending",
+                locked_at=None,
+                locked_by=None,
+                finished_at=None,
+                updated_at=now,
+            )
+            self._recompute_task_status(job.task_id, now)
+            return True
+
+    def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
+        with self._lock:
+            cutoff = add_seconds(now, -tolerance_seconds)
+            hits: list[PlatformJob] = []
+            for job in self._all_jobs():
+                if job.status != "pending":
+                    continue
+                task = self._tasks.get(job.task_id)
+                if task is None:
+                    continue
+                if effective_publish_mode(job, task) != "local_time":
+                    continue
+                pub_at = effective_publish_at(job, task)
+                if pub_at is not None and pub_at <= cutoff:
+                    hits.append(job)
+            return hits
+
+    def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
+        with self._lock:
+            cutoff = add_seconds(now, -timeout_seconds)
+            return [
+                job for job in self._all_jobs()
+                if job.status == "publishing" and job.updated_at <= cutoff
+            ]
 
     def close(self) -> None:
         pass
@@ -368,6 +625,7 @@ class SqliteTaskStore:
                     schedule_policy  TEXT,
                     publish_mode     TEXT,
                     publish_at       TEXT,
+                    retry_at         TEXT,
                     title            TEXT,
                     caption          TEXT,
                     tags             TEXT,
@@ -393,6 +651,14 @@ class SqliteTaskStore:
                 """
             )
             self._conn.commit()
+            # 幂等迁移：旧库补 retry_at 列（#17 网络类退避）
+            try:
+                self._conn.execute(
+                    "ALTER TABLE platform_job ADD COLUMN retry_at TEXT"
+                )
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # 列已存在
 
     def create_task(self, new: NewTaskSpec) -> tuple[Task, list[PlatformJob]]:
         with self._lock:
@@ -489,6 +755,194 @@ class SqliteTaskStore:
         with self._lock:
             return self._list_jobs(task_id)
 
+    # ---- #17 调度器原语 ----
+
+    def _fetch_job(self, job_id: int) -> sqlite3.Row | None:
+        cur = self._conn.execute(
+            "SELECT * FROM platform_job WHERE id = ?", (job_id,)
+        )
+        return cur.fetchone()
+
+    def _recompute_task_status(self, task_id: int, now: str) -> None:
+        status = derive_task_status(self._list_jobs(task_id))
+        self._conn.execute(
+            "UPDATE task SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, task_id),
+        )
+
+    def claim_eligible_jobs(
+        self,
+        now: str,
+        limit: int,
+        scheduler_id: str,
+        *,
+        rate_limit_seconds: int = 300,
+    ) -> list[PlatformJob]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT j.*
+                FROM platform_job j
+                JOIN task t ON t.id = j.task_id
+                WHERE j.status = 'pending'
+                  AND (COALESCE(j.publish_at, t.publish_at) IS NULL
+                       OR COALESCE(j.publish_at, t.publish_at) <= :now)
+                  AND (j.retry_at IS NULL OR j.retry_at <= :now)
+                  AND j.account_id NOT IN (
+                      SELECT account_id FROM platform_job WHERE status = 'publishing'
+                  )
+                  AND j.id = (SELECT MIN(j2.id) FROM platform_job j2
+                              WHERE j2.account_id = j.account_id
+                                AND j2.status = 'pending')
+                ORDER BY (COALESCE(j.publish_at, t.publish_at) IS NULL) DESC,
+                         COALESCE(j.publish_at, t.publish_at) ASC, j.id ASC
+                LIMIT :limit
+                """,
+                {"now": now, "limit": limit},
+            ).fetchall()
+
+            claimed: list[PlatformJob] = []
+            for row in rows:
+                if len(claimed) >= limit:
+                    break
+                job = self._row_to_job(row)
+                acc = self._accounts.get(job.account_id)
+                if acc is None or acc.status != "active":
+                    continue
+                if acc.last_publish_at is not None and diff_seconds(
+                    now, acc.last_publish_at
+                ) < rate_limit_seconds:
+                    continue
+                cur = self._conn.execute(
+                    """
+                    UPDATE platform_job
+                       SET status='publishing', locked_at=?, locked_by=?,
+                           started_at=?, attempt_count=attempt_count+1, updated_at=?
+                     WHERE id=? AND status='pending'
+                    """,
+                    (now, scheduler_id, now, now, job.id),
+                )
+                if cur.rowcount == 1:
+                    row2 = self._fetch_job(job.id)
+                    if row2 is not None:
+                        claimed.append(self._row_to_job(row2))
+            self._conn.commit()
+            return claimed
+
+    def apply_success(self, job_id: int, now: str, post_id: str | None = None,
+                      post_url: str | None = None) -> None:
+        with self._lock:
+            job = self._fetch_job(job_id)
+            if job is None:
+                return
+            self._conn.execute(
+                """
+                UPDATE platform_job SET status='success', post_id=?, post_url=?,
+                    finished_at=?, updated_at=?
+                 WHERE id=?
+                """,
+                (post_id, post_url, now, now, job_id),
+            )
+            self._accounts.set_last_publish_at(job["account_id"], now)
+            self._recompute_task_status(job["task_id"], now)
+            self._conn.commit()
+
+    def apply_terminal(self, job_id: int, now: str, status: str,
+                       message: str | None = None, error_type: str | None = None) -> None:
+        with self._lock:
+            job = self._fetch_job(job_id)
+            if job is None:
+                return
+            self._conn.execute(
+                """
+                UPDATE platform_job SET status=?, last_error=?, last_error_type=?,
+                    finished_at=?, updated_at=?
+                 WHERE id=?
+                """,
+                (status, message, error_type, now, now, job_id),
+            )
+            if status == "needs_relogin":
+                self._accounts.set_status(job["account_id"], "needs_relogin")
+            self._recompute_task_status(job["task_id"], now)
+            self._conn.commit()
+
+    def requeue(self, job_id: int, now: str, retry_at: str,
+                message: str | None = None, error_type: str | None = None) -> None:
+        with self._lock:
+            job = self._fetch_job(job_id)
+            if job is None:
+                return
+            self._conn.execute(
+                """
+                UPDATE platform_job SET status='pending', retry_at=?, last_error=?,
+                    last_error_type=?, locked_at=NULL, locked_by=NULL,
+                    started_at=NULL, updated_at=?
+                 WHERE id=?
+                """,
+                (retry_at, message, error_type, now, job_id),
+            )
+            self._recompute_task_status(job["task_id"], now)
+            self._conn.commit()
+
+    def mark_missed(self, job_id: int, now: str) -> None:
+        with self._lock:
+            job = self._fetch_job(job_id)
+            if job is None:
+                return
+            self._conn.execute(
+                """
+                UPDATE platform_job SET status='missed', finished_at=?, updated_at=?
+                 WHERE id=?
+                """,
+                (now, now, job_id),
+            )
+            self._recompute_task_status(job["task_id"], now)
+            self._conn.commit()
+
+    def retry_job(self, job_id: int, now: str) -> bool:
+        with self._lock:
+            job = self._fetch_job(job_id)
+            if job is None or job["status"] not in ("failed", "manual", "needs_relogin"):
+                return False
+            self._conn.execute(
+                """
+                UPDATE platform_job SET status='pending', locked_at=NULL,
+                    locked_by=NULL, finished_at=NULL, updated_at=?
+                 WHERE id=?
+                """,
+                (now, job_id),
+            )
+            self._recompute_task_status(job["task_id"], now)
+            self._conn.commit()
+            return True
+
+    def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
+        with self._lock:
+            cutoff = add_seconds(now, -tolerance_seconds)
+            rows = self._conn.execute(
+                """
+                SELECT j.*
+                FROM platform_job j
+                JOIN task t ON t.id = j.task_id
+                WHERE j.status = 'pending'
+                  AND COALESCE(j.publish_mode, t.publish_mode) = 'local_time'
+                  AND COALESCE(j.publish_at, t.publish_at) IS NOT NULL
+                  AND COALESCE(j.publish_at, t.publish_at) <= :cutoff
+                ORDER BY j.id ASC
+                """,
+                {"cutoff": cutoff},
+            ).fetchall()
+            return [self._row_to_job(row) for row in rows]
+
+    def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
+        with self._lock:
+            cutoff = add_seconds(now, -timeout_seconds)
+            rows = self._conn.execute(
+                "SELECT * FROM platform_job WHERE status='publishing' AND updated_at <= ?",
+                (cutoff,),
+            ).fetchall()
+            return [self._row_to_job(row) for row in rows]
+
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> PlatformJob:
         return PlatformJob(
@@ -500,6 +954,7 @@ class SqliteTaskStore:
             schedule_policy=row["schedule_policy"],
             publish_mode=row["publish_mode"],
             publish_at=row["publish_at"],
+            retry_at=row["retry_at"],
             title=row["title"],
             caption=row["caption"],
             tags=row["tags"],
