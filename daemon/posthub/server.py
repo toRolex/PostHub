@@ -86,7 +86,7 @@ class PostHubHandler(BaseHTTPRequestHandler):
             self._send_json(
                 200,
                 {
-                    "BASE_DIR": c.BASE_DIR,
+                    "BASE_DIR": str(c.BASE_DIR),
                     "DEBUG_MODE": c.DEBUG_MODE,
                     "LOCAL_CHROME_HEADLESS": c.LOCAL_CHROME_HEADLESS,
                     "LOCAL_CHROME_PATH": c.LOCAL_CHROME_PATH,
