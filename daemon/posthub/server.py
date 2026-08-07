@@ -1,12 +1,14 @@
-"""PostHub 守护进程：本地 HTTP IPC + 健康检查 + 账号管理。
+"""PostHub 守护进程：本地 HTTP IPC + 健康检查 + 账号管理 + 任务创建。
 
 常驻服务进程，默认监听 `http://127.0.0.1:8756`。前端通过 HTTP 调用：
 
-- `GET  /health`           健康检查
-- `GET  /conf`             上游 conf 六符号
-- `GET  /accounts`         账号列表
-- `POST /accounts`         添加账号（落库 + 拉起独立 Chrome 扫码）
-- `DELETE /accounts/{id}`  删除账号（移除记录 + 尽力清理关联 Chrome）
+- `GET  /health`                健康检查
+- `GET  /conf`                  上游 conf 六符号
+- `GET  /platform-constraints`  平台约束注册表（表单校验引用）
+- `GET  /accounts`              账号列表
+- `POST /accounts`              添加账号（落库 + 拉起独立 Chrome 扫码）
+- `DELETE /accounts/{id}`       删除账号（移除记录 + 尽力清理关联 Chrome）
+- `POST /tasks`                 创建发布任务（task + N 个 platform_job 落库）
 
 启动方式：`uv run python -m posthub [PORT]`。
 """
@@ -30,6 +32,15 @@ from posthub.accounts import (
     default_profile_dir,
 )
 from posthub.chrome_launcher import ChromeLauncher
+from posthub.constraints import PLATFORM_CONSTRAINTS
+from posthub.tasks import (
+    AccountPlatformMismatchError,
+    NewTaskSpec,
+    PlatformJobSpec,
+    SqliteTaskStore,
+    TaskValidationError,
+    UnknownAccountError,
+)
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8756
@@ -97,6 +108,9 @@ class PostHubHandler(BaseHTTPRequestHandler):
         elif path == "/accounts":
             accounts = [a.to_dict() for a in self.server.account_store.list()]
             self._send_json(200, {"accounts": accounts})
+        elif path == "/platform-constraints":
+            constraints = [c.to_dict() for c in PLATFORM_CONSTRAINTS.values()]
+            self._send_json(200, {"constraints": constraints})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -106,8 +120,90 @@ class PostHubHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/accounts":
             self._handle_create_account()
+        elif path == "/tasks":
+            self._handle_create_task()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _handle_create_task(self) -> None:
+        try:
+            body = self._read_json_body()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "请求体必须是合法 JSON 对象"})
+            return
+
+        title = body.get("title")
+        if not title or not str(title).strip():
+            self._send_json(400, {"error": "标题不能为空"})
+            return
+
+        raw_jobs = body.get("jobs")
+        if not isinstance(raw_jobs, list) or not raw_jobs:
+            self._send_json(400, {"error": "至少选择一个发布平台"})
+            return
+        jobs: list[PlatformJobSpec] = []
+        for item in raw_jobs:
+            platform = item.get("platform")
+            account_id = item.get("account_id")
+            if platform not in PLATFORM_CONSTRAINTS:
+                self._send_json(
+                    400,
+                    {"error": f"platform 必须是 douyin/xiaohongshu/wechat，收到 {platform!r}"},
+                )
+                return
+            if isinstance(account_id, bool) or not isinstance(account_id, int):
+                self._send_json(400, {"error": "account_id 必须是整数"})
+                return
+            jobs.append(PlatformJobSpec(platform=platform, account_id=account_id))
+
+        media_type = body.get("media_type", "video")
+        if media_type not in ("video", "note"):
+            self._send_json(400, {"error": f"media_type 必须是 video/note，收到 {media_type!r}"})
+            return
+        schedule_policy = body.get("schedule_policy", "immediate")
+        if schedule_policy not in ("immediate", "scheduled"):
+            self._send_json(400, {"error": f"schedule_policy 必须是 immediate/scheduled，收到 {schedule_policy!r}"})
+            return
+        publish_mode = body.get("publish_mode", "platform_time")
+        if publish_mode not in ("platform_time", "local_time"):
+            self._send_json(400, {"error": f"publish_mode 必须是 platform_time/local_time，收到 {publish_mode!r}"})
+            return
+
+        silent_raw = body.get("silent", False)
+        new = NewTaskSpec(
+            title=str(title).strip(),
+            video_path=body.get("video_path"),
+            caption=body.get("caption"),
+            tags=body.get("tags"),
+            cover_horizontal=body.get("cover_horizontal"),
+            cover_vertical=body.get("cover_vertical"),
+            media_type=media_type,
+            image_paths=body.get("image_paths"),
+            schedule_policy=schedule_policy,
+            publish_mode=publish_mode,
+            publish_at=body.get("publish_at"),
+            silent=bool(silent_raw),
+            jobs=jobs,
+        )
+        try:
+            task, task_jobs = self.server.task_store.create_task(new)
+        except TaskValidationError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except UnknownAccountError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except AccountPlatformMismatchError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        self._send_json(
+            201,
+            {
+                "task": task.to_dict(),
+                "jobs": [j.to_dict() for j in task_jobs],
+            },
+        )
 
     def _handle_create_account(self) -> None:
         try:
@@ -225,16 +321,20 @@ def make_server(
     store=None,
     launcher=None,
     profile_base_dir: str | None = None,
+    task_store=None,
 ) -> ThreadingHTTPServer:
     """创建守护进程 HTTP 服务。port=0 时由系统分配端口（测试用）。
 
-    依赖注入：`store`（账号存储）、`launcher`（Chrome 拉起器）供测试替换；
-    缺省时使用 SQLite 持久化 + 真实 Chrome 拉起器。
+    依赖注入：`store`（账号存储）、`launcher`（Chrome 拉起器）、`task_store`
+    （任务存储）供测试替换；缺省时使用 SQLite 持久化 + 真实 Chrome 拉起器。
     """
     httpd = ThreadingHTTPServer((HOST, port), PostHubHandler)
     httpd.account_store = store or SqliteAccountStore(default_db_path())
     httpd.chrome_launcher = launcher or ChromeLauncher()
     httpd.profile_base_dir = profile_base_dir or default_profile_dir()
+    httpd.task_store = task_store or SqliteTaskStore(
+        default_db_path(), httpd.account_store
+    )
     return httpd
 
 
