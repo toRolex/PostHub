@@ -9,6 +9,8 @@
 - `POST /accounts`              添加账号（落库 + 拉起独立 Chrome 扫码）
 - `DELETE /accounts/{id}`       删除账号（移除记录 + 尽力清理关联 Chrome）
 - `POST /tasks`                 创建发布任务（task + N 个 platform_job 落库）
+- `POST /batches/import`        解析批次文件夹 manifest.json（ADR-0002，返回待确认列表）
+- `POST /batches/confirm`       待确认放行：逐条生成发布任务（与发布页同一通道）
 
 启动方式：`uv run python -m posthub [PORT]`。
 """
@@ -33,6 +35,7 @@ from posthub.accounts import (
 )
 from posthub.chrome_launcher import ChromeLauncher
 from posthub.constraints import PLATFORM_CONSTRAINTS
+from posthub.manifest import ConfirmEntry, confirm_import, parse_manifest
 from posthub.tasks import (
     AccountPlatformMismatchError,
     NewTaskSpec,
@@ -122,6 +125,10 @@ class PostHubHandler(BaseHTTPRequestHandler):
             self._handle_create_account()
         elif path == "/tasks":
             self._handle_create_task()
+        elif path == "/batches/import":
+            self._handle_batch_import()
+        elif path == "/batches/confirm":
+            self._handle_batch_confirm()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -204,6 +211,112 @@ class PostHubHandler(BaseHTTPRequestHandler):
                 "jobs": [j.to_dict() for j in task_jobs],
             },
         )
+
+    def _handle_batch_import(self) -> None:
+        """POST /batches/import：解析批次文件夹，返回待确认列表（ADR-0002）。
+
+        请求体 `{"folder_path": str, "account_id": int}`。始终 200 返回结构化
+        解析结果（`entries` + `hard_errors`）；`hard_errors` 非空 = 整批拒绝，
+        由前端明确展示（哪条、为什么）。
+        """
+        try:
+            body = self._read_json_body()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "请求体必须是合法 JSON 对象"})
+            return
+
+        folder_path = body.get("folder_path")
+        if not folder_path or not str(folder_path).strip():
+            self._send_json(400, {"error": "folder_path 不能为空"})
+            return
+
+        account_id = body.get("account_id")
+        if isinstance(account_id, bool) or not isinstance(account_id, int):
+            self._send_json(400, {"error": "account_id 必须是整数"})
+            return
+
+        account = self.server.account_store.get(account_id)
+        if account is None:
+            self._send_json(404, {"error": "账号不存在"})
+            return
+
+        result = parse_manifest(str(folder_path), account.platform)
+        self._send_json(200, result.to_dict())
+
+    def _handle_batch_confirm(self) -> None:
+        """POST /batches/confirm：待确认放行，逐条走 create_task 同一发布通道。
+
+        请求体 `{"account_id": int, "entries": [{file, title, content?, tags?,
+        cover_landscape?, cover_portrait?, schedule?, account_id?, platform?}]}`。
+        条目级 `account_id`/`platform` 可覆盖批次默认账号；返回生成的 task 列表。
+        任一条目非法整批不落库（confirm_import 原子）。
+        """
+        try:
+            body = self._read_json_body()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "请求体必须是合法 JSON 对象"})
+            return
+
+        account_id = body.get("account_id")
+        if isinstance(account_id, bool) or not isinstance(account_id, int):
+            self._send_json(400, {"error": "account_id 必须是整数"})
+            return
+
+        raw_entries = body.get("entries")
+        if not isinstance(raw_entries, list) or not raw_entries:
+            self._send_json(400, {"error": "entries 不能为空"})
+            return
+
+        entries: list[ConfirmEntry] = []
+        for item in raw_entries:
+            if not isinstance(item, dict):
+                self._send_json(400, {"error": "entries 每项必须是 JSON 对象"})
+                return
+            file_path = item.get("file")
+            title = item.get("title")
+            if not file_path or not str(file_path).strip():
+                self._send_json(400, {"error": "条目缺少 file"})
+                return
+            if not isinstance(title, str) or not title.strip():
+                self._send_json(400, {"error": "条目缺少标题"})
+                return
+            entries.append(
+                ConfirmEntry(
+                    file=str(file_path),
+                    title=title.strip(),
+                    content=item.get("content"),
+                    tags=item.get("tags"),
+                    cover_landscape=item.get("cover_landscape"),
+                    cover_portrait=item.get("cover_portrait"),
+                    schedule=item.get("schedule"),
+                    account_id=item.get("account_id"),
+                    platform=item.get("platform"),
+                )
+            )
+
+        try:
+            task_ids = confirm_import(
+                entries,
+                account_id=account_id,
+                task_store=self.server.task_store,
+                accounts=self.server.account_store,
+            )
+        except TaskValidationError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except UnknownAccountError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except AccountPlatformMismatchError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        tasks = []
+        for tid in task_ids:
+            task = self.server.task_store.get_task(tid)
+            if task is not None:
+                tasks.append(task.to_dict())
+        self._send_json(201, {"task_ids": task_ids, "tasks": tasks})
 
     def _handle_create_account(self) -> None:
         try:
