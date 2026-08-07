@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import conf
@@ -21,7 +23,7 @@ def test_exposes_six_required_symbols() -> None:
 
 def test_default_conf_types() -> None:
     c = conf.load_conf()
-    assert isinstance(c.BASE_DIR, str)
+    assert isinstance(c.BASE_DIR, Path)
     assert isinstance(c.DEBUG_MODE, bool)
     assert isinstance(c.LOCAL_CHROME_HEADLESS, bool)
     assert isinstance(c.LOCAL_CHROME_PATH, str)
@@ -44,7 +46,7 @@ def test_env_override(tmp_path) -> None:
         "POSTHUB_YT_PROXY": "",
     }
     c = conf.load_conf(env)
-    assert c.BASE_DIR == str(tmp_path)
+    assert c.BASE_DIR == tmp_path
     assert c.DEBUG_MODE is True
     assert c.LOCAL_CHROME_HEADLESS is False
     assert c.LOCAL_CHROME_PATH == "/usr/bin/google-chrome"

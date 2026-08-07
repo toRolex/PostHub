@@ -3,14 +3,26 @@ name = "posthub-daemon"
 version = "0.1.0"
 description = "PostHub 常驻 Python 守护进程：本地 IPC + 任务执行引擎 seam"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "social-auto-upload",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+social-auto-upload = { git = "https://github.com/dreammis/social-auto-upload.git" }
+
+[[tool.uv.index]]
+url = "http://mirrors.aliyun.com/pypi/simple/"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -36,9 +36,13 @@ class ConfValidationError(ValueError):
 
 @dataclass(frozen=True)
 class Conf:
-    """6 个上游依赖配置字段（ADR-0001）。构造时即校验。"""
+    """6 个上游依赖配置字段（ADR-0001）。构造时即校验。
 
-    BASE_DIR: str
+    `BASE_DIR` 用 `pathlib.Path`：上游 `uploader/*/__init__.py` 执行
+    `Path(BASE_DIR / "cookies").mkdir(...)`，str 无法做 `/` 运算。
+    """
+
+    BASE_DIR: Path
     DEBUG_MODE: bool
     LOCAL_CHROME_HEADLESS: bool
     LOCAL_CHROME_PATH: str
@@ -51,9 +55,9 @@ class Conf:
             raise ConfValidationError("; ".join(errors))
 
 
-def _default_base_dir() -> str:
+def _default_base_dir() -> Path:
     """默认 BASE_DIR 指向仓库 daemon 目录（本文件所在目录）。"""
-    return str(Path(__file__).resolve().parent)
+    return Path(__file__).resolve().parent
 
 
 def _parse_bool(raw: str) -> bool:
@@ -84,7 +88,7 @@ def load_conf(env: Mapping[str, str] | None = None) -> Conf:
         return v if v is not None else default
 
     return Conf(
-        BASE_DIR=get("BASE_DIR", _default_base_dir()),
+        BASE_DIR=Path(get("BASE_DIR", _default_base_dir())),
         DEBUG_MODE=_parse_bool(get("DEBUG_MODE", "true")),
         LOCAL_CHROME_HEADLESS=_parse_bool(get("LOCAL_CHROME_HEADLESS", "false")),
         LOCAL_CHROME_PATH=get("LOCAL_CHROME_PATH", ""),
@@ -97,9 +101,9 @@ def validate(conf: Conf) -> list[str]:
     """返回校验错误列表；为空表示配置合法。"""
     errors: list[str] = []
 
-    if not isinstance(conf.BASE_DIR, str) or not conf.BASE_DIR:
+    if not isinstance(conf.BASE_DIR, Path) or not str(conf.BASE_DIR):
         errors.append("BASE_DIR 必须是非空路径")
-    elif not os.path.isdir(conf.BASE_DIR):
+    elif not conf.BASE_DIR.is_dir():
         errors.append(f"BASE_DIR 目录不存在: {conf.BASE_DIR}")
 
     if not isinstance(conf.DEBUG_MODE, bool):
