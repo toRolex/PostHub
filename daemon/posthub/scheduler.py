@@ -87,6 +87,13 @@ class Scheduler:
 
         for job in self.task_store.list_pending_missed(now, self.missed_tolerance_seconds):
             self.task_store.mark_missed(job.id, now)
+            self.task_store.add_log(
+                "warn",
+                "scheduler",
+                f"任务 #{job.task_id} 平台 {job.platform} 错过发布窗口",
+                task_id=job.task_id,
+                job_id=job.id,
+            )
             all_updates.append(
                 JobUpdate(
                     job_id=str(job.id),
@@ -99,6 +106,13 @@ class Scheduler:
 
         for job in self.task_store.list_stale_publishing(now, self.publishing_timeout_seconds):
             self.task_store.mark_missed(job.id, now)
+            self.task_store.add_log(
+                "error",
+                "scheduler",
+                f"任务 #{job.task_id} 平台 {job.platform} 发布超时，标记为错过",
+                task_id=job.task_id,
+                job_id=job.id,
+            )
             all_updates.append(
                 JobUpdate(
                     job_id=str(job.id),
@@ -136,6 +150,13 @@ class Scheduler:
         if task is None or account is None:
             self.task_store.apply_terminal(
                 job.id, now, "failed", "task/account 不存在", "unknown"
+            )
+            self.task_store.add_log(
+                "error",
+                "scheduler",
+                f"任务 #{job.task_id} 平台 {job.platform} task/account 不存在",
+                task_id=job.task_id,
+                job_id=job.id,
             )
             return [
                 JobUpdate(
@@ -185,6 +206,13 @@ class Scheduler:
 
         if terminal.status == "success":
             self.task_store.apply_success(job.id, now, terminal.post_id, terminal.post_url)
+            self.task_store.add_log(
+                "info",
+                "uploader",
+                f"任务 #{task.id} 平台 {job.platform} 发布成功",
+                task_id=task.id,
+                job_id=job.id,
+            )
             return [publishing, terminal]
 
         if (
@@ -198,6 +226,13 @@ class Scheduler:
             ]
             retry_at = add_seconds(now, backoff)
             self.task_store.requeue(job.id, now, retry_at, terminal.message, "network")
+            self.task_store.add_log(
+                "warn",
+                "uploader",
+                f"任务 #{task.id} 平台 {job.platform} 网络错误，{backoff}s 后重试",
+                task_id=task.id,
+                job_id=job.id,
+            )
             retry_update = dataclasses.replace(
                 terminal,
                 status="pending",
@@ -210,6 +245,15 @@ class Scheduler:
         # 终态：failed（非网络重试用尽）/ manual / needs_relogin
         self.task_store.apply_terminal(
             job.id, now, terminal.status, terminal.message, terminal.error_type
+        )
+        level = "error" if terminal.status == "failed" else "warn"
+        reason = terminal.message or terminal.status
+        self.task_store.add_log(
+            level,
+            "uploader",
+            f"任务 #{task.id} 平台 {job.platform} → {terminal.status}: {reason}",
+            task_id=task.id,
+            job_id=job.id,
         )
         if terminal.status in ("manual", "needs_relogin"):
             # issue #21：人工介入事件（验证码挂起 / 登录态失效 → Tauri 弹窗 / 重登提示）

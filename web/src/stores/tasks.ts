@@ -1,9 +1,19 @@
 import { defineStore } from "pinia";
 
 import { useDaemonStore } from "./daemon";
-import type { Platform } from "./accounts";
 
-export interface TaskRecord {
+export type Platform = "douyin" | "xiaohongshu" | "wechat";
+export type JobStatus =
+  | "pending"
+  | "publishing"
+  | "success"
+  | "failed"
+  | "manual"
+  | "needs_relogin"
+  | "missed";
+export type TaskStatus = JobStatus | "partial";
+
+export interface Task {
   id: number;
   title: string;
   media_type: string;
@@ -17,17 +27,17 @@ export interface TaskRecord {
   publish_mode: string;
   publish_at: string | null;
   silent: number;
-  status: string;
+  status: TaskStatus;
   created_at: string;
   updated_at: string;
 }
 
-export interface PlatformJobRecord {
+export interface PlatformJob {
   id: number;
   task_id: number;
   account_id: number;
   platform: Platform;
-  status: string;
+  status: JobStatus;
   schedule_policy: string | null;
   publish_mode: string | null;
   publish_at: string | null;
@@ -51,39 +61,67 @@ export interface PlatformJobRecord {
   updated_at: string;
 }
 
-export interface TaskDetail {
-  task: TaskRecord;
-  jobs: PlatformJobRecord[];
+export interface TaskItem {
+  task: Task;
+  jobs: PlatformJob[];
 }
 
-/** 终态（可手动重试）：failed / manual / needs_relogin。 */
-export const RETRYABLE_TERMINAL = ["failed", "manual", "needs_relogin"];
+export interface TaskFilters {
+  platform?: Platform | "";
+  status?: TaskStatus | "";
+  from?: string;
+  to?: string;
+}
 
 interface TasksState {
-  tasks: TaskDetail[];
+  tasks: TaskItem[];
+  filters: Required<TaskFilters>;
   loading: boolean;
+  actionLoading: boolean;
   error: string;
+}
+
+const EMPTY_FILTERS: Required<TaskFilters> = {
+  platform: "",
+  status: "",
+  from: "",
+  to: "",
+};
+
+function buildQuery(filters: TaskFilters): string {
+  const params = new URLSearchParams();
+  if (filters.platform) params.set("platform", filters.platform);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
 
 export const useTasksStore = defineStore("tasks", {
   state: (): TasksState => ({
     tasks: [],
+    filters: { ...EMPTY_FILTERS },
     loading: false,
+    actionLoading: false,
     error: "",
   }),
 
   actions: {
-    /** 请求守护进程 /tasks，拉取任务列表（含各平台 job 状态）。 */
-    async fetchTasks(): Promise<void> {
+    /** 拉取任务列表（含各平台 job 明细），应用当前筛选。 */
+    async fetchTasks(filters?: TaskFilters): Promise<void> {
+      if (filters) {
+        this.filters = { ...EMPTY_FILTERS, ...filters };
+      }
       const daemon = useDaemonStore();
       this.loading = true;
       try {
-        const res = await fetch(`${daemon.url}/tasks`);
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
+        const res = await fetch(`${daemon.url}/tasks${buildQuery(this.filters)}`);
         const body = await res.json();
-        this.tasks = (body.tasks ?? []) as TaskDetail[];
+        if (!res.ok) {
+          throw new Error(body?.error || `HTTP ${res.status}`);
+        }
+        this.tasks = body.tasks ?? [];
         this.error = "";
       } catch (e) {
         this.error = e instanceof Error ? e.message : String(e);
@@ -92,20 +130,72 @@ export const useTasksStore = defineStore("tasks", {
       }
     },
 
-    /** 手动重试终态 job：POST /tasks/{taskId}/jobs/{jobId}/retry，成功后刷新列表。 */
-    async retryJob(taskId: number, jobId: number): Promise<void> {
+    /** 更新筛选并重新拉取。 */
+    setFilters(partial: TaskFilters): void {
+      this.filters = { ...this.filters, ...partial };
+      void this.fetchTasks();
+    },
+
+    /** 取消尚未发布的任务（pending job → failed），成功后刷新列表。 */
+    async cancelTask(taskId: number): Promise<void> {
       const daemon = useDaemonStore();
-      const res = await fetch(`${daemon.url}/tasks/${taskId}/jobs/${jobId}/retry`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        this.error = body.error || `HTTP ${res.status}`;
-        throw new Error(this.error);
+      this.actionLoading = true;
+      try {
+        const res = await fetch(`${daemon.url}/tasks/${taskId}/cancel`, {
+          method: "POST",
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body?.error || `HTTP ${res.status}`);
+        }
+        this.error = "";
+        await this.fetchTasks();
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        throw e;
+      } finally {
+        this.actionLoading = false;
       }
-      this.error = "";
-      await this.fetchTasks();
+    },
+
+    /** 失败任务手动重试（终态 → pending），成功后刷新列表。 */
+    async retryJob(jobId: number): Promise<PlatformJob | null> {
+      const daemon = useDaemonStore();
+      this.actionLoading = true;
+      try {
+        const res = await fetch(`${daemon.url}/jobs/${jobId}/retry`, {
+          method: "POST",
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body?.error || `HTTP ${res.status}`);
+        }
+        this.error = "";
+        await this.fetchTasks();
+        return (body.job as PlatformJob) ?? null;
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        throw e;
+      } finally {
+        this.actionLoading = false;
+      }
+    },
+
+    /** 拉取单任务明细。 */
+    async fetchTaskDetail(taskId: number): Promise<TaskItem | null> {
+      const daemon = useDaemonStore();
+      try {
+        const res = await fetch(`${daemon.url}/tasks/${taskId}`);
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body?.error || `HTTP ${res.status}`);
+        }
+        this.error = "";
+        return body as TaskItem;
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+        return null;
+      }
     },
   },
 });

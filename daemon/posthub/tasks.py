@@ -25,6 +25,7 @@ from typing import Literal, Protocol
 
 from posthub.accounts import AccountStore, now_str
 from posthub.constraints import validate_schedule
+from posthub.logs import LogEntry, LogFilters
 from posthub.state import (
     add_seconds,
     derive_task_status,
@@ -199,7 +200,7 @@ class PlatformJob:
 
 @dataclass(frozen=True)
 class TaskFilters:
-    """任务列表查询筛选（#21 / #18：平台 / 状态 / 创建时间区间）。"""
+    """任务列表查询筛选（#18 任务管理页 / #21：平台 / 状态 / 创建时间区间）。"""
 
     platform: Platform | None = None
     status: str | None = None
@@ -209,7 +210,7 @@ class TaskFilters:
 
 @dataclass(frozen=True)
 class TaskDetail:
-    """一条任务 + 其全部平台子任务明细（任务列表 / 详情数据）。"""
+    """一条任务 + 其全部平台子任务明细（任务列表 / 任务管理页列表/详情数据）。"""
 
     task: Task
     jobs: list[PlatformJob]
@@ -225,6 +226,7 @@ class TaskStore(Protocol):
     """任务存储 seam：创建任务（task + jobs）并支持回读。InMemory / SQLite 可互换。
 
     扩展（#17 调度器原语）：frontier 领取 + 状态迁移持久化 + missed 扫描。
+    扩展（#18 任务管理）：list_tasks / get_task_detail / get_job + 日志读写。
     扩展（#21 任务状态可查）：list_tasks 供 daemon `GET /tasks` 暴露 job 状态，
     使 manual / needs_relogin 在任务 UI 明确呈现；与 #18 任务管理页共用同一方法。
     调度 / 状态机为纯领域逻辑（scheduler.py），存储层只做原子持久化。
@@ -277,6 +279,24 @@ class TaskStore(Protocol):
     def retry_job(self, job_id: int, now: str) -> bool:
         """终态（failed/manual/needs_relogin）手动重试 → pending；重试次数保留。"""
 
+    # ---- #18 任务管理 + 日志 ----
+
+    def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
+        """任务列表（含各 job 明细），按平台 / 状态 / 创建时间区间筛选，新在前。"""
+
+    def get_task_detail(self, task_id: int) -> TaskDetail | None:
+        """单任务详情（task + 全部 job）。"""
+
+    def get_job(self, job_id: int) -> PlatformJob | None:
+        """单 job 回读（重试/取消后取更新值）。"""
+
+    def add_log(self, level: str, source: str, message: str, *,
+                task_id: int | None = None, job_id: int | None = None) -> None:
+        """写一条应用内日志（ADR-0001 `log` 表）。"""
+
+    def list_logs(self, filters: LogFilters | None = None) -> list[LogEntry]:
+        """日志查询（按 level / task_id 筛选），新在前，limit 截断。"""
+
     def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
         """local_time 定时且 publish_at 已过超过容忍窗口仍 pending 的 jobs（候选 missed）。"""
 
@@ -324,8 +344,10 @@ class InMemoryTaskStore:
         self._accounts = accounts
         self._tasks: dict[int, Task] = {}
         self._jobs: dict[int, list[PlatformJob]] = {}
+        self._logs: list[LogEntry] = []
         self._next_task_id = 1
         self._next_job_id = 1
+        self._next_log_id = 1
         self._lock = threading.Lock()
 
     def create_task(self, new: NewTaskSpec) -> tuple[Task, list[PlatformJob]]:
@@ -397,7 +419,7 @@ class InMemoryTaskStore:
         with self._lock:
             return list(self._jobs.get(task_id, []))
 
-    # ---- #21 任务状态可查 ----
+    # ---- #18 任务管理 + 日志 / #21 任务状态可查 ----
 
     def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
         filters = filters or TaskFilters()
@@ -418,6 +440,44 @@ class InMemoryTaskStore:
                 details.append(TaskDetail(task=task, jobs=list(jobs)))
             details.sort(key=lambda d: d.task.id, reverse=True)  # 新在前
             return details
+
+    def get_task_detail(self, task_id: int) -> TaskDetail | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            return TaskDetail(task=task, jobs=list(self._jobs.get(task_id, [])))
+
+    def get_job(self, job_id: int) -> PlatformJob | None:
+        with self._lock:
+            return self._find_job(job_id)
+
+    def add_log(self, level: str, source: str, message: str, *,
+                task_id: int | None = None, job_id: int | None = None) -> None:
+        with self._lock:
+            self._logs.append(
+                LogEntry(
+                    id=self._next_log_id,
+                    task_id=task_id,
+                    job_id=job_id,
+                    level=level,
+                    source=source,
+                    message=message,
+                    created_at=now_str(),
+                )
+            )
+            self._next_log_id += 1
+
+    def list_logs(self, filters: LogFilters | None = None) -> list[LogEntry]:
+        filters = filters or LogFilters()
+        with self._lock:
+            hits = [
+                e for e in self._logs
+                if (filters.level is None or e.level == filters.level)
+                and (filters.task_id is None or e.task_id == filters.task_id)
+            ]
+            hits.sort(key=lambda e: e.id, reverse=True)  # 新在前
+            return hits[: filters.limit]
 
     # ---- #17 调度器原语 ----
 
@@ -701,6 +761,18 @@ class SqliteTaskStore:
                     UNIQUE (task_id, platform, account_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_job_task ON platform_job(task_id);
+                CREATE TABLE IF NOT EXISTS log (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    INTEGER REFERENCES task(id) ON DELETE CASCADE,
+                    job_id     INTEGER REFERENCES platform_job(id) ON DELETE CASCADE,
+                    level      TEXT NOT NULL
+                        CHECK (level IN ('debug','info','warn','error')),
+                    source     TEXT NOT NULL,
+                    message    TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_log_job ON log(job_id);
+                CREATE INDEX IF NOT EXISTS idx_log_created ON log(created_at);
                 """
             )
             self._conn.commit()
@@ -808,7 +880,7 @@ class SqliteTaskStore:
         with self._lock:
             return self._list_jobs(task_id)
 
-    # ---- #21 任务状态可查 ----
+    # ---- #18 任务管理 + 日志 / #21 任务状态可查 ----
 
     def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
         filters = filters or TaskFilters()
@@ -837,8 +909,64 @@ class SqliteTaskStore:
             details: list[TaskDetail] = []
             for row in rows:
                 task = self._row_to_task(row)
-                details.append(TaskDetail(task=task, jobs=self._list_jobs(task.id)))
+                details.append(
+                    TaskDetail(task=task, jobs=self._list_jobs(task.id))
+                )
             return details
+
+    def get_task_detail(self, task_id: int) -> TaskDetail | None:
+        with self._lock:
+            task = self._fetch_task(task_id)
+            if task is None:
+                return None
+            return TaskDetail(task=task, jobs=self._list_jobs(task_id))
+
+    def get_job(self, job_id: int) -> PlatformJob | None:
+        with self._lock:
+            row = self._fetch_job(job_id)
+            return self._row_to_job(row) if row is not None else None
+
+    def add_log(self, level: str, source: str, message: str, *,
+                task_id: int | None = None, job_id: int | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO log (task_id, job_id, level, source, message)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (task_id, job_id, level, source, message),
+            )
+            self._conn.commit()
+
+    def list_logs(self, filters: LogFilters | None = None) -> list[LogEntry]:
+        filters = filters or LogFilters()
+        with self._lock:
+            conditions: list[str] = []
+            params: list[object] = []
+            if filters.level is not None:
+                conditions.append("level = ?")
+                params.append(filters.level)
+            if filters.task_id is not None:
+                conditions.append("task_id = ?")
+                params.append(filters.task_id)
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            params.append(filters.limit)
+            rows = self._conn.execute(
+                f"SELECT * FROM log {where} ORDER BY id DESC LIMIT ?", params
+            ).fetchall()
+            return [self._row_to_log(row) for row in rows]
+
+    @staticmethod
+    def _row_to_log(row: sqlite3.Row) -> LogEntry:
+        return LogEntry(
+            id=row["id"],
+            task_id=row["task_id"],
+            job_id=row["job_id"],
+            level=row["level"],
+            source=row["source"],
+            message=row["message"],
+            created_at=row["created_at"],
+        )
 
     # ---- #17 调度器原语 ----
 

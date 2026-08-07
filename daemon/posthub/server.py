@@ -9,8 +9,15 @@
 - `POST /accounts`              添加账号（落库 + 拉起独立 Chrome 扫码）
 - `DELETE /accounts/{id}`       删除账号（移除记录 + 尽力清理关联 Chrome）
 - `POST /tasks`                 创建发布任务（task + N 个 platform_job 落库）
+- `GET  /tasks`                 任务列表（含各平台 job 明细，可按平台/状态/时间筛选）
+- `GET  /tasks/{id}`            单任务明细
+- `POST /tasks/{id}/cancel`     取消尚未发布的任务（pending job → failed）
+- `POST /jobs/{id}/retry`       失败任务手动重试（终态 → pending）
 - `GET  /interventions`         待人工介入事件列表（验证码挂起 / 需重新扫码，issue #21）
 - `POST /interventions/{id}/ack` 标记人工介入事件已处理（前端弹窗后调用）
+- `GET  /logs`                  应用内日志查询（level / task_id 筛选）
+- `POST /batches/import`        解析批次文件夹 manifest.json（ADR-0002，返回待确认列表）
+- `POST /batches/confirm`       待确认放行：逐条生成发布任务（与发布页同一通道）
 
 启动方式：`uv run python -m posthub [PORT]`。
 """
@@ -21,6 +28,7 @@ import json
 import os
 import socket
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -37,11 +45,19 @@ from posthub.accounts import (
 from posthub.chrome_launcher import ChromeLauncher
 from posthub.constraints import PLATFORM_CONSTRAINTS
 from posthub.interventions import InMemoryInterventionHub
+from posthub.logs import LogFilters
+from posthub.management import (
+    JobNotFoundError,
+    TaskManagementService,
+    TaskNotFoundError,
+)
+from posthub.manifest import ConfirmEntry, confirm_import, parse_manifest
 from posthub.tasks import (
     AccountPlatformMismatchError,
     NewTaskSpec,
     PlatformJobSpec,
     SqliteTaskStore,
+    TaskFilters,
     TaskValidationError,
     UnknownAccountError,
 )
@@ -83,6 +99,10 @@ class PostHubHandler(BaseHTTPRequestHandler):
             raise ValueError("body 必须是 JSON 对象")
         return parsed
 
+    def _parse_query(self) -> dict[str, list[str]]:
+        parsed = urllib.parse.urlsplit(self.path)
+        return urllib.parse.parse_qs(parsed.query)
+
     # ---- GET ----
 
     def do_GET(self) -> None:
@@ -119,8 +139,11 @@ class PostHubHandler(BaseHTTPRequestHandler):
             interventions = [i.to_dict() for i in self.server.interventions.pending()]
             self._send_json(200, {"interventions": interventions})
         elif path == "/tasks":
-            tasks = [d.to_dict() for d in self.server.task_store.list_tasks()]
-            self._send_json(200, {"tasks": tasks})
+            self._handle_list_tasks()
+        elif path.startswith("/tasks/"):
+            self._handle_get_task_detail(path)
+        elif path == "/logs":
+            self._handle_list_logs()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -136,8 +159,16 @@ class PostHubHandler(BaseHTTPRequestHandler):
             self._handle_ack_intervention(path)
         elif path.startswith("/accounts/"):
             self._handle_account_action(path)
-        elif path.startswith("/tasks/"):
+        elif path.startswith("/tasks/") and path.endswith("/cancel"):
+            self._handle_cancel_task(path)
+        elif path.startswith("/tasks/") and "/jobs/" in path and path.endswith("/retry"):
             self._handle_task_job_action(path)
+        elif path.startswith("/jobs/") and path.endswith("/retry"):
+            self._handle_retry_job(path)
+        elif path == "/batches/import":
+            self._handle_batch_import()
+        elif path == "/batches/confirm":
+            self._handle_batch_confirm()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -323,6 +354,199 @@ class PostHubHandler(BaseHTTPRequestHandler):
             },
         )
 
+    # ---- #18 任务管理：列表 / 明细 / 取消 / 重试 / 日志 ----
+
+    def _handle_list_tasks(self) -> None:
+        q = self._parse_query()
+        platform = q["platform"][0] if "platform" in q else None
+        if platform is not None and platform not in PLATFORM_CONSTRAINTS:
+            self._send_json(
+                400,
+                {"error": f"platform 必须是 douyin/xiaohongshu/wechat，收到 {platform!r}"},
+            )
+            return
+        filters = TaskFilters(
+            platform=platform,
+            status=q["status"][0] if "status" in q else None,
+            from_ts=q["from"][0] if "from" in q else None,
+            to_ts=q["to"][0] if "to" in q else None,
+        )
+        details = self.server.management.list_tasks(filters)
+        self._send_json(200, {"tasks": [d.to_dict() for d in details]})
+
+    def _handle_get_task_detail(self, path: str) -> None:
+        raw_id = path[len("/tasks/"):]
+        if not raw_id.isdigit():
+            self._send_json(400, {"error": "任务 id 必须是整数"})
+            return
+        detail = self.server.management.get_task_detail(int(raw_id))
+        if detail is None:
+            self._send_json(404, {"error": "任务不存在"})
+            return
+        self._send_json(200, detail.to_dict())
+
+    def _handle_list_logs(self) -> None:
+        q = self._parse_query()
+        level = q["level"][0] if "level" in q else None
+        task_id_raw = q["task_id"][0] if "task_id" in q else None
+        if level is not None and level not in ("debug", "info", "warn", "error"):
+            self._send_json(
+                400,
+                {"error": f"level 必须是 debug/info/warn/error，收到 {level!r}"},
+            )
+            return
+        if task_id_raw is not None and not task_id_raw.isdigit():
+            self._send_json(400, {"error": "task_id 必须是整数"})
+            return
+        logs = self.server.management.list_logs(
+            LogFilters(
+                level=level,
+                task_id=int(task_id_raw) if task_id_raw is not None else None,
+            )
+        )
+        self._send_json(200, {"logs": [l.to_dict() for l in logs]})
+
+    def _handle_cancel_task(self, path: str) -> None:
+        raw_id = path[len("/tasks/"):-len("/cancel")]
+        if not raw_id.isdigit():
+            self._send_json(400, {"error": "任务 id 必须是整数"})
+            return
+        try:
+            canceled = self.server.management.cancel_task(int(raw_id))
+        except TaskNotFoundError as exc:
+            self._send_json(404, {"error": str(exc)})
+            return
+        self._send_json(
+            200,
+            {"ok": True, "canceled": [j.to_dict() for j in canceled]},
+        )
+
+    def _handle_retry_job(self, path: str) -> None:
+        raw_id = path[len("/jobs/"):-len("/retry")]
+        if not raw_id.isdigit():
+            self._send_json(400, {"error": "job id 必须是整数"})
+            return
+        try:
+            job = self.server.management.retry_job(int(raw_id))
+        except JobNotFoundError as exc:
+            self._send_json(404, {"error": str(exc)})
+            return
+        if job is None:
+            self._send_json(
+                409,
+                {"error": "只有失败/人工/需重新登录状态的 job 可重试"},
+            )
+            return
+        self._send_json(200, {"ok": True, "job": job.to_dict()})
+
+    # ---- #19 批量导入：import / confirm ----
+
+    def _handle_batch_import(self) -> None:
+        """POST /batches/import：解析批次文件夹，返回待确认列表（ADR-0002）。
+
+        请求体 `{"folder_path": str, "account_id": int}`。始终 200 返回结构化
+        解析结果（`entries` + `hard_errors`）；`hard_errors` 非空 = 整批拒绝，
+        由前端明确展示（哪条、为什么）。
+        """
+        try:
+            body = self._read_json_body()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "请求体必须是合法 JSON 对象"})
+            return
+
+        folder_path = body.get("folder_path")
+        if not folder_path or not str(folder_path).strip():
+            self._send_json(400, {"error": "folder_path 不能为空"})
+            return
+
+        account_id = body.get("account_id")
+        if isinstance(account_id, bool) or not isinstance(account_id, int):
+            self._send_json(400, {"error": "account_id 必须是整数"})
+            return
+
+        account = self.server.account_store.get(account_id)
+        if account is None:
+            self._send_json(404, {"error": "账号不存在"})
+            return
+
+        result = parse_manifest(str(folder_path), account.platform)
+        self._send_json(200, result.to_dict())
+
+    def _handle_batch_confirm(self) -> None:
+        """POST /batches/confirm：待确认放行，逐条走 create_task 同一发布通道。
+
+        请求体 `{"account_id": int, "entries": [{file, title, content?, tags?,
+        cover_landscape?, cover_portrait?, schedule?, account_id?, platform?}]}`。
+        条目级 `account_id`/`platform` 可覆盖批次默认账号；返回生成的 task 列表。
+        任一条目非法整批不落库（confirm_import 原子）。
+        """
+        try:
+            body = self._read_json_body()
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "请求体必须是合法 JSON 对象"})
+            return
+
+        account_id = body.get("account_id")
+        if isinstance(account_id, bool) or not isinstance(account_id, int):
+            self._send_json(400, {"error": "account_id 必须是整数"})
+            return
+
+        raw_entries = body.get("entries")
+        if not isinstance(raw_entries, list) or not raw_entries:
+            self._send_json(400, {"error": "entries 不能为空"})
+            return
+
+        entries: list[ConfirmEntry] = []
+        for item in raw_entries:
+            if not isinstance(item, dict):
+                self._send_json(400, {"error": "entries 每项必须是 JSON 对象"})
+                return
+            file_path = item.get("file")
+            title = item.get("title")
+            if not file_path or not str(file_path).strip():
+                self._send_json(400, {"error": "条目缺少 file"})
+                return
+            if not isinstance(title, str) or not title.strip():
+                self._send_json(400, {"error": "条目缺少标题"})
+                return
+            entries.append(
+                ConfirmEntry(
+                    file=str(file_path),
+                    title=title.strip(),
+                    content=item.get("content"),
+                    tags=item.get("tags"),
+                    cover_landscape=item.get("cover_landscape"),
+                    cover_portrait=item.get("cover_portrait"),
+                    schedule=item.get("schedule"),
+                    account_id=item.get("account_id"),
+                    platform=item.get("platform"),
+                )
+            )
+
+        try:
+            task_ids = confirm_import(
+                entries,
+                account_id=account_id,
+                task_store=self.server.task_store,
+                accounts=self.server.account_store,
+            )
+        except TaskValidationError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except UnknownAccountError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except AccountPlatformMismatchError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        tasks = []
+        for tid in task_ids:
+            task = self.server.task_store.get_task(tid)
+            if task is not None:
+                tasks.append(task.to_dict())
+        self._send_json(201, {"task_ids": task_ids, "tasks": tasks})
+
     def _handle_create_account(self) -> None:
         try:
             body = self._read_json_body()
@@ -441,12 +665,14 @@ def make_server(
     profile_base_dir: str | None = None,
     task_store=None,
     interventions=None,
+    management=None,
 ) -> ThreadingHTTPServer:
     """创建守护进程 HTTP 服务。port=0 时由系统分配端口（测试用）。
 
     依赖注入：`store`（账号存储）、`launcher`（Chrome 拉起器）、`task_store`
-    （任务存储）、`interventions`（人工介入事件 hub，issue #21）供测试替换；
-    缺省时使用 SQLite 持久化 + 真实 Chrome 拉起器 + 内存事件 hub。
+    （任务存储）、`interventions`（人工介入事件 hub，issue #21）、`management`
+    （任务管理服务）供测试替换；缺省时使用 SQLite 持久化 + 真实 Chrome 拉起器
+    + 内存事件 hub + 默认任务管理服务。
     """
     httpd = ThreadingHTTPServer((HOST, port), PostHubHandler)
     httpd.account_store = store or SqliteAccountStore(default_db_path())
@@ -456,6 +682,7 @@ def make_server(
         default_db_path(), httpd.account_store
     )
     httpd.interventions = interventions or InMemoryInterventionHub()
+    httpd.management = management or TaskManagementService(httpd.task_store)
     return httpd
 
 
