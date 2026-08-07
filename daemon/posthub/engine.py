@@ -119,6 +119,7 @@ class JobUpdate:
     post_id: str | None = None
     post_url: str | None = None
     message: str | None = None
+    error_type: ErrorType | None = None
     attempt_count: int = 1
 
 
@@ -172,6 +173,7 @@ async def execute(
                 platform=spec.platform,
                 status=terminal,
                 message=result.message,
+                error_type=result.error_type,
             )
         )
     return updates
