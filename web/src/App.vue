@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
 import AccountsCard from "./components/AccountsCard.vue";
 import PublishCard from "./components/PublishCard.vue";
+import BatchImportCard from "./components/BatchImportCard.vue";
 
 const store = useDaemonStore();
 const autostart = ref(false);
@@ -125,6 +126,7 @@ onUnmounted(() => {
 
     <AccountsCard />
     <PublishCard />
+    <BatchImportCard />
 
     <footer class="page__footer">
       MIT License · 参考 <a href="https://github.com/dreammis/social-auto-upload">social-auto-upload</a>
