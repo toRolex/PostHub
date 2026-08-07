@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
 import AccountsCard from "./components/AccountsCard.vue";
+import PublishCard from "./components/PublishCard.vue";
 
 const store = useDaemonStore();
 const autostart = ref(false);
@@ -123,6 +124,7 @@ onUnmounted(() => {
     </el-card>
 
     <AccountsCard />
+    <PublishCard />
 
     <footer class="page__footer">
       MIT License · 参考 <a href="https://github.com/dreammis/social-auto-upload">social-auto-upload</a>
