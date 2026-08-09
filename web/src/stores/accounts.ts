@@ -1,8 +1,9 @@
 import { defineStore } from "pinia";
 
 import { useDaemonStore } from "./daemon";
+import type { Platform } from "./platform";
 
-export type Platform = "douyin" | "xiaohongshu" | "wechat";
+export type { Platform };
 export type AccountStatus = "active" | "needs_relogin" | "disabled";
 
 export interface Account {

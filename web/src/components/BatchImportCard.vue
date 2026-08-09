@@ -6,6 +6,8 @@ import { useBatchesStore, type ManifestEntry } from "../stores/batches";
 import { useAccountsStore } from "../stores/accounts";
 import { usePlatformStore, type Platform } from "../stores/platform";
 import { useDaemonStore } from "../stores/daemon";
+import { isTauri } from "../lib/isTauri";
+import { pickFolderPath } from "../lib/picker";
 
 const store = useBatchesStore();
 const accounts = useAccountsStore();
@@ -56,10 +58,19 @@ function onFolderPick(e: Event): void {
   const first = files[0] as File & { path?: string };
   const rel = first.webkitRelativePath;
   if (first.path && rel) {
-    // Tauri 下 file.path 为绝对路径，减去 webkitRelativePath 得批次文件夹
+    // 非 Tauri 浏览器 dev：file.path 不可用，仅 webkitRelativePath 兜底
     store.folderPath = first.path.slice(0, first.path.length - rel.length - 1);
   } else {
     store.folderPath = rel ? rel.split("/")[0] : first.name;
+  }
+}
+
+async function pickFolder(): Promise<void> {
+  try {
+    const path = await pickFolderPath();
+    if (path) store.folderPath = path;
+  } catch {
+    // 仅桌面环境可用；失败静默（浏览器回退原生 input）
   }
 }
 
@@ -121,12 +132,14 @@ watch(
         class="batch__folder"
       />
       <input
+        v-if="!isTauri()"
         class="batch__native-folder"
         type="file"
         webkitdirectory
         title="选择批次文件夹"
         @change="onFolderPick"
       />
+      <el-button v-else @click="pickFolder">选择文件夹</el-button>
       <el-select
         v-model="store.selectedAccountId"
         placeholder="目标账号"

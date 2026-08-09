@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useDaemonStore } from "./stores/daemon";
 import { useInterventionsStore } from "./stores/interventions";
+import { isTauri } from "./lib/isTauri";
 import AccountsCard from "./components/AccountsCard.vue";
 import PublishCard from "./components/PublishCard.vue";
 import TasksCard from "./components/TasksCard.vue";
@@ -16,9 +17,6 @@ const autostartLoading = ref(false);
 const activeTab = ref("overview");
 let timer: number | undefined;
 let interventionsTimer: number | undefined;
-
-const isTauri = () =>
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const statusTagType = computed(() =>
   store.connected ? "success" : "danger",

@@ -7,6 +7,8 @@ import { usePlatformStore, type Platform } from "../stores/platform";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { effectiveMinLeadSeconds, HOUR } from "../lib/publishValidation";
+import { isTauri } from "../lib/isTauri";
+import { pickImagePath, pickVideoPath } from "../lib/picker";
 
 const store = usePublishStore();
 const platforms = usePlatformStore();
@@ -58,12 +60,30 @@ function onVideoFile(e: Event): void {
   store.videoPath = p;
 }
 
+async function pickVideo(): Promise<void> {
+  try {
+    const path = await pickVideoPath();
+    if (path) store.videoPath = path;
+  } catch {
+    // 仅桌面环境可用；失败静默（浏览器回退原生 input）
+  }
+}
+
 function onCoverFile(e: Event): void {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
   store.coverHorizontal =
     (file as unknown as { path?: string }).path ?? file.name;
+}
+
+async function pickCover(): Promise<void> {
+  try {
+    const path = await pickImagePath();
+    if (path) store.coverHorizontal = path;
+  } catch {
+    // 仅桌面环境可用；失败静默（浏览器回退原生 input）
+  }
 }
 
 function onPublishAtChange(value: Date | null): void {
@@ -122,12 +142,14 @@ watch(
             clearable
           />
           <input
+            v-if="!isTauri()"
             class="publish__native-file"
             type="file"
             accept="video/*"
             title="选择视频"
             @change="onVideoFile"
           />
+          <el-button v-else size="small" @click="pickVideo">选择视频</el-button>
         </div>
       </el-form-item>
 
@@ -156,12 +178,14 @@ watch(
             clearable
           />
           <input
+            v-if="!isTauri()"
             class="publish__native-file"
             type="file"
             accept="image/*"
             title="选择封面"
             @change="onCoverFile"
           />
+          <el-button v-else size="small" @click="pickCover">选择封面</el-button>
         </div>
         <p class="publish__hint">
           抖音强制封面（自动选推荐封面）；小红书 / 视频号缺封面自动取首帧。

@@ -8,10 +8,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { ElMessageBox } from "element-plus";
 
 import type { Intervention } from "../stores/interventions";
+import { isTauri } from "./isTauri";
 
-export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
+export { isTauri };  // 统一环境判定，组件 / 其他模块复用
 
 export function interventionTitle(iv: Intervention): string {
   return iv.kind === "manual" ? "发布需要人工处理" : "账号需重新扫码";
