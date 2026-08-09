@@ -22,7 +22,7 @@ PostHub 一次发布动作会展开为 N 个平台子任务（D7），需要一�
 
 ## 决策
 
-1. **五张表**：`task`（发布任务）、`platform_job`（平台子任务）、`account`（账号）、`batch`（批次，可选）、`log`（日志）。
+1. **五张表**：`task`（发布任务）、`platform_job`（平台子任务）、`account`（账号）、`batch`（批次，可选）、`log`（日志）。**偏离记录**：`batch` 表已按 ADR 建表（`task.batch_id` 外键引用需要），但当前不写入记录；批次与账号的关联经生成任务的 `platform_job.account_id` 落地（ADR-0002 冲突标注的落地方式二，见 `daemon/posthub/manifest.py`）。若后续需要按批次聚合统计/回看，再写入该表。
 2. **时间统一存本地时间 ISO8601 字符串**（`YYYY-MM-DD HH:MM:SS`）。国内单时区、无 DST，本地时间最直观；若未来多时区再迁 UTC。调度器比较时统一解析为 datetime。
 3. **task 持共享源值，platform_job 持平台最终值**。task 的标题/正文/标签/封面/排期是「源」，job 存该平台实际使用的值（可能被截断/平台专属覆盖，见 T3）。
 4. **排期字段 task 级默认 + job 级可覆盖**。`schedule_policy` / `publish_mode` / `publish_at` 放 task，job 上同名列可空，空则继承 task。
@@ -60,6 +60,10 @@ CREATE TABLE account (
 ### batch（批次，可选）
 
 文件夹 + `manifest.json` 的批量导入单元（D10）。
+
+> 实现状态：**表已建，暂不写入记录**。`task.batch_id` 外键引用需要 batch 表存在，
+> 故按本 ADR 建表；manifest 批量导入当前不落 batch 记录，批次与账号关联经
+> `platform_job.account_id` 落地（ADR-0002 落地方式二）。需按批次聚合统计时再写入。
 
 ```sql
 CREATE TABLE batch (
