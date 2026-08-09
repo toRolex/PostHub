@@ -7,7 +7,7 @@
   解析 manifest.json 并按 ADR-0002 校验表分级：
   - **hard_errors（整批拒绝）**：JSON 语法 / version 不支持 / `file` 缺失或不存在
     或同批重复 / title 超平台上限（抖音 30 / 小红书 20）/ 封面路径不存在 /
-    `schedule` 格式非法或超出 2h–7 天区间
+    `schedule` 格式非法或超出所选平台定时窗口（对齐约束注册表，抖音≤14d / 小红书≤7d / 视频号≤30d）
   - **warnings（软提示进待确认，黄色标注）**：title 为空（文件名兜底）/
     小红书 tags 超 10 个
 - `confirm_import(entries, *, account_id, task_store, accounts) -> [task_ids]`
@@ -28,24 +28,19 @@ from pathlib import Path
 from typing import Literal
 
 from posthub.accounts import AccountStore
-from posthub.constraints import DAY, HOUR, validate_schedule
+from posthub.constraints import validate_schedule
 from posthub.state import TIME_FMT
 from posthub.tasks import (
-    AccountPlatformMismatchError,
     NewTaskSpec,
     PlatformJobSpec,
     TaskStore,
-    TaskValidationError,
     UnknownAccountError,
+    validate_task_spec,
 )
 
 Platform = Literal["douyin", "xiaohongshu", "wechat"]
 
 MANIFEST_VERSION = 1
-
-# ADR-0002 schedule 校验区间：≥2h 且 ≤7 天（超 7 天提示改立即发布，不足 2h 报错）。
-MIN_SCHEDULE_LEAD_SECONDS = 2 * HOUR
-MAX_SCHEDULE_LEAD_SECONDS = 7 * DAY
 
 # title 超平台上限（ADR-0002 校验表）：抖音 30 / 小红书 20。视频号未限定。
 TITLE_MAX_LENGTHS: dict[str, int] = {
@@ -223,7 +218,6 @@ def parse_manifest(
 
     if now is None:
         now = datetime.now().strftime(TIME_FMT)
-    now_dt = datetime.strptime(now, TIME_FMT)
     title_max = TITLE_MAX_LENGTHS.get(platform)
 
     entries: list[ManifestEntry] = []
@@ -288,7 +282,7 @@ def parse_manifest(
         if cover_err2:
             entry_hard.append(cover_err2)
 
-        # ---- schedule：可选；格式 + 2h~7d 区间 ----
+        # ---- schedule：可选；格式 + 平台定时窗口（对齐约束注册表，ADR-0002 区间按平台化）----
         schedule_raw = raw.get("schedule")
         schedule_str: str | None = None
         if schedule_raw is not None and schedule_raw != "":
@@ -301,15 +295,12 @@ def parse_manifest(
                         f"schedule 格式必须是 YYYY-MM-DD HH:mm:ss：{schedule_str!r}"
                     )
                 else:
-                    lead = int(
-                        (
-                            datetime.strptime(schedule_str, TIME_FMT) - now_dt
-                        ).total_seconds()
+                    # 复用约束注册表：min_lead_time / 定时窗口按平台判定
+                    entry_hard.extend(
+                        validate_schedule(
+                            platform, publish_at=schedule_str, now=now
+                        )
                     )
-                    if lead < MIN_SCHEDULE_LEAD_SECONDS:
-                        entry_hard.append("定时时间距现在不足 2 小时")
-                    elif lead > MAX_SCHEDULE_LEAD_SECONDS:
-                        entry_hard.append("定时时间超过 7 天（可改为立即发布）")
 
         if entry_hard:
             for msg in entry_hard:
@@ -335,30 +326,6 @@ def parse_manifest(
         entries=entries,
         hard_errors=hard_errors,
     )
-
-
-def _prevalidate_spec(spec: NewTaskSpec, accounts: AccountStore) -> None:
-    """预校验单条（与 tasks.create_task 校验一致）。
-
-    全部通过才落库，保证整批确认的原子性：任一条目非法，整批不落库。
-    """
-    if not spec.title or not spec.title.strip():
-        raise TaskValidationError("标题不能为空")
-    if spec.schedule_policy == "scheduled" and not spec.publish_at:
-        raise TaskValidationError("定时发布必须填写发布时间")
-    for jspec in spec.jobs:
-        acc = accounts.get(jspec.account_id)
-        if acc is None:
-            raise UnknownAccountError(f"账号不存在：{jspec.account_id}")
-        if acc.platform != jspec.platform:
-            raise AccountPlatformMismatchError(
-                f"账号 {jspec.account_id} 属于平台 {acc.platform}，"
-                f"不能发布到 {jspec.platform}"
-            )
-        if spec.publish_at:
-            errors = validate_schedule(jspec.platform, publish_at=spec.publish_at)
-            if errors:
-                raise TaskValidationError("；".join(errors))
 
 
 def confirm_import(
@@ -392,7 +359,8 @@ def confirm_import(
             publish_at=entry.schedule,
             jobs=[PlatformJobSpec(platform=platform, account_id=acc_id)],
         )
-        _prevalidate_spec(spec, accounts)
+        # 与 create_task 同一校验链（tasks.validate_task_spec），先全验后落库保原子
+        validate_task_spec(spec, accounts)
         specs.append(spec)
 
     task_ids: list[int] = []

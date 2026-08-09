@@ -223,3 +223,49 @@ def test_sqlite_persists_across_reopen(tmp_path) -> None:
 
 def test_min_lead_time_unit_constant() -> None:
     assert HOUR == 3600
+
+
+# ---- delete_account_jobs：删除账号时清理关联 job / 空 task / 日志（#15）----
+
+def test_delete_account_jobs_removes_jobs_and_empty_tasks(task_store) -> None:
+    # 账号 1（douyin）独占的任务 → 删除后 task 一并删除
+    task1, jobs1 = task_store.create_task(
+        make_spec(jobs=[PlatformJobSpec(platform="douyin", account_id=1)])
+    )
+    # 跨平台任务（douyin + xhs）→ 删账号 1 后保留 xhs job，task 状态重算
+    task2, jobs2 = task_store.create_task(
+        make_spec(
+            jobs=[
+                PlatformJobSpec(platform="douyin", account_id=1),
+                PlatformJobSpec(platform="xiaohongshu", account_id=2),
+            ]
+        )
+    )
+    task_store.add_log(
+        "info", "daemon", "测试日志", task_id=task1.id, job_id=jobs1[0].id
+    )
+
+    task_store.delete_account_jobs(1)
+
+    # task1 无剩余 job → 删除（含日志）
+    assert task_store.get_task(task1.id) is None
+    assert task_store.list_jobs(task1.id) == []
+    # task2 保留 xhs job → 状态重算为 pending
+    detail = task_store.get_task_detail(task2.id)
+    assert detail is not None
+    assert [j.platform for j in detail.jobs] == ["xiaohongshu"]
+    assert detail.jobs[0].account_id == 2
+    assert detail.task.status == "pending"
+    # task1 的日志已清理
+    assert all(e.task_id != task1.id for e in task_store.list_logs())
+
+
+def test_delete_account_jobs_ignores_other_accounts(task_store) -> None:
+    task, jobs = task_store.create_task(
+        make_spec(jobs=[PlatformJobSpec(platform="xiaohongshu", account_id=2)])
+    )
+    task_store.delete_account_jobs(1)
+    detail = task_store.get_task_detail(task.id)
+    assert detail is not None
+    assert len(detail.jobs) == 1
+    assert detail.jobs[0].account_id == 2

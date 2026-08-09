@@ -287,5 +287,6 @@ class Scheduler:
             cover_vertical=task.cover_vertical,
             publish_mode=effective_publish_mode(job, task),
             publish_at=effective_publish_at(job, task),
+            silent=bool(task.silent),
             platform_fields=platform_fields,
         )

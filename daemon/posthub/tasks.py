@@ -50,6 +50,7 @@ __all__ = [
     "TaskValidationError",
     "UnknownAccountError",
     "AccountPlatformMismatchError",
+    "validate_task_spec",
     "InMemoryTaskStore",
     "SqliteTaskStore",
 ]
@@ -281,9 +282,6 @@ class TaskStore(Protocol):
 
     # ---- #18 任务管理 + 日志 ----
 
-    def list_tasks(self, filters: TaskFilters | None = None) -> list[TaskDetail]:
-        """任务列表（含各 job 明细），按平台 / 状态 / 创建时间区间筛选，新在前。"""
-
     def get_task_detail(self, task_id: int) -> TaskDetail | None:
         """单任务详情（task + 全部 job）。"""
 
@@ -303,14 +301,21 @@ class TaskStore(Protocol):
     def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
         """publishing 超过超时阈值无心跳（按 updated_at）的 jobs（兜底 missed）。"""
 
+    def delete_account_jobs(self, account_id: int) -> None:
+        """删除账号的全部 platform_job 及因此清空的 task / log（删除账号时清理关联，#15）。"""
+
     def close(self) -> None:
         ...
 
 
-def _validate_new(new: NewTaskSpec, accounts: AccountStore) -> list[PlatformJobSpec]:
-    """校验入参并返回解析后的 job 清单；失败抛 TaskValidationError 系异常。
+def validate_task_spec(
+    new: NewTaskSpec, accounts: AccountStore
+) -> list[PlatformJobSpec]:
+    """校验任务入参并返回解析后的 job 清单；失败抛 TaskValidationError 系异常。
 
     校验顺序：形状（标题/排期/jobs 非空）→ 账号存在 → 平台匹配 → 定时约束。
+    唯一校验链：`create_task` 与 manifest 批量导入（confirm_import）复用本函数，
+    避免两套校验逻辑漂移。
     """
     if not new.title or not new.title.strip():
         raise TaskValidationError("标题不能为空")
@@ -352,7 +357,7 @@ class InMemoryTaskStore:
 
     def create_task(self, new: NewTaskSpec) -> tuple[Task, list[PlatformJob]]:
         with self._lock:
-            jobs_spec = _validate_new(new, self._accounts)
+            jobs_spec = validate_task_spec(new, self._accounts)
             ts = now_str()
             task = Task(
                 id=self._next_task_id,
@@ -680,6 +685,27 @@ class InMemoryTaskStore:
                 if job.status == "publishing" and job.updated_at <= cutoff
             ]
 
+    def delete_account_jobs(self, account_id: int) -> None:
+        with self._lock:
+            affected: list[int] = []
+            for task_id in list(self._jobs.keys()):
+                jobs = self._jobs[task_id]
+                remaining = [j for j in jobs if j.account_id != account_id]
+                if len(remaining) == len(jobs):
+                    continue
+                affected.append(task_id)
+                if remaining:
+                    self._jobs[task_id] = remaining
+                else:
+                    del self._jobs[task_id]
+                    self._tasks.pop(task_id, None)
+                    # 空 task 连带清理其日志
+                    self._logs = [e for e in self._logs if e.task_id != task_id]
+            now = now_str()
+            for task_id in affected:
+                if task_id in self._tasks:
+                    self._recompute_task_status(task_id, now)
+
     def close(self) -> None:
         pass
 
@@ -704,6 +730,15 @@ class SqliteTaskStore:
         with self._lock:
             self._conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS batch (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name          TEXT    NOT NULL,
+                    folder_path   TEXT    NOT NULL,
+                    manifest_path TEXT,
+                    status        TEXT    NOT NULL DEFAULT 'imported'
+                        CHECK (status IN ('imported','in_progress','done','partial','failed')),
+                    created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+                );
                 CREATE TABLE IF NOT EXISTS task (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
                     batch_id         INTEGER REFERENCES batch(id),
@@ -761,6 +796,10 @@ class SqliteTaskStore:
                     UNIQUE (task_id, platform, account_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_job_task ON platform_job(task_id);
+                CREATE INDEX IF NOT EXISTS idx_job_status_publish
+                    ON platform_job(status, publish_at);
+                CREATE INDEX IF NOT EXISTS idx_job_account_status
+                    ON platform_job(account_id, status);
                 CREATE TABLE IF NOT EXISTS log (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id    INTEGER REFERENCES task(id) ON DELETE CASCADE,
@@ -787,7 +826,7 @@ class SqliteTaskStore:
 
     def create_task(self, new: NewTaskSpec) -> tuple[Task, list[PlatformJob]]:
         with self._lock:
-            jobs_spec = _validate_new(new, self._accounts)
+            jobs_spec = validate_task_spec(new, self._accounts)
             ts = now_str()
             try:
                 cur = self._conn.execute(
@@ -1155,6 +1194,36 @@ class SqliteTaskStore:
                 (cutoff,),
             ).fetchall()
             return [self._row_to_job(row) for row in rows]
+
+    def delete_account_jobs(self, account_id: int) -> None:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT task_id FROM platform_job WHERE account_id = ?",
+                (account_id,),
+            ).fetchall()
+            task_ids = [r["task_id"] for r in rows]
+            # 显式清理日志（未开 PRAGMA foreign_keys，级联不生效）：该账号 job 的日志
+            self._conn.execute(
+                "DELETE FROM log WHERE job_id IN "
+                "(SELECT id FROM platform_job WHERE account_id = ?)",
+                (account_id,),
+            )
+            # 删除该账号的 job
+            self._conn.execute(
+                "DELETE FROM platform_job WHERE account_id = ?", (account_id,)
+            )
+            for task_id in task_ids:
+                remaining = self._conn.execute(
+                    "SELECT COUNT(*) AS c FROM platform_job WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()["c"]
+                if remaining == 0:
+                    # 无剩余平台子任务：先清 task 日志再删 task
+                    self._conn.execute("DELETE FROM log WHERE task_id = ?", (task_id,))
+                    self._conn.execute("DELETE FROM task WHERE id = ?", (task_id,))
+                else:
+                    self._recompute_task_status(task_id, now_str())
+            self._conn.commit()
 
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> PlatformJob:

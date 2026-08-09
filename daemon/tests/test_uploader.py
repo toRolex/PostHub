@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime
 
 import pytest
 
@@ -198,4 +199,100 @@ def test_build_uploader_uses_resolve_headless_visible_for_douyin() -> None:
     spec = make_spec()
     app = build_uploader("douyin", spec)
     assert app.headless is False
+
+
+# ---- 封面映射（issue #16 封面落地）----
+
+def test_build_uploader_douyin_maps_covers() -> None:
+    spec = make_spec(
+        cover_horizontal="/tmp/cov-h.jpg", cover_vertical="/tmp/cov-v.jpg"
+    )
+    app = build_uploader("douyin", spec)
+    assert app.thumbnail_landscape_path == "/tmp/cov-h.jpg"
+    assert app.thumbnail_portrait_path == "/tmp/cov-v.jpg"
+
+
+def test_build_uploader_xiaohongshu_vertical_cover_preferred() -> None:
+    # 小红书主封面 3:4：竖版优先，缺省回退横版
+    spec = make_spec(
+        platform="xiaohongshu",
+        cover_horizontal="/tmp/cov-h.jpg",
+        cover_vertical="/tmp/cov-v.jpg",
+    )
+    app = build_uploader("xiaohongshu", spec)
+    assert app.thumbnail_path == "/tmp/cov-v.jpg"
+
+
+def test_build_uploader_wechat_maps_covers() -> None:
+    spec = make_spec(
+        platform="wechat",
+        cover_horizontal="/tmp/cov-h.jpg",
+        cover_vertical="/tmp/cov-v.jpg",
+    )
+    app = build_uploader("wechat", spec)
+    assert app.thumbnail_landscape_path == "/tmp/cov-h.jpg"
+    assert app.thumbnail_portrait_path == "/tmp/cov-v.jpg"
+
+
+# ---- silent → headless（issue #16 静默发布开关生效）----
+
+def test_resolve_headless_silent_forces_headless() -> None:
+    assert resolve_headless("douyin", FakeConf(headless=False), silent=True) is True
+
+
+def test_build_uploader_silent_headless() -> None:
+    spec = make_spec(silent=True)
+    app = build_uploader("douyin", spec)
+    assert app.headless is True
+
+
+# ---- platform_time 定时映射到上游（issue #17 平台原生排期）----
+
+def test_build_uploader_platform_time_scheduled_maps_publish_date() -> None:
+    spec = make_spec(publish_mode="platform_time", publish_at="2026-08-10 10:00:00")
+    app = build_uploader("douyin", spec)
+    assert app.publish_strategy == "scheduled"
+    assert app.publish_date == datetime(2026, 8, 10, 10, 0, 0)
+
+
+def test_build_uploader_immediate_keeps_immediate() -> None:
+    # platform_time 但未填 publish_at → 立即发布
+    spec = make_spec()
+    app = build_uploader("douyin", spec)
+    assert app.publish_strategy == "immediate"
+    assert app.publish_date == 0
+
+
+def test_build_uploader_local_time_stays_immediate() -> None:
+    # local_time 兜底：工具到点执行，不交给上游原生排期
+    spec = make_spec(publish_mode="local_time", publish_at="2026-08-10 10:00:00")
+    app = build_uploader("douyin", spec)
+    assert app.publish_strategy == "immediate"
+    assert app.publish_date == 0
+
+
+# ---- 上传异常分类（issue #17 网络类重试分支）----
+
+def test_classify_upload_error_network_types() -> None:
+    from posthub.uploader import classify_upload_error
+
+    assert classify_upload_error(ConnectionError("refused")) == "network"
+    assert classify_upload_error(TimeoutError("timed out")) == "network"
+    assert classify_upload_error(RuntimeError("connection reset")) == "network"
+    assert classify_upload_error(RuntimeError("boom")) == "unknown"
+
+
+def test_executor_maps_network_exception_to_network() -> None:
+    class NetBoomApp:
+        async def upload(self, pw) -> None:
+            raise ConnectionError("connection refused")
+
+    ex = UpstreamUploadExecutor(
+        uploader_factory=lambda p, s: NetBoomApp(), attach=fake_attach
+    )
+    result = run(ex.upload(make_spec(), make_context()))
+
+    assert result.ok is False
+    assert result.error_type == "network"
+    assert result.message == "connection refused"
 

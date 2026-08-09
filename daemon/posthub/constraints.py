@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from posthub.state import TIME_FMT
+
 Platform = Literal["douyin", "xiaohongshu", "wechat"]
 
 HOUR = 3600
@@ -33,8 +35,6 @@ __all__ = [
     "platform_constraints",
     "validate_schedule",
 ]
-
-TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 class UnknownPlatformError(Exception):

@@ -287,7 +287,7 @@ def test_retry_job_resets_terminal_to_pending(server_ctx) -> None:
 
     status, body = post(
         server_ctx["url"],
-        f"/tasks/{task.id}/jobs/{jobs[0].id}/retry",
+        f"/jobs/{jobs[0].id}/retry",
         {},
     )
     assert status == 200
@@ -306,14 +306,14 @@ def test_retry_job_only_terminal_states(server_ctx) -> None:
     )
     status, body = post(
         server_ctx["url"],
-        f"/tasks/{task.id}/jobs/{jobs[0].id}/retry",
+        f"/jobs/{jobs[0].id}/retry",
         {},
     )
-    assert status == 400
-    assert "可手动重试" in body["error"]
+    assert status == 409
+    assert "可重试" in body["error"]
 
 
 def test_retry_missing_job_returns_404(server_ctx) -> None:
-    status, body = post(server_ctx["url"], "/tasks/1/jobs/999/retry", {})
+    status, body = post(server_ctx["url"], "/jobs/999/retry", {})
     assert status == 404
     assert "不存在" in body["error"]

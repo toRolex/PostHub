@@ -19,15 +19,19 @@
 - `POST /batches/import`        解析批次文件夹 manifest.json（ADR-0002，返回待确认列表）
 - `POST /batches/confirm`       待确认放行：逐条生成发布任务（与发布页同一通道）
 
-启动方式：`uv run python -m posthub [PORT]`。
+启动方式：`uv run python -m posthub [PORT]`。`main()` 除 serve HTTP 外，另起
+后台线程周期推进调度器（Scheduler.tick），驱动任务自动执行 / 定时 / 重试 / missed
+兜底 / 人工介入事件（#17 / #18 / #21 运行期行为）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
 import sys
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -40,7 +44,6 @@ from posthub.accounts import (
     SqliteAccountStore,
     default_db_path,
     default_profile_dir,
-    now_str,
 )
 from posthub.chrome_launcher import ChromeLauncher
 from posthub.constraints import PLATFORM_CONSTRAINTS
@@ -52,6 +55,7 @@ from posthub.management import (
     TaskNotFoundError,
 )
 from posthub.manifest import ConfirmEntry, confirm_import, parse_manifest
+from posthub.scheduler import Scheduler
 from posthub.tasks import (
     AccountPlatformMismatchError,
     NewTaskSpec,
@@ -61,10 +65,13 @@ from posthub.tasks import (
     TaskValidationError,
     UnknownAccountError,
 )
+from posthub.uploader import UpstreamUploadExecutor
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8756
-PLATFORMS = ("douyin", "xiaohongshu", "wechat")
+# 单一事实源：平台枚举由约束注册表派生（避免第二事实源漂移）
+PLATFORMS = tuple(PLATFORM_CONSTRAINTS)
+SCHEDULER_TICK_SECONDS = 5
 
 __all__ = ["HOST", "DEFAULT_PORT", "make_server", "main"]
 
@@ -161,8 +168,6 @@ class PostHubHandler(BaseHTTPRequestHandler):
             self._handle_account_action(path)
         elif path.startswith("/tasks/") and path.endswith("/cancel"):
             self._handle_cancel_task(path)
-        elif path.startswith("/tasks/") and "/jobs/" in path and path.endswith("/retry"):
-            self._handle_task_job_action(path)
         elif path.startswith("/jobs/") and path.endswith("/retry"):
             self._handle_retry_job(path)
         elif path == "/batches/import":
@@ -171,39 +176,6 @@ class PostHubHandler(BaseHTTPRequestHandler):
             self._handle_batch_confirm()
         else:
             self._send_json(404, {"error": "not found"})
-
-    def _handle_task_job_action(self, path: str) -> None:
-        """POST /tasks/{task_id}/jobs/{job_id}/retry：手动重试终态 job → pending。
-
-        manual / needs_relogin / failed 经人工处理后，用户在任务 UI 点重试，
-        复用 #17 `retry_job`（重试次数保留）。
-        """
-        rest = path[len("/tasks/"):]
-        if "/jobs/" not in rest or not rest.endswith("/retry"):
-            self._send_json(404, {"error": "not found"})
-            return
-        raw_task_id, raw_job_id = rest.split("/jobs/", 1)
-        raw_job_id = raw_job_id[: -len("/retry")]
-        if not raw_task_id.isdigit() or not raw_job_id.isdigit():
-            self._send_json(400, {"error": "task_id / job_id 必须是整数"})
-            return
-        task_id, job_id = int(raw_task_id), int(raw_job_id)
-        jobs = self.server.task_store.list_jobs(task_id)
-        job = next((j for j in jobs if j.id == job_id), None)
-        if job is None:
-            self._send_json(404, {"error": "job 不存在"})
-            return
-        if job.status not in ("failed", "manual", "needs_relogin"):
-            self._send_json(
-                400,
-                {"error": f"只有终态（failed/manual/needs_relogin）job 可手动重试，当前 {job.status}"},
-            )
-            return
-        ok = self.server.task_store.retry_job(job_id, now_str())
-        if not ok:
-            self._send_json(404, {"error": "job 不存在"})
-            return
-        self._send_json(200, {"ok": True})
 
     def _handle_ack_intervention(self, path: str) -> None:
         """POST /interventions/{id}/ack：标记人工介入事件已处理。"""
@@ -636,6 +608,8 @@ class PostHubHandler(BaseHTTPRequestHandler):
             if account is None:
                 self._send_json(404, {"error": "账号不存在"})
                 return
+            # 先清理该账号的发布子任务（job 与空 task 及日志），再删账号（#15 清理关联）
+            self.server.task_store.delete_account_jobs(account.id)
             self.server.account_store.delete(account.id)
             try:
                 self.server.chrome_launcher.kill_by_profile_dir(account.profile_dir)
@@ -666,13 +640,15 @@ def make_server(
     task_store=None,
     interventions=None,
     management=None,
+    scheduler=None,
 ) -> ThreadingHTTPServer:
     """创建守护进程 HTTP 服务。port=0 时由系统分配端口（测试用）。
 
     依赖注入：`store`（账号存储）、`launcher`（Chrome 拉起器）、`task_store`
     （任务存储）、`interventions`（人工介入事件 hub，issue #21）、`management`
-    （任务管理服务）供测试替换；缺省时使用 SQLite 持久化 + 真实 Chrome 拉起器
-    + 内存事件 hub + 默认任务管理服务。
+    （任务管理服务）、`scheduler`（调度器，issue #17）供测试替换；缺省时使用
+    SQLite 持久化 + 真实 Chrome 拉起器 + 内存事件 hub + 默认任务管理服务 +
+    真实上传执行器（UpstreamUploadExecutor）。
     """
     httpd = ThreadingHTTPServer((HOST, port), PostHubHandler)
     httpd.account_store = store or SqliteAccountStore(default_db_path())
@@ -683,7 +659,30 @@ def make_server(
     )
     httpd.interventions = interventions or InMemoryInterventionHub()
     httpd.management = management or TaskManagementService(httpd.task_store)
+    # 调度器：运行期唯一驱动任务执行的入口（main() 后台线程周期 tick）。
+    # 注入 executor 后即使用真实上传执行器；测试可替换 scheduler 整体。
+    httpd.scheduler = scheduler or Scheduler(
+        task_store=httpd.task_store,
+        account_store=httpd.account_store,
+        executor=UpstreamUploadExecutor(),
+        notifier=httpd.interventions,
+    )
     return httpd
+
+
+def _run_scheduler_loop(scheduler: Scheduler, stop: threading.Event) -> None:
+    """后台线程：每 SCHEDULER_TICK_SECONDS 推进一个调度周期。
+
+    驱动 #17/#18/#21 的运行期行为：任务自动执行、定时到点、网络重试、
+    missed 兜底、manual/needs_relogin 人工介入事件。单次异常记日志不杀进程。
+    """
+    while not stop.wait(SCHEDULER_TICK_SECONDS):
+        try:
+            asyncio.run(scheduler.tick())
+        except Exception as exc:
+            scheduler.task_store.add_log(
+                "error", "daemon", f"调度器异常：{exc}"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -691,12 +690,22 @@ def main(argv: list[str] | None = None) -> int:
     port = int(argv[0]) if argv else DEFAULT_PORT
     httpd = make_server(port)
     actual_port = httpd.server_address[1]
+    stop = threading.Event()
+    scheduler_thread = threading.Thread(
+        target=_run_scheduler_loop,
+        args=(httpd.scheduler, stop),
+        name="posthub-scheduler",
+        daemon=True,
+    )
+    scheduler_thread.start()
     print(f"[posthub-daemon] listening on http://{HOST}:{actual_port}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
+        scheduler_thread.join(timeout=3)
         httpd.server_close()
     return 0
 

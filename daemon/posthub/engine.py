@@ -65,6 +65,7 @@ class TaskSpec:
     cover_vertical: str | None = None
     publish_mode: Literal["platform_time", "local_time"] = "platform_time"
     publish_at: str | None = None
+    silent: bool = False
     platform_fields: dict[str, Any] = field(default_factory=dict)
 
 

@@ -57,3 +57,16 @@ def test_unknown_route_returns_404(server_url) -> None:
     status, body = get(f"{server_url}/nope")
     assert status == 404
     assert body["error"] == "not found"
+
+
+def test_make_server_wires_scheduler() -> None:
+    # P0 接线：make_server 创建 scheduler，供 main() 后台 tick 驱动任务自动执行
+    httpd = make_server(port=0, store=InMemoryAccountStore())
+    try:
+        assert hasattr(httpd, "scheduler")
+        # 调度器与 httpd 共享同一 task_store / account_store / 事件 hub
+        assert httpd.scheduler.task_store is httpd.task_store
+        assert httpd.scheduler.account_store is httpd.account_store
+        assert httpd.scheduler.notifier is httpd.interventions
+    finally:
+        httpd.server_close()

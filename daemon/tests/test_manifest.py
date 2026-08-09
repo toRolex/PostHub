@@ -240,7 +240,26 @@ def test_parse_schedule_too_soon_hard_error(tmp_path) -> None:
     assert "2 小时" in result.hard_errors[0].message
 
 
-def test_parse_schedule_beyond_7_days_hard_error(tmp_path) -> None:
+def test_parse_schedule_beyond_platform_window_hard_error(tmp_path) -> None:
+    # 平台化窗口（对齐约束注册表）：抖音 schedule_max = 14 天，15 天才超窗
+    folder = make_batch(
+        tmp_path,
+        valid_manifest(
+            videos=[
+                {
+                    "file": "视频1.mp4",
+                    "schedule": (datetime.now() + timedelta(days=15)).strftime(TIME_FMT),
+                }
+            ]
+        ),
+    )
+    result = parse_manifest(str(folder), "douyin")
+    assert len(result.hard_errors) == 1
+    assert "336 小时" in result.hard_errors[0].message  # 14 天 = 336 小时
+
+
+def test_parse_schedule_within_douyin_14day_window_ok(tmp_path) -> None:
+    # 抖音窗口 14 天：8 天应通过（修复前硬编码 7 天会误拒绝）
     folder = make_batch(
         tmp_path,
         valid_manifest(
@@ -253,8 +272,9 @@ def test_parse_schedule_beyond_7_days_hard_error(tmp_path) -> None:
         ),
     )
     result = parse_manifest(str(folder), "douyin")
-    assert len(result.hard_errors) == 1
-    assert "7 天" in result.hard_errors[0].message
+    assert result.hard_errors == []
+    assert len(result.entries) == 1
+    assert result.entries[0].schedule is not None
 
 
 # ---- parse_manifest：软提示（进待确认 + 黄色标注）----
