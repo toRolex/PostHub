@@ -98,7 +98,13 @@ failed / manual / needs_relogin → pending（手动重试，重试次数保留�
 ## 待验证项（真实账号实测后回填）
 
 - 登录态失效的具体检测信号（脚本如何判定 `auth`）。
-- `max_scheduled_per_day=5`（视频号单日上限）最终值。
-- 抖音时长实测 60min vs 官方 15min；视频号大小实测 20GB vs 官方 2G。
-- 小红书缺封面取首帧、图片上限、视频时长/大小。
-- 验收门：issue #11「三平台自动化链路端到端实测」保持 open，Phase 1 最小脚本就绪前不认领。
+- 平台边界值（A 组遗留，未实测，保留为已知未确认值）：`max_scheduled_per_day=5`（视频号单日上限）最终值；抖音时长实测 60min vs 官方 15min；视频号大小实测 20GB vs 官方 2G；小红书缺封面取首帧、图片上限、视频时长/大小。
+- Windows 真机（`--remote-allow-origins=*` CDP WebSocket 握手、同 user-data-dir singleton、Chrome 版本 vs patchright 1.58.2 兼容）：降级为已知风险，正式装机时验证。
+
+## 实测结论（issue #11，验收门已关闭）
+
+三平台自动化链路经视频号代表验证通过（CDP 接管 + 立即发布 + 定时排期）；小红书 / 抖音链路默认成功（同构 seam 外推，决策不实测）。实测接线要求：
+
+- `BASE_DIR/utils/stealth.min.js` 必须存在（上游 `cookie_auth` → `set_init_script` 依赖）；从上游包复制到 `daemon/utils/`。
+- 上传前需从 CDP context 导出 `storage_state` 到 `~/.posthub/cookies/{id}.json`：上游 `cookie_auth` 用自建 `async with async_playwright()` 新实例校验 `account_file`，绕过 `cdp_attach` patch（`uploader/tencent_uploader/main.py`）。
+- 上游 uploader 发布成功不回填 `post_id` / `post_url`（待后续处理）。
