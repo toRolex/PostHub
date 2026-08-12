@@ -61,10 +61,22 @@ def stage_daemon() -> None:
 
 
 def _download(url: str, dest: Path, retries: int = 4) -> None:
-    """下载文件并带重试；urllib 在 CI 上拉 GitHub 大文件偶发断连，改走系统 curl。"""
+    """下载文件并带重试；GitHub 大文件在 CI 偶发断连（empty reply/Peer disconnected）。"""
     for attempt in range(1, retries + 1):
         r = subprocess.run(
-            ["curl", "-sL", "--retry", "3", "-o", str(dest), url],
+            [
+                "curl",
+                "-sL",
+                "--http1.1",
+                "--retry",
+                "5",
+                "--retry-all-errors",
+                "--retry-delay",
+                "3",
+                "-o",
+                str(dest),
+                url,
+            ],
             capture_output=True,
         )
         if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
@@ -72,7 +84,7 @@ def _download(url: str, dest: Path, retries: int = 4) -> None:
         if attempt == retries:
             raise RuntimeError(f"下载失败（curl exit {r.returncode}）: {url}")
         print(f"[resources] 下载失败，第 {attempt}/{retries} 次重试...")
-        time.sleep(2)
+        time.sleep(3)
 
 
 def _extract_uv(archive: Path, target: str) -> bytes:
