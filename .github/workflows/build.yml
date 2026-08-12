@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           cd src-tauri/resources/daemon
-          UV_BIN="$(ls ../../bin/uv-* | head -1)"
+          UV_BIN="$(ls ../bin/uv-* | head -1)"
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python -m posthub 8756 &
           sleep 15
