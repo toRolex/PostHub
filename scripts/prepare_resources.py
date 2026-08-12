@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +40,8 @@ EXCLUDE = {
 UV_URLS = {
     ("darwin", "arm64"): "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz",
     ("darwin", "x86_64"): "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz",
-    ("windows", "x86_64"): "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.tar.gz",
+    # Windows 发布为 zip
+    ("windows", "x86_64"): "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip",
 }
 
 
@@ -71,6 +73,19 @@ def _download(url: str, dest: Path, retries: int = 4) -> None:
             time.sleep(2)
 
 
+def _extract_uv(archive: Path, target: str) -> bytes:
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as zf:
+            member = next(n for n in zf.namelist() if n.endswith(target))
+            return zf.read(member)
+    with tarfile.open(archive) as tar:
+        member = next(m for m in tar.getmembers() if m.isfile() and Path(m.name).name == target)
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise RuntimeError(f"无法读取 {member.name}")
+        return extracted.read()
+
+
 def fetch_uv(os_name: str, arch: str) -> Path:
     bin_name = f"uv-{os_name}-{arch}"
     bin_path = BIN_DST / bin_name
@@ -83,17 +98,13 @@ def fetch_uv(os_name: str, arch: str) -> Path:
     print(f"[resources] 下载 uv: {url}")
     exe = ".exe" if os_name == "windows" else ""
     target = f"uv{exe}"
+    suffix = ".zip" if url.endswith(".zip") else ".tar.gz"
 
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
         _download(url, tmp_path)
-        with tarfile.open(tmp_path) as tar:
-            member = next(m for m in tar.getmembers() if m.isfile() and Path(m.name).name == target)
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                raise RuntimeError(f"无法读取 {member.name}")
-            data = extracted.read()
+        data = _extract_uv(tmp_path, target)
     finally:
         tmp_path.unlink(missing_ok=True)
 
