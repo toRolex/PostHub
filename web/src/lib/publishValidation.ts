@@ -9,7 +9,7 @@
  * - 每日上限（视频号 5 条/日）本票件只展示约束，具体调度侧限制属 #17
  */
 
-import type { Platform, PlatformConstraint } from "../stores/platform";
+import type { Platform, PlatformConstraint } from "../api/types";
 
 export const HOUR = 3600;
 

@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PostHub · 发布中枢</title>
+<style>
+/* ════════════════════════════════════════════════════════════════
+   PostHub — "The Quiet Control Room"
+   设计系统：Apple DS 裁剪后（取 token、弃叙事）+ PostHub 约束
+   - 亮色基底，白/近白，单一 accent ≤10%
+   - 边框分层替代阴影；状态优先，异常主动浮现
+   - 单一家族系统字体，桌面工具密度
+   ════════════════════════════════════════════════════════════════ */
+:root {
+  /* Surface · 冷调近白（避免暖沙白） */
+  --bg:            oklch(1 0 0);
+  --surface:       oklch(0.966 0.0018 286);   /* #f5f5f7 */
+  --surface-warm:  oklch(0.986 0.0013 286);   /* #fbfbfd 侧栏第二中性层 */
+  --surface-sunk:  oklch(0.948 0.0022 286);   /* 输入框底 */
+
+  /* Ink */
+  --fg:            oklch(0.181 0.0028 300);   /* #1d1d1f */
+  --fg-2:          oklch(0.324 0.0035 300);   /* #424245 */
+  --muted:         oklch(0.51 0.0045 300);    /* #6e6e73 */
+  --meta:          oklch(0.53 0.006 300);     /* Apple #86868b 文本对比仅 ~3.4:1，加深至 ≥4.5:1 */
+
+  /* Border */
+  --border:        oklch(0.845 0.004 280);    /* #d2d2d7 */
+  --border-soft:   oklch(0.92 0.0036 280);    /* #e8e8ed */
+
+  /* Accent · Apple Action Blue 单一色相 */
+  --accent:        oklch(0.543 0.215 255);    /* #0071e3 */
+  --accent-hover:  oklch(0.568 0.22 255);     /* #0077ed 悬停变亮 */
+  --accent-active: oklch(0.494 0.196 255);    /* #0066cc 按压变深 */
+  --accent-ink:    oklch(0.418 0.17 258);     /* 选中态文字 */
+  --accent-tint:   oklch(0.955 0.02 255);     /* 选中浅底 */
+  --accent-tint-2: oklch(0.91 0.05 255);      /* 悬停选中底 */
+
+  /* Semantic · 低饱和状态色（PostHub 补齐 Apple 缺失的语义色板） */
+  --success:  oklch(0.63 0.19 152);
+  --success-tint: oklch(0.953 0.03 152);
+  --warn:     oklch(0.577 0.15 64);           /* 需人工 / 需重登 */
+  --warn-tint:    oklch(0.965 0.028 75);
+  --danger:   oklch(0.577 0.208 27);
+  --danger-tint:  oklch(0.965 0.024 27);
+  --info:     oklch(0.51 0.0045 300);
+
+  /* Platform · 领域标识（限定平台场景使用） */
+  --p-douyin:  oklch(0.176 0.013 270);
+  --p-xhs:     oklch(0.61 0.26 15);
+  --p-wechat:  oklch(0.72 0.19 155);
+
+  /* Type · 固定 rem 阶梯，桌面工具密度 */
+  --text-caption: 0.75rem;    /* 12 · 辅助 */
+  --text-label:   0.8125rem;  /* 13 · 表头/标签 */
+  --text-body:    0.875rem;   /* 14 · 正文 */
+  --text-emph:    0.9375rem;  /* 15 */
+  --text-subtitle: 1.125rem;  /* 18 */
+  --text-title:   1.25rem;    /* 20 · 区内主标题 */
+  --text-page:    1.5rem;     /* 24 · 页面标题 */
+
+  /* Spacing · 4pt 基数 */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
+
+  /* Radius · 目的性分层，克制 */
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-pill: 999px;
+
+  /* Elevation · 极轻，仅交互响应 */
+  --shadow-sm: 0 1px 2px oklch(0.3 0.01 300 / 0.05);
+  --shadow-md: 0 4px 12px oklch(0.3 0.01 300 / 0.07);
+  --shadow-lg: 0 12px 32px oklch(0.3 0.01 300 / 0.1);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-fast: 150ms; --motion-base: 220ms;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.55;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  font-kerning: normal;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+input, textarea, select { font: inherit; color: inherit; }
+h1, h2, h3, p { margin: 0; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+::selection { background: var(--accent-tint-2); }
+
+/* ─────────────── 应用壳 ─────────────── */
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 顶栏 · daemon 状态常驻 */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: 44px;
+  padding: 0 var(--space-4);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--text-label);
+  z-index: 5;
+}
+.topbar__status { display: flex; align-items: center; gap: var(--space-2); font-weight: 500; }
+.topbar__right { margin-left: auto; display: flex; align-items: center; gap: var(--space-4); }
+.topbar__meta { color: var(--meta); font-variant-numeric: tabular-nums; }
+.topbar__error { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); }
+.topbar__error.is-error { color: var(--danger); font-weight: 500; }
+
+.shell { display: grid; grid-template-columns: 216px 1fr; min-height: 0; }
+
+/* 侧栏 · Arc 式收边，第二中性层 */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-warm);
+  border-right: 1px solid var(--border-soft);
+  padding: var(--space-4) var(--space-3);
+  gap: var(--space-2);
+  min-height: 0;
+}
+.brand {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-4);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.brand__mark {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--accent);
+  display: grid; place-items: center; color: #fff; flex: none;
+}
+.brand__mark svg { width: 15px; height: 15px; }
+.brand__name { font-size: var(--text-emph); font-weight: 600; letter-spacing: -0.01em; }
+
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav__label {
+  font-size: var(--text-caption); color: var(--meta);
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  letter-spacing: 0.02em;
+}
+.nav__item {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  background: transparent; text-align: left;
+  font-size: var(--text-label); font-weight: 500; color: var(--fg-2);
+  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.nav__item svg { width: 16px; height: 16px; flex: none; opacity: 0.85; }
+.nav__item:hover { background: var(--surface); color: var(--fg); }
+.nav__item.is-active { background: var(--accent-tint); color: var(--accent-ink); }
+.nav__item.is-active svg { opacity: 1; }
+.sidebar__foot { margin-top: auto; }
+
+/* 主内容区 */
+.main { overflow-y: auto; min-height: 0; }
+.view { display: none; padding: var(--space-8) var(--space-8) var(--space-12); max-width: 960px; margin: 0 auto; }
+.view.is-visible { display: block; animation: fade-in var(--motion-base) var(--ease-out); }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.view-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-6); }
+.view-head h2 { font-size: var(--text-page); font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
+.view-head .view-head__hint { color: var(--muted); font-size: var(--text-label); }
+
+/* ─────────────── 通用组件 ─────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: 34px; padding: 6px 14px;
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  font-size: var(--text-label); font-weight: 500; line-height: 1.2;
+  background: transparent; color: var(--fg);
+  transition: background var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out),
+              box-shadow var(--motion-fast) var(--ease-out);
+  white-space: nowrap;
+}
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn:active { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn--primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
+.btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn--primary:active:not(:disabled) { background: var(--accent-active); }
+.btn--secondary { background: var(--bg); border-color: var(--border); color: var(--fg); }
+.btn--secondary:hover:not(:disabled) { background: var(--surface); }
+.btn--ghost { color: var(--fg-2); }
+.btn--ghost:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
+.btn--danger { color: var(--danger); }
+.btn--danger:hover:not(:disabled) { background: var(--danger-tint); }
+.btn--sm { min-height: 28px; padding: 4px 10px; font-size: var(--text-caption); border-radius: var(--radius-sm); }
+.btn--lg { min-height: 40px; padding: 8px 20px; font-size: var(--text-body); border-radius: var(--radius-md); }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-5); }
+.chip {
+  min-height: 28px; padding: 4px 12px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-pill);
+  background: var(--surface-warm); color: var(--fg-2);
+  font-size: var(--text-label); font-weight: 500;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out);
+}
+.chip:hover { border-color: var(--border); color: var(--fg); }
+.chip.is-active { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-ink); }
+.chip__count { color: var(--meta); font-variant-numeric: tabular-nums; font-size: var(--text-caption); }
+
+/* 状态 · 语义点 + 标签 */
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-label); font-weight: 500; }
+.status__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--meta); flex: none; }
+.status--info  .status__dot { background: var(--info); }   .status--info  { color: var(--muted); }
+.status--pub   .status__dot { background: var(--accent); } .status--pub   { color: var(--accent-ink); }
+.status--ok    .status__dot { background: var(--success);} .status--ok    { color: var(--success); }
+.status--fail  .status__dot { background: var(--danger); } .status--fail  { color: var(--danger); }
+.status--warn  .status__dot { background: var(--warn); }   .status--warn  { color: var(--warn); }
+.status--dead  .status__dot { background: var(--meta); }   .status--dead  { color: var(--meta); }
+
+/* 平台标识 · 中性文字 + 品牌色圆点（视频号绿对比不足 4.5:1，文字不落品牌色） */
+.platform { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); font-weight: 500; color: var(--fg-2); }
+.platform__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.platform--douyin .platform__dot { background: var(--p-douyin); }
+.platform--xhs .platform__dot { background: var(--p-xhs); }
+.platform--wechat .platform__dot { background: var(--p-wechat); }
+.platform__sub { color: var(--meta); font-weight: 400; }
+
+/* 分节 */
+.section { border-top: 1px solid var(--border-soft); padding: var(--space-6) 0; }
+.section:first-of-type { border-top: 0; padding-top: 0; }
+.section__head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-4); }
+.section__title { font-size: var(--text-title); font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+.section__hint { font-size: var(--text-label); color: var(--muted); }
+
+/* 表单 */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field__label { font-size: var(--text-label); font-weight: 500; color: var(--fg-2); }
+.field__help { font-size: var(--text-caption); color: var(--meta); }
+.field__input, .field__textarea, .field__select {
+  width: 100%; min-height: 36px; padding: 7px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg); font-size: var(--text-body);
+  transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out);
+}
+.field__textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
+.field__input::placeholder, .field__textarea::placeholder { color: var(--meta); }
+.field__input:hover, .field__textarea:hover { border-color: var(--border); }
+.field__input:focus, .field__textarea:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+
+/* 开关 */
+.switch { position: relative; display: inline-flex; align-items: center; }
+.switch__input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch__track {
+  width: 36px; height: 21px; border-radius: var(--radius-pill);
+  background: var(--border); transition: background var(--motion-base) var(--ease-out);
+  display: inline-flex; align-items: center; padding: 2px; flex: none;
+}
+.switch__track::after {
+  content: ""; width: 17px; height: 17px; border-radius: 50%; background: #fff;
+  box-shadow: var(--shadow-sm); transition: transform var(--motion-base) var(--ease-out);
+}
+.switch__input:checked + .switch__track { background: var(--accent); }
+.switch__input:checked + .switch__track::after { transform: translateX(15px); }
+.switch__input:focus-visible + .switch__track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 勾选行 */
+.check-row {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+  margin-bottom: var(--space-2);
+  transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out);
+}
+.check-row:hover { background: var(--surface-warm); }
+.check-row.is-selected { border-color: var(--accent); background: var(--accent-tint); }
+.check-row input[type="checkbox"] {
+  width: 16px; height: 16px; accent-color: var(--accent); margin: 0; flex: none; cursor: pointer;
+}
+.check-row__meta { margin-left: auto; font-size: var(--text-caption); color: var(--meta); }
+
+/* 素材卡 */
+.asset {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+  background: var(--bg);
+}
+.asset__thumb {
+  width: 96px; height: 58px; border-radius: var(--radius-sm); background: var(--surface-sunk);
+  display: grid; place-items: center; color: var(--meta); flex: none;
+  position: relative; overflow: hidden;
+}
+.asset__thumb svg { width: 22px; height: 22px; }
+.asset__thumb--dur { position: absolute; right: 5px; bottom: 5px; font-size: 10px; color: #fff;
+  background: oklch(0.2 0.01 300 / 0.72); padding: 1px 5px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.asset__name { font-weight: 600; font-size: var(--text-body); }
+.asset__meta { font-size: var(--text-caption); color: var(--meta); margin-top: 2px; }
+.asset__actions { margin-left: auto; display: flex; gap: var(--space-2); }
+
+/* 发布行动条 */
+.publish-actions {
+  position: sticky; bottom: 0; z-index: 4;
+  display: flex; align-items: center; gap: var(--space-5);
+  margin-top: var(--space-4);
+  padding: var(--space-4) 0;
+  background: linear-gradient(to top, var(--bg) 72%, transparent);
+}
+.publish-actions__sched { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-label); color: var(--fg-2); }
+.publish-actions__sched .field__input { width: auto; min-height: 32px; }
+.publish-actions__cta { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); }
+
+/* 任务列表 */
+.task-list { display: flex; flex-direction: column; }
+.task-row {
+  display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-3); align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.task-row:hover { background: var(--surface-warm); }
+.task-row.is-alert { background: var(--warn-tint); }
+.task-row.is-alert:hover { background: color-mix(in oklab, var(--warn-tint), var(--surface-warm) 55%); }
+.task-row__toggle {
+  width: 24px; height: 24px; border: none; background: transparent; border-radius: var(--radius-sm);
+  display: grid; place-items: center; color: var(--meta);
+  transition: transform var(--motion-base) var(--ease-out), color var(--motion-fast);
+}
+.task-row__toggle:hover { background: var(--surface); color: var(--fg); }
+.task-row__toggle svg { width: 14px; height: 14px; }
+.task-row.is-open .task-row__toggle { transform: rotate(90deg); }
+.task-row__title { font-weight: 600; font-size: var(--text-body); display: flex; align-items: center; gap: var(--space-2); }
+.task-row__plats { display: flex; gap: var(--space-3); margin-top: 3px; }
+.task-row__right { display: flex; align-items: center; gap: var(--space-4); }
+.task-row__time { font-size: var(--text-caption); color: var(--meta); font-variant-numeric: tabular-nums; }
+.task-row__ops { display: flex; gap: var(--space-1); }
+
+.task-detail {
+  display: none;
+  padding: 0 var(--space-4) var(--space-4) calc(var(--space-4) + 24px);
+  border-bottom: 1px solid var(--border-soft);
+}
+.task-row.is-open + .task-detail { display: block; animation: fade-in var(--motion-fast) var(--ease-out); }
+.job-table { width: 100%; border-collapse: collapse; font-size: var(--text-label); }
+.job-table th {
+  text-align: left; font-weight: 500; color: var(--meta); font-size: var(--text-caption);
+  padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-soft);
+}
+.job-table td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-soft); color: var(--fg-2); }
+.job-table tr:last-child td { border-bottom: 0; }
+.job-table__msg { color: var(--muted); font-size: var(--text-caption); }
+.job-table__err { color: var(--danger); font-size: var(--text-caption); }
+.job-table__time { color: var(--meta); font-variant-numeric: tabular-nums; font-size: var(--text-caption); }
+
+.empty {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: var(--space-3); padding: var(--space-12) var(--space-6);
+  color: var(--muted);
+}
+.empty svg { width: 34px; height: 34px; color: var(--meta); }
+.empty__title { font-size: var(--text-subtitle); font-weight: 600; color: var(--fg); }
+.empty__desc { font-size: var(--text-label); max-width: 34ch; line-height: 1.6; }
+
+/* 账号表格 */
+.accounts-table { width: 100%; border-collapse: collapse; font-size: var(--text-body); }
+.accounts-table th {
+  text-align: left; font-weight: 500; color: var(--meta); font-size: var(--text-caption);
+  padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border);
+  letter-spacing: 0.02em; white-space: nowrap;
+}
+.accounts-table td { padding: var(--space-3); border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+.accounts-table tr:hover td { background: var(--surface-warm); }
+.accounts-table .cell-strong { font-weight: 600; }
+.accounts-table .cell-mono { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--muted); font-variant-numeric: tabular-nums; }
+.accounts-table .cell-ops { display: flex; gap: var(--space-1); justify-content: flex-end; }
+
+/* 对话框 */
+.dialog {
+  border: 0; padding: 0; border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); background: var(--bg); width: min(440px, 92vw);
+  color: var(--fg);
+}
+.dialog::backdrop { background: oklch(0.16 0.01 300 / 0.42); }
+.dialog__inner { padding: var(--space-6); display: flex; flex-direction: column; gap: var(--space-4); }
+.dialog__title { font-size: var(--text-title); font-weight: 600; text-wrap: balance; }
+.dialog__desc { font-size: var(--text-label); color: var(--muted); }
+.dialog__foot { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+.platform-pick { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-2); }
+.platform-pick button {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: var(--space-3) var(--space-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md); background: var(--surface-warm);
+  font-size: var(--text-caption); font-weight: 500; color: var(--fg-2);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.platform-pick button:hover { border-color: var(--border); }
+.platform-pick button.is-active { border-color: var(--accent); background: var(--accent-tint); color: var(--accent-ink); }
+.platform-pick .platform__dot { width: 12px; height: 12px; }
+
+/* Toast */
+.toast-root { position: fixed; bottom: var(--space-6); left: 50%; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; gap: var(--space-2); align-items: center; }
+.toast {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 10px 16px; border-radius: var(--radius-md); background: var(--fg);
+  color: var(--bg); font-size: var(--text-label); font-weight: 500;
+  box-shadow: var(--shadow-lg); animation: toast-in var(--motion-base) var(--ease-out);
+}
+.toast svg { width: 15px; height: 15px; flex: none; }
+.toast--ok { background: oklch(0.35 0.14 152); }
+.toast--warn { background: oklch(0.4 0.12 64); }
+.toast--err { background: oklch(0.42 0.18 27); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.toast.is-leaving { opacity: 0; transform: translateY(6px); transition: all var(--motion-base) var(--ease-out); }
+
+/* 发布中脉冲 */
+.status__dot.is-pulse { animation: pulse 1.6s var(--ease-out) infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ═══ 顶栏 · 守护进程状态常驻 ═══ -->
+  <header class="topbar" data-od-id="topbar">
+    <div class="topbar__status">
+      <span class="status status--ok" id="daemon-status"><span class="status__dot"></span>守护进程 已连通</span>
+    </div>
+    <div class="topbar__right">
+      <span class="topbar__meta" id="topbar-version">v0.1.0 · 端口 8756</span>
+      <span class="topbar__error" id="topbar-error"><span>最近错误：无</span></span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ═══ 左侧栏 ═══ -->
+    <aside class="sidebar" data-od-id="sidebar">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+        </span>
+        <span class="brand__name">PostHub</span>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <span class="nav__label">工作台</span>
+        <button class="nav__item is-active" data-nav="publish" aria-selected="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg>
+          发布
+        </button>
+        <button class="nav__item" data-nav="tasks" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><path d="m17 16 2 2 4-4"/></svg>
+          任务
+          <span class="chip__count" id="nav-task-alert" hidden></span>
+        </button>
+        <button class="nav__item" data-nav="accounts" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+          账号
+        </button>
+      </nav>
+
+      <div class="sidebar__foot">
+        <button class="nav__item" data-nav="logs" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14l-2 7 2 9H5l2-9-2-7Z"/></svg>
+          日志
+        </button>
+      </div>
+    </aside>
+
+    <!-- ═══ 内容区 ═══ -->
+    <main class="main" id="main-content">
+      <!-- ─── 发布区 · 动作中心 ─── -->
+      <section class="view is-visible" id="view-publish" data-od-id="view-publish" aria-label="发布">
+        <div class="view-head">
+          <h2>发布</h2>
+          <span class="view-head__hint">一个视频，一键或定时发到多个平台</span>
+        </div>
+
+        <!-- 1 · 素材 -->
+        <div class="section" data-od-id="publish-assets">
+          <div class="section__head">
+            <h3 class="section__title">素材</h3>
+            <span class="section__hint">本地视频 · 或 manifest 批量导入</span>
+          </div>
+          <div class="asset" id="asset-card">
+            <div class="asset__thumb" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 12 2 2 4-4"/></svg>
+              <span class="asset__thumb--dur">0:30</span>
+            </div>
+            <div class="asset__info">
+              <div class="asset__name">新品开箱 · 30s 混剪.mp4</div>
+              <div class="asset__meta">4K · 3840×2160 · 42.8 MB</div>
+            </div>
+            <div class="asset__actions">
+              <button class="btn btn--ghost btn--sm" id="asset-remove">移除</button>
+            </div>
+          </div>
+          <div style="margin-top: var(--space-3); display: flex; gap: var(--space-2);">
+            <button class="btn btn--secondary" id="asset-pick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/></svg>本地文件</button>
+            <button class="btn btn--ghost" id="asset-batch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>批量导入</button>
+          </div>
+        </div>
+
+        <!-- 2 · 平台账号 -->
+        <div class="section" data-od-id="publish-targets">
+          <div class="section__head">
+            <h3 class="section__title">发布到</h3>
+            <span class="section__hint">勾选账号，行内显示平台约束</span>
+          </div>
+          <div id="account-check-list"><!-- JS 渲染 --></div>
+          <p class="field__help" style="margin-top: var(--space-2);" id="publish-target-hint"></p>
+        </div>
+
+        <!-- 3 · 内容与排期 -->
+        <div class="section" data-od-id="publish-content">
+          <div class="section__head">
+            <h3 class="section__title">内容与排期</h3>
+            <span class="section__hint">平台差异在此收敛</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field__label" for="p-title">标题</label>
+              <input class="field__input" id="p-title" value="新品开箱｜30s 混剪" maxlength="60" />
+            </div>
+            <div class="field">
+              <label class="field__label" for="p-tags">标签</label>
+              <input class="field__input" id="p-tags" value="新品开箱, 好物推荐" placeholder="用逗号分隔" />
+            </div>
+          </div>
+          <div class="field" style="margin-top: var(--space-4);">
+            <label class="field__label" for="p-body">正文</label>
+            <textarea class="field__textarea" id="p-body" placeholder="写点正文，留空则仅标题发布">第一次开箱！30 秒带你看完所有亮点。</textarea>
+            <span class="field__help">封面缺省时自动取视频首帧 · 抖音正文超 1000 字将截断</span>
+          </div>
+        </div>
+
+        <!-- 行动条 -->
+        <div class="publish-actions" data-od-id="publish-actions">
+          <div class="publish-actions__sched">
+            <label class="switch">
+              <input type="checkbox" class="switch__input" id="sched-toggle" aria-label="切换定时发布" />
+              <span class="switch__track"></span>
+            </label>
+            <span id="sched-label">立即发布</span>
+            <input type="datetime-local" class="field__input" id="sched-time" style="display:none;" value="2026-08-12T21:30" />
+          </div>
+          <div class="publish-actions__cta">
+            <button class="btn btn--primary btn--lg" id="publish-cta" data-od-id="publish-cta">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg>
+              立即发布
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── 任务区 · 监控中心 ─── -->
+      <section class="view" id="view-tasks" data-od-id="view-tasks" aria-label="任务">
+        <div class="view-head">
+          <h2>任务</h2>
+          <span class="view-head__hint" id="task-total"></span>
+        </div>
+        <div class="chip-row" role="tablist" aria-label="状态筛选" data-od-id="task-filters">
+          <button class="chip is-active" data-filter="all">全部 <span class="chip__count" data-count="all"></span></button>
+          <button class="chip" data-filter="pending">待发布 <span class="chip__count" data-count="pending"></span></button>
+          <button class="chip" data-filter="publishing">进行中 <span class="chip__count" data-count="publishing"></span></button>
+          <button class="chip" data-filter="success">成功 <span class="chip__count" data-count="success"></span></button>
+          <button class="chip" data-filter="failed">失败 <span class="chip__count" data-count="failed"></span></button>
+          <button class="chip" data-filter="manual">需人工 <span class="chip__count" data-count="manual"></span></button>
+          <button class="chip" data-filter="needs_relogin">需重登 <span class="chip__count" data-count="needs_relogin"></span></button>
+          <button class="chip" data-filter="missed">错过 <span class="chip__count" data-count="missed"></span></button>
+        </div>
+        <div class="task-list" id="task-list"><!-- JS 渲染 --></div>
+      </section>
+
+      <!-- ─── 账号区 · 配置中心 ─── -->
+      <section class="view" id="view-accounts" data-od-id="view-accounts" aria-label="账号">
+        <div class="view-head">
+          <h2>账号</h2>
+          <span class="view-head__hint" id="account-total"></span>
+          <button class="btn btn--primary btn--sm" style="margin-left:auto;" id="account-add">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            添加账号
+          </button>
+        </div>
+        <div id="accounts-table-wrap"><!-- JS 渲染 --></div>
+      </section>
+
+      <!-- ─── 日志区 · 次级入口 ─── -->
+      <section class="view" id="view-logs" data-od-id="view-logs" aria-label="日志">
+        <div class="view-head"><h2>日志</h2><span class="view-head__hint">守护进程运行日志</span></div>
+        <div class="logs" id="logs-box" style="font-family: var(--font-mono); font-size: var(--text-caption); color: var(--fg-2); line-height: 1.7; background: var(--surface-sunk); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: var(--space-4); min-height: 320px; overflow: auto;">
+          <div><span style="color:var(--meta);">12:00:01</span> [daemon] 健康检查通过 · 127.0.0.1:8756</div>
+          <div><span style="color:var(--meta);">11:58:42</span> [scheduler] 领取任务 #1042（抖音）· attempt 1</div>
+          <div><span style="color:var(--meta);">11:58:40</span> [uploader] 抖音返回 200 · 发布成功</div>
+          <div><span style="color:var(--meta);">11:54:17</span> [chrome] 端口 9223 · 连接真实 Chrome</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- ═══ 添加账号对话框 ═══ -->
+<dialog class="dialog" id="account-dialog" data-od-id="account-dialog">
+  <form method="dialog" class="dialog__inner" id="account-dialog-form">
+    <div>
+      <h3 class="dialog__title">添加账号</h3>
+      <p class="dialog__desc" style="margin-top:4px;">每账号独立一台本机 Chrome，登录态天然持久化。</p>
+    </div>
+    <div class="field">
+      <span class="field__label">平台</span>
+      <div class="platform-pick" id="platform-pick" role="radiogroup" aria-label="选择平台">
+        <button type="button" data-platform="douyin" role="radio" aria-checked="true">
+          <span class="platform__dot" style="background: var(--p-douyin);"></span>抖音
+        </button>
+        <button type="button" data-platform="xiaohongshu" role="radio" aria-checked="false">
+          <span class="platform__dot" style="background: var(--p-xhs);"></span>小红书
+        </button>
+        <button type="button" data-platform="wechat" role="radio" aria-checked="false">
+          <span class="platform__dot" style="background: var(--p-wechat);"></span>视频号
+        </button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field__label" for="acct-name">名称</label>
+      <input class="field__input" id="acct-name" placeholder="例：主号" maxlength="20" />
+    </div>
+    <div class="field">
+      <span class="field__label">连接方式</span>
+      <span class="field__help" id="acct-launch-hint">将拉起本机 Chrome 独立实例（新调试端口）</span>
+    </div>
+    <div class="dialog__foot">
+      <button type="button" class="btn btn--ghost" id="acct-cancel">取消</button>
+      <button type="button" class="btn btn--primary" id="acct-confirm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5h12M6 5v14l4-3 4 3V5"/></svg>
+        拉起 Chrome 并扫码
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Toast -->
+<div class="toast-root" id="toast-root" aria-live="polite"></div>
+
+<script>
+/* ════════════════════════════════════════════════════════════
+   PostHub 原型数据与交互
+   ════════════════════════════════════════════════════════════ */
+const PLATFORMS = {
+  douyin:      { name: "抖音",   dot: "var(--p-douyin)" },
+  xiaohongshu: { name: "小红书", dot: "var(--p-xhs)" },
+  wechat:      { name: "视频号", dot: "var(--p-wechat)" },
+};
+
+const STATUS_META = {
+  pending:       { cls: "status--info", label: "待发布" },
+  publishing:    { cls: "status--pub",  label: "发布中", pulse: true },
+  success:       { cls: "status--ok",   label: "成功" },
+  failed:        { cls: "status--fail", label: "失败" },
+  manual:        { cls: "status--warn", label: "需人工" },
+  needs_relogin: { cls: "status--warn", label: "需重登" },
+  missed:        { cls: "status--dead", label: "错过" },
+  partial:       { cls: "status--warn", label: "部分成功" },
+};
+
+const ALERT_STATES = new Set(["manual", "needs_relogin"]);
+
+/* —— 账号数据 —— */
+const ACCOUNTS = [
+  { id: 1, platform: "douyin",      name: "主号",   user: "chanel_dou",  port: 9222, note: "认证",  status: "active" },
+  { id: 2, platform: "xiaohongshu", name: "主号",   user: "chanel_xhs",  port: 9223, note: "",     status: "active" },
+  { id: 3, platform: "wechat",      name: "主号",   user: "chanel_wx",   port: 9224, note: "",     status: "active" },
+  { id: 4, platform: "douyin",      name: "备用号", user: "chanel_dou2", port: 9225, note: "",     status: "needs_relogin" },
+];
+const ACCOUNT_STATUS = {
+  active:         { cls: "status--ok",   label: "可用" },
+  needs_relogin:  { cls: "status--warn", label: "需重新扫码" },
+  disabled:       { cls: "status--dead", label: "已停用" },
+};
+const PLATFORM_CONSTRAINT = {
+  douyin:      "正文超 1000 字截断 · 缺封面取首帧",
+  xiaohongshu: "发布后 2h 内不可二次编辑 · 需 ≥3 张图或视频",
+  wechat:      "每日发布上限 3 条 · 定时窗口需提前 30min",
+};
+
+/* —— 任务数据 —— */
+let nextTaskId = 100;
+const TASKS = [
+  {
+    id: 99, title: "新品开箱 · 30s 混剪", time: "5 分钟前", status: "publishing",
+    plats: ["douyin", "xiaohongshu", "wechat"],
+    jobs: [
+      { platform: "douyin",      status: "publishing", msg: "视频上传中 · 38%", time: "5 分钟前" },
+      { platform: "xiaohongshu", status: "publishing", msg: "视频上传中 · 61%", time: "5 分钟前" },
+      { platform: "wechat",      status: "pending",    msg: "排队等待 · 同平台串行", time: "—" },
+    ],
+  },
+  {
+    id: 98, title: "周末市集探店", time: "18 分钟前", status: "manual",
+    plats: ["douyin", "xiaohongshu"],
+    jobs: [
+      { platform: "douyin",      status: "success",    msg: "发布成功", time: "17 分钟前" },
+      { platform: "xiaohongshu", status: "manual",     msg: "验证码挂起，等待人工处理", time: "18 分钟前", err: true },
+    ],
+  },
+  {
+    id: 97, title: "剪映 6 个转场技巧", time: "2 小时前", status: "failed",
+    plats: ["douyin"],
+    jobs: [
+      { platform: "douyin", status: "failed", msg: "抖音返回 412 · 风控拦截，可重试", time: "2 小时前", err: true },
+    ],
+  },
+  {
+    id: 96, title: "大理旅行 vlog · 4K", time: "昨天", status: "success",
+    plats: ["xiaohongshu", "wechat"],
+    jobs: [
+      { platform: "xiaohongshu", status: "success", msg: "发布成功", time: "昨天" },
+      { platform: "wechat",      status: "success", msg: "发布成功", time: "昨天" },
+    ],
+  },
+  {
+    id: 95, title: "OOTD 穿搭合集", time: "昨天", status: "partial",
+    plats: ["douyin", "xiaohongshu", "wechat"],
+    jobs: [
+      { platform: "douyin",      status: "success", msg: "发布成功", time: "昨天" },
+      { platform: "xiaohongshu", status: "failed",  msg: "图片尺寸不符合要求", time: "昨天", err: true },
+      { platform: "wechat",      status: "success", msg: "发布成功", time: "昨天" },
+    ],
+  },
+  {
+    id: 94, title: "健身日常打卡", time: "3 天前", status: "missed",
+    plats: ["wechat"],
+    jobs: [
+      { platform: "wechat", status: "missed", msg: "定时窗口错过（>10min 未领取）", time: "3 天前", err: true },
+    ],
+  },
+];
+
+const FILTER_KEYS = ["all", "pending", "publishing", "success", "failed", "manual", "needs_relogin", "missed"];
+const filterMatch = (t, f) => f === "all" || t.status === f;
+const taskKey = t => t.status === "partial" ? "partial" : t.status;
+
+let activeFilter = "all";
+
+/* ═══════════ 工具 ═══════════ */
+const $ = sel => document.querySelector(sel);
+const el = (tag, cls, html) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html !== undefined) n.innerHTML = html;
+  return n;
+};
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
+
+function toast(message, kind = "ok") {
+  const icons = {
+    ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4 2.5 20h19L12 4Z"/><path d="M12 10v5"/></svg>',
+    err: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
+  };
+  const node = el("div", `toast toast--${kind}`, `${icons[kind] || icons.ok}<span>${message}</span>`);
+  $("#toast-root").appendChild(node);
+  setTimeout(() => {
+    node.classList.add("is-leaving");
+    setTimeout(() => node.remove(), 240);
+  }, 2600);
+}
+
+const platformTag = p =>
+  `<span class="platform platform--${p}"><span class="platform__dot"></span>${PLATFORMS[p].name}</span>`;
+
+const statusSpan = s => {
+  const m = STATUS_META[s] || STATUS_META.pending;
+  const pulse = m.pulse ? ' is-pulse' : '';
+  return `<span class="status ${m.cls}"><span class="status__dot${pulse}"></span>${m.label}</span>`;
+};
+
+/* ═══════════ 导航切换 ═══════════ */
+function switchView(name) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("is-visible", v.id === `view-${name}`));
+  document.querySelectorAll(".nav__item").forEach(b => {
+    const active = b.dataset.nav === name;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-selected", String(active));
+  });
+  $("#main-content").scrollTop = 0;
+  if (name === "tasks") renderTasks();
+  if (name === "accounts") renderAccounts();
+}
+document.querySelectorAll(".nav__item").forEach(b =>
+  b.addEventListener("click", () => switchView(b.dataset.nav))
+);
+
+/* ═══════════ 发布区 ═══════════ */
+function renderAccountChecks() {
+  const list = $("#account-check-list");
+  list.innerHTML = "";
+  ACCOUNTS.forEach(a => {
+    const st = ACCOUNT_STATUS[a.status];
+    const row = el("div", "check-row is-selected");
+    row.dataset.acct = a.id;
+    row.innerHTML = `
+      <input type="checkbox" id="chk-${a.id}" checked aria-label="发布到 ${PLATFORMS[a.platform].name} ${escapeHtml(a.name)}" />
+      <span class="platform platform--${a.platform}"><span class="platform__dot"></span>${PLATFORMS[a.platform].name} · ${escapeHtml(a.name)}
+        <span class="platform__sub">${escapeHtml(a.user)}</span>
+      </span>
+      <span class="check-row__meta">${st.label === "可用" ? PLATFORM_CONSTRAINT[a.platform] : st.label}</span>`;
+    if (a.status !== "active") {
+      row.classList.remove("is-selected");
+      row.querySelector("input").checked = false;
+      row.querySelector("input").disabled = true;
+      row.style.opacity = 0.55;
+    }
+    row.querySelector("input").addEventListener("change", e => {
+      row.classList.toggle("is-selected", e.target.checked);
+      updatePublishHint();
+    });
+    list.appendChild(row);
+  });
+  updatePublishHint();
+}
+function updatePublishHint() {
+  const selected = ACCOUNTS.filter(a => document.querySelector(`#chk-${a.id}`)?.checked);
+  $("#publish-target-hint").textContent = selected.length
+    ? `已选 ${selected.length} 个账号 · ${selected.map(a => PLATFORMS[a.platform].name).join("、")}`
+    : "尚未选择平台账号，请至少勾选一个";
+  $("#publish-cta").disabled = selected.length === 0;
+}
+function pickAsset() {
+  const card = $("#asset-card");
+  card.querySelector(".asset__name").textContent = "新品开箱 · 30s 混剪.mp4";
+  card.querySelector(".asset__meta").textContent = "4K · 3840×2160 · 42.8 MB";
+  card.querySelector(".asset__thumb--dur").textContent = "0:30";
+  card.style.display = "";
+  toast("已选择素材", "ok");
+}
+$("#asset-pick").addEventListener("click", pickAsset);
+$("#asset-batch").addEventListener("click", () => toast("manifest 批量导入：识别到 3 个待确认素材", "ok"));
+$("#asset-remove").addEventListener("click", () => {
+  $("#asset-card").style.display = "none";
+  toast("素材已移除", "ok");
+});
+
+$("#sched-toggle").addEventListener("change", e => {
+  const sched = e.target.checked;
+  $("#sched-label").textContent = sched ? "定时发布" : "立即发布";
+  $("#sched-time").style.display = sched ? "" : "none";
+  $("#publish-cta").innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>${sched ? "定时发布" : "立即发布"}`;
+});
+
+$("#publish-cta").addEventListener("click", () => {
+  const sched = $("#sched-toggle").checked;
+  const t = $("#p-title").value.trim();
+  if (!t) { toast("请填写标题", "err"); return; }
+  const targets = ACCOUNTS.filter(a => document.querySelector(`#chk-${a.id}`)?.checked);
+  if (!targets.length) { toast("请至少勾选一个平台账号", "err"); return; }
+
+  const newTask = {
+    id: ++nextTaskId, title: t, time: sched ? "已定时" : "刚刚", status: "publishing",
+    plats: targets.map(a => a.platform),
+    jobs: targets.map(a => ({ platform: a.platform, status: "publishing",
+      msg: sched ? `已定时 ${$("#sched-time").value.replace("T", " ")}` : "视频上传中 · 0%", time: "刚刚" })),
+  };
+  TASKS.unshift(newTask);
+  toast(`已${sched ? "定时" : "发布"} · 抖音/小红书/视频号`, "ok");
+  activeFilter = "all";
+  document.querySelectorAll(".chip[data-filter]").forEach(c => c.classList.toggle("is-active", c.dataset.filter === "all"));
+  switchView("tasks");
+});
+
+/* ═══════════ 任务区 ═══════════ */
+function countByFilter() {
+  const counts = { all: TASKS.length };
+  FILTER_KEYS.slice(1).forEach(k => counts[k] = 0);
+  TASKS.forEach(t => counts[taskKey(t)] = (counts[taskKey(t)] || 0) + 1);
+  return counts;
+}
+function alertBadge() {
+  const n = TASKS.filter(t => ALERT_STATES.has(t.status)).length;
+  const badge = $("#nav-task-alert");
+  if (n) {
+    badge.hidden = false;
+    badge.textContent = n;
+    badge.style.cssText = "margin-left:auto;background:var(--warn);color:#fff;border-radius:var(--radius-pill);padding:0 6px;font-size:10px;line-height:16px;";
+  } else badge.hidden = true;
+}
+function renderTaskRow(t, open) {
+  const m = STATUS_META[taskKey(t)];
+  const isAlert = ALERT_STATES.has(t.status);
+  const row = el("div", "task-row" + (isAlert ? " is-alert" : "") + (open ? " is-open" : ""));
+  row.dataset.task = t.id;
+  const plats = t.plats.map(platformTag).join("");
+  row.innerHTML = `
+    <button class="task-row__toggle" aria-label="展开详情"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <div>
+      <div class="task-row__title">${isAlert ? '<span class="status status--warn"><span class="status__dot"></span>需处理</span>' : ""}${escapeHtml(t.title)}</div>
+      <div class="task-row__plats">${plats}</div>
+    </div>
+    <div class="task-row__right">
+      ${statusSpan(taskKey(t))}
+      <span class="task-row__time">${t.time}</span>
+      <div class="task-row__ops">${rowOps(t)}</div>
+    </div>`;
+  const detail = el("div", "task-detail", renderJobs(t));
+  row.querySelector(".task-row__toggle").addEventListener("click", () => {
+    const isOpen = row.classList.toggle("is-open");
+    row.querySelector(".task-row__toggle").setAttribute("aria-label", isOpen ? "收起详情" : "展开详情");
+  });
+  bindRowOps(row, t);
+  return [row, detail];
+}
+function rowOps(t) {
+  if (t.status === "failed" || t.status === "manual") return `<button class="btn btn--sm btn--secondary op-retry">重试</button>`;
+  if (t.status === "publishing") return `<button class="btn btn--sm btn--ghost op-cancel">取消</button>`;
+  if (t.status === "pending") return `<button class="btn btn--sm btn--ghost op-edit">编辑</button>`;
+  return "";
+}
+function bindRowOps(row, t) {
+  row.querySelector(".op-retry")?.addEventListener("click", e => {
+    e.stopPropagation();
+    t.status = "publishing";
+    t.jobs.forEach(j => { j.status = "publishing"; j.msg = "重新发布中 · 排队"; });
+    toast("已重新加入队列", "ok"); renderTasks();
+  });
+  row.querySelector(".op-cancel")?.addEventListener("click", e => {
+    e.stopPropagation();
+    t.status = "failed";
+    t.jobs.forEach(j => { j.status = "failed"; j.msg = "已取消（手动）"; });
+    toast("任务已取消", "warn"); renderTasks();
+  });
+  row.querySelector(".op-edit")?.addEventListener("click", e => {
+    e.stopPropagation();
+    toast("待发布任务可编辑（原型示意）", "ok");
+  });
+}
+function renderJobs(t) {
+  return `<table class="job-table"><thead><tr><th style="width:120px">平台</th><th style="width:80px">状态</th><th>信息</th><th style="width:96px">时间</th></tr></thead><tbody>${
+    t.jobs.map(j => `<tr>
+      <td>${platformTag(j.platform)}</td>
+      <td>${statusSpan(j.status)}</td>
+      <td class="${j.err ? "job-table__err" : "job-table__msg"}">${j.msg}</td>
+      <td class="job-table__time">${j.time}</td>
+    </tr>`).join("")
+  }</tbody></table>`;
+}
+function renderTasks() {
+  alertBadge();
+  const counts = countByFilter();
+  FILTER_KEYS.forEach(k => {
+    const c = document.querySelector(`[data-count="${k}"]`);
+    if (c) c.textContent = counts[k] || 0;
+  });
+  $("#task-total").textContent = `${TASKS.length} 个任务 · ${counts.manual || 0} 个需处理`;
+  const list = $("#task-list");
+  list.innerHTML = "";
+  const filtered = TASKS.filter(t => filterMatch(t, activeFilter));
+  if (!filtered.length) {
+    const emptyTitle = activeFilter === "all"
+      ? "还没有发布过任务"
+      : `没有「${STATUS_META[activeFilter]?.label || activeFilter}」状态的任务`;
+    const empty = el("div", "empty", `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><path d="m17 16 2 2 4-4"/></svg>
+      <div class="empty__title">${emptyTitle}</div>
+      <div class="empty__desc">${activeFilter === "all" ? "回到发布区，挑一个素材开始。" : "换一个筛选条件看看其他状态。"}</div>
+      <button class="btn btn--secondary" id="empty-goto-publish">去发布</button>
+    `);
+    empty.querySelector("#empty-goto-publish").addEventListener("click", () => switchView("publish"));
+    list.appendChild(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  filtered.forEach(t => { const [r, d] = renderTaskRow(t, false); fragment.appendChild(r); fragment.appendChild(d); });
+  list.appendChild(fragment);
+}
+document.querySelectorAll(".chip[data-filter]").forEach(chip => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".chip[data-filter]").forEach(c => c.classList.remove("is-active"));
+    chip.classList.add("is-active");
+    activeFilter = chip.dataset.filter;
+    renderTasks();
+  });
+});
+
+/* ═══════════ 账号区 ═══════════ */
+function renderAccounts() {
+  $("#account-total").textContent = `${ACCOUNTS.length} 个账号 · ${ACCOUNTS.filter(a => a.status !== "active").length} 个需处理`;
+  const wrap = $("#accounts-table-wrap");
+  if (!ACCOUNTS.length) {
+    wrap.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+      <div class="empty__title">还没有账号</div>
+      <div class="empty__desc">添加第一个账号，会拉起一台本机 Chrome 用于扫码登录。</div>
+      <button class="btn btn--primary" id="empty-add-account">添加账号</button>
+    </div>`;
+    wrap.querySelector("#empty-add-account").addEventListener("click", () => $("#account-add").click());
+    return;
+  }
+  const table = el("table", "accounts-table", `
+    <thead><tr>
+      <th>平台</th><th>名称</th><th>用户名</th><th>调试端口</th><th>备注</th><th>状态</th><th style="text-align:right;">操作</th>
+    </tr></thead><tbody></tbody>`);
+  const tbody = table.querySelector("tbody");
+  ACCOUNTS.forEach(a => {
+    const st = ACCOUNT_STATUS[a.status];
+    const tr = el("tr");
+    tr.innerHTML = `
+      <td class="cell-strong">${platformTag(a.platform)}</td>
+      <td class="cell-strong">${escapeHtml(a.name)}</td>
+      <td class="cell-mono">${escapeHtml(a.user)}</td>
+      <td class="cell-mono">${a.port}</td>
+      <td>${escapeHtml(a.note) || "<span style='color:var(--meta)'>—</span>"}</td>
+      <td>${statusSpan(a.status)}</td>
+      <td><div class="cell-ops"></div></td>`;
+    const ops = tr.querySelector(".cell-ops");
+    if (a.status === "needs_relogin") {
+      ops.appendChild(opBtn("重登", () => relogin(a)));
+      ops.appendChild(opBtn("恢复可用", () => markActive(a), "ghost"));
+    }
+    ops.appendChild(opBtn("删除", () => removeAccount(a), "danger"));
+    tbody.appendChild(tr);
+  });
+  wrap.innerHTML = "";
+  wrap.appendChild(table);
+}
+function opBtn(text, fn, variant = "secondary") {
+  const b = el("button", `btn btn--sm btn--${variant}`, text);
+  b.addEventListener("click", fn);
+  return b;
+}
+function relogin(a) {
+  toast(`已拉起「${PLATFORMS[a.platform].name} ${a.name}」的 Chrome，请扫码`, "ok");
+  setTimeout(() => { a.status = "active"; toast("登录态已更新", "ok"); renderAccounts(); }, 1800);
+}
+function markActive(a) {
+  a.status = "active"; toast("账号已恢复可用", "ok"); renderAccounts();
+}
+function removeAccount(a) {
+  const i = ACCOUNTS.indexOf(a);
+  if (i > -1) ACCOUNTS.splice(i, 1);
+  toast(`已删除「${a.name}」并关闭关联 Chrome`, "ok");
+  renderAccounts(); renderAccountChecks(); updatePublishHint();
+}
+
+/* ═══════════ 添加账号对话框 ═══════════ */
+const dialog = $("#account-dialog");
+let dialogPlatform = "douyin";
+$("#account-add").addEventListener("click", () => {
+  $("#acct-name").value = "";
+  dialogPlatform = "douyin";
+  document.querySelectorAll("#platform-pick button").forEach(b => {
+    const act = b.dataset.platform === dialogPlatform;
+    b.classList.toggle("is-active", act);
+    b.setAttribute("aria-checked", String(act));
+  });
+  dialog.showModal();
+});
+$("#acct-cancel").addEventListener("click", () => dialog.close());
+$("#platform-pick").addEventListener("click", e => {
+  const b = e.target.closest("button[data-platform]");
+  if (!b) return;
+  dialogPlatform = b.dataset.platform;
+  document.querySelectorAll("#platform-pick button").forEach(x => {
+    const act = x === b;
+    x.classList.toggle("is-active", act);
+    x.setAttribute("aria-checked", String(act));
+  });
+  $("#acct-launch-hint").textContent = `将拉起本机 Chrome 独立实例（新调试端口） · ${PLATFORMS[dialogPlatform].name}`;
+});
+$("#acct-confirm").addEventListener("click", () => {
+  const name = $("#acct-name").value.trim() || "未命名";
+  const id = Math.max(...ACCOUNTS.map(a => a.id), 0) + 1;
+  const port = 9226 + (ACCOUNTS.length % 5);
+  ACCOUNTS.push({ id, platform: dialogPlatform, name, user: `new_${dialogPlatform}`, port, note: "", status: "needs_relogin" });
+  dialog.close();
+  renderAccounts(); renderAccountChecks(); updatePublishHint();
+  toast(`已拉起「${PLATFORMS[dialogPlatform].name} ${name}」Chrome · 端口 ${port}，请扫码登录`, "ok");
+  switchView("accounts");
+});
+
+/* ═══════════ 初始化 ═══════════ */
+renderAccounts();
+renderAccountChecks();
+renderTasks();
+</script>
+</body>
+</html>

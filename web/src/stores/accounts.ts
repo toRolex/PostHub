@@ -1,154 +1,90 @@
-import { defineStore } from "pinia";
-
+import { create } from "zustand";
+import { api } from "../api/client";
+import type { Account, AccountStatus, Platform } from "../api/types";
 import { useDaemonStore } from "./daemon";
-import type { Platform } from "./platform";
-
-export type { Platform };
-export type AccountStatus = "active" | "needs_relogin" | "disabled";
-
-export interface Account {
-  id: number;
-  platform: Platform;
-  name: string;
-  profile_dir: string;
-  cdp_port: number;
-  chrome_path: string | null;
-  status: AccountStatus;
-  last_login_at: string | null;
-  last_publish_at: string | null;
-  created_at: string;
-  updated_at: string;
-  launch_warning?: string;
-}
 
 interface AccountsState {
   accounts: Account[];
   loading: boolean;
   creating: boolean;
   error: string;
+  fetchAccounts: () => Promise<void>;
+  createAccount: (payload: { platform: Platform; name?: string }) => Promise<Account>;
+  removeAccount: (id: number) => Promise<void>;
+  relogin: (id: number) => Promise<{ ok: boolean; launch_warning?: string }>;
+  setStatus: (id: number, status: AccountStatus) => Promise<void>;
 }
 
-export const useAccountsStore = defineStore("accounts", {
-  state: (): AccountsState => ({
-    accounts: [],
-    loading: false,
-    creating: false,
-    error: "",
-  }),
+export const initialAccountsState = {
+  accounts: [] as Account[],
+  loading: false,
+  creating: false,
+  error: "",
+};
 
-  getters: {
-    count: (state) => state.accounts.length,
+export const useAccountsStore = create<AccountsState>()((set) => ({
+  ...initialAccountsState,
+
+  fetchAccounts: async () => {
+    set({ loading: true });
+    try {
+      const body = await api.accounts(useDaemonStore.getState().url);
+      set({ accounts: body.accounts ?? [], error: "" });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ loading: false });
+    }
   },
 
-  actions: {
-    /** 请求守护进程 /accounts，刷新账号列表。 */
-    async fetchAccounts(): Promise<void> {
-      const daemon = useDaemonStore();
-      this.loading = true;
-      try {
-        const res = await fetch(`${daemon.url}/accounts`);
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const body = await res.json();
-        this.accounts = body.accounts ?? [];
-        this.error = "";
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-      } finally {
-        this.loading = false;
-      }
-    },
-
-    /** 添加账号：POST /accounts，守护进程拉起独立 Chrome 扫码登录。 */
-    async createAccount(payload: {
-      platform: Platform;
-      name?: string;
-    }): Promise<Account> {
-      const daemon = useDaemonStore();
-      this.creating = true;
-      try {
-        const res = await fetch(`${daemon.url}/accounts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        const account = body.account as Account;
-        this.accounts = [...this.accounts, account];
-        this.error = "";
-        return account;
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-        throw e;
-      } finally {
-        this.creating = false;
-      }
-    },
-
-    /** 删除账号：DELETE /accounts/{id}，移除记录并清理关联。 */
-    async removeAccount(id: number): Promise<void> {
-      const daemon = useDaemonStore();
-      try {
-        const res = await fetch(`${daemon.url}/accounts/${id}`, {
-          method: "DELETE",
-        });
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        this.accounts = this.accounts.filter((a) => a.id !== id);
-        this.error = "";
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-        throw e;
-      }
-    },
-
-    /** 重登引导（issue #21）：拉起该账号 Chrome 供重新扫码。 */
-    async relogin(id: number): Promise<{ ok: boolean; launch_warning?: string }> {
-      const daemon = useDaemonStore();
-      try {
-        const res = await fetch(`${daemon.url}/accounts/${id}/relogin`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        });
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        this.error = "";
-        return body as { ok: boolean; launch_warning?: string };
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-        throw e;
-      }
-    },
-
-    /** 更新账号状态（issue #21）：重新扫码后恢复 active，或手动停用。 */
-    async setStatus(id: number, status: AccountStatus): Promise<void> {
-      const daemon = useDaemonStore();
-      try {
-        const res = await fetch(`${daemon.url}/accounts/${id}/status`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
-        });
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        this.accounts = this.accounts.map((a) =>
-          a.id === id ? { ...a, status } : a,
-        );
-        this.error = "";
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-        throw e;
-      }
-    },
+  /** 添加账号：POST /accounts，守护进程拉起独立 Chrome 扫码登录。 */
+  createAccount: async (payload) => {
+    set({ creating: true });
+    try {
+      const body = await api.createAccount(useDaemonStore.getState().url, payload);
+      set((s) => ({ accounts: [...s.accounts, body.account], error: "" }));
+      return body.account;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    } finally {
+      set({ creating: false });
+    }
   },
-});
+
+  removeAccount: async (id) => {
+    try {
+      await api.deleteAccount(useDaemonStore.getState().url, id);
+      set((s) => ({ accounts: s.accounts.filter((a) => a.id !== id), error: "" }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+
+  /** 重登引导（issue #21）：拉起该账号 Chrome 供重新扫码。 */
+  relogin: async (id) => {
+    try {
+      const body = await api.reloginAccount(useDaemonStore.getState().url, id);
+      set({ error: "" });
+      return body;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+
+  /** 更新账号状态（issue #21）：重新扫码后恢复 active，或手动停用。 */
+  setStatus: async (id, status) => {
+    try {
+      await api.setAccountStatus(useDaemonStore.getState().url, id, status);
+      set((s) => ({
+        accounts: s.accounts.map((a) => (a.id === id ? { ...a, status } : a)),
+        error: "",
+      }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+}));

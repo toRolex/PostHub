@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { useTasksStore } from "./tasks";
+import { initialTasksState, useTasksStore } from "./tasks";
 import { useDaemonStore } from "./daemon";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
@@ -21,8 +20,8 @@ const TASK_ITEM = {
 
 describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
-    useDaemonStore().url = "http://127.0.0.1:9999";
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    useTasksStore.setState(initialTasksState);
   });
 
   afterEach(() => {
@@ -31,17 +30,16 @@ describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
 
   it("fetchTasks 无筛选 -> 请求 /tasks 并填充列表", async () => {
     const fetchMock = stubFetch({ tasks: [TASK_ITEM] });
-    const store = useTasksStore();
-    await store.fetchTasks();
-    expect(store.tasks).toHaveLength(1);
-    expect(store.tasks[0].task.title).toBe("春日踏青");
+    await useTasksStore.getState().fetchTasks();
+    const s = useTasksStore.getState();
+    expect(s.tasks).toHaveLength(1);
+    expect(s.tasks[0].task.title).toBe("春日踏青");
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:9999/tasks");
   });
 
   it("fetchTasks 带筛选 -> 查询串含 platform/status/from/to", async () => {
     const fetchMock = stubFetch({ tasks: [TASK_ITEM] });
-    const store = useTasksStore();
-    await store.fetchTasks({
+    await useTasksStore.getState().fetchTasks({
       platform: "douyin",
       status: "pending",
       from: "2026-08-01 00:00:00",
@@ -57,11 +55,10 @@ describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
 
   it("setFilters 持久化筛选并重新拉取", async () => {
     const fetchMock = stubFetch({ tasks: [TASK_ITEM] });
-    const store = useTasksStore();
-    await store.fetchTasks();
-    store.setFilters({ platform: "wechat" });
+    await useTasksStore.getState().fetchTasks();
+    useTasksStore.getState().setFilters({ platform: "wechat" });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(store.filters.platform).toBe("wechat");
+    expect(useTasksStore.getState().filters.platform).toBe("wechat");
     const url = fetchMock.mock.calls[1][0] as string;
     expect(url).toContain("platform=wechat");
   });
@@ -72,8 +69,7 @@ describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true, canceled: [{ id: 1, status: "failed" }] }))
       .mockResolvedValueOnce(jsonResponse({ tasks: [TASK_ITEM] }));
     vi.stubGlobal("fetch", fetchMock);
-    const store = useTasksStore();
-    await store.cancelTask(1);
+    await useTasksStore.getState().cancelTask(1);
     expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9999/tasks/1/cancel");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(fetchMock).toHaveBeenCalledTimes(2); // 取消后刷新列表
@@ -85,8 +81,7 @@ describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true, job: { id: 1, status: "pending" } }))
       .mockResolvedValueOnce(jsonResponse({ tasks: [TASK_ITEM] }));
     vi.stubGlobal("fetch", fetchMock);
-    const store = useTasksStore();
-    const job = await store.retryJob(1);
+    const job = await useTasksStore.getState().retryJob(1);
     expect(job?.status).toBe("pending");
     expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9999/jobs/1/retry");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
@@ -94,9 +89,8 @@ describe("tasks store（任务列表 / 筛选 / 取消 / 重试）", () => {
 
   it("服务端错误 -> error 填充且不抛异常", async () => {
     stubFetch({ error: "任务不存在" }, false, 404);
-    const store = useTasksStore();
-    await store.fetchTasks();
-    expect(store.error).toBe("任务不存在");
-    expect(store.tasks).toEqual([]);
+    await useTasksStore.getState().fetchTasks();
+    expect(useTasksStore.getState().error).toBe("任务不存在");
+    expect(useTasksStore.getState().tasks).toEqual([]);
   });
 });

@@ -1,10 +1,11 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Tauri 期望固定端口（见 tauri.conf.json devUrl）
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: {
     port: 5173,

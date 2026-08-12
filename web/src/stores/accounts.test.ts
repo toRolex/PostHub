@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { useAccountsStore } from "./accounts";
+import { initialAccountsState, useAccountsStore } from "./accounts";
 import { useDaemonStore } from "./daemon";
+import type { Account } from "../api/types";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return {
@@ -12,9 +12,24 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
   };
 }
 
+const ACCOUNT_A: Account = {
+  id: 1,
+  platform: "douyin",
+  name: "抖音一号",
+  profile_dir: "/p",
+  cdp_port: 9222,
+  chrome_path: null,
+  status: "active",
+  last_login_at: null,
+  last_publish_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
 describe("accounts store（账号管理）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    useAccountsStore.setState(initialAccountsState);
   });
 
   afterEach(() => {
@@ -34,22 +49,21 @@ describe("accounts store（账号管理）", () => {
       ),
     );
 
-    const store = useAccountsStore();
-    await store.fetchAccounts();
+    await useAccountsStore.getState().fetchAccounts();
 
-    expect(store.accounts).toHaveLength(2);
-    expect(store.accounts[0].platform).toBe("douyin");
-    expect(store.error).toBe("");
+    const s = useAccountsStore.getState();
+    expect(s.accounts).toHaveLength(2);
+    expect(s.accounts[0].platform).toBe("douyin");
+    expect(s.error).toBe("");
   });
 
   it("fetchAccounts 失败 -> 记录 error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, false, 500)));
 
-    const store = useAccountsStore();
-    await store.fetchAccounts();
+    await useAccountsStore.getState().fetchAccounts();
 
-    expect(store.accounts).toHaveLength(0);
-    expect(store.error).toContain("500");
+    expect(useAccountsStore.getState().accounts).toHaveLength(0);
+    expect(useAccountsStore.getState().error).toContain("500");
   });
 
   it("createAccount 成功 -> 追加到列表", async () => {
@@ -63,12 +77,13 @@ describe("accounts store（账号管理）", () => {
     };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ account }, true, 201)));
 
-    const store = useAccountsStore();
-    const created = await store.createAccount({ platform: "xiaohongshu", name: "小红书" });
+    const created = await useAccountsStore
+      .getState()
+      .createAccount({ platform: "xiaohongshu", name: "小红书" });
 
     expect(created.id).toBe(3);
-    expect(store.accounts).toContainEqual(account);
-    expect(store.error).toBe("");
+    expect(useAccountsStore.getState().accounts).toContainEqual(account);
+    expect(useAccountsStore.getState().error).toBe("");
   });
 
   it("createAccount 失败 -> 抛出错误且不追加", async () => {
@@ -77,11 +92,12 @@ describe("accounts store（账号管理）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ error: "platform 非法" }, false, 400)),
     );
 
-    const store = useAccountsStore();
-    await expect(store.createAccount({ platform: "douyin" })).rejects.toThrow();
+    await expect(
+      useAccountsStore.getState().createAccount({ platform: "douyin" }),
+    ).rejects.toThrow();
 
-    expect(store.accounts).toHaveLength(0);
-    expect(store.error).toContain("platform 非法");
+    expect(useAccountsStore.getState().accounts).toHaveLength(0);
+    expect(useAccountsStore.getState().error).toContain("platform 非法");
   });
 
   it("removeAccount 成功 -> 从列表移除", async () => {
@@ -92,44 +108,40 @@ describe("accounts store（账号管理）", () => {
           return jsonResponse({ ok: true });
         }
         return jsonResponse({
-          accounts: [
-            { id: 1, platform: "douyin", name: "抖音一号", cdp_port: 9222, status: "active" },
-          ],
+          accounts: [{ id: 1, platform: "douyin", name: "抖音一号", cdp_port: 9222, status: "active" }],
         });
       }),
     );
 
-    const store = useAccountsStore();
-    await store.fetchAccounts();
-    expect(store.accounts).toHaveLength(1);
+    await useAccountsStore.getState().fetchAccounts();
+    expect(useAccountsStore.getState().accounts).toHaveLength(1);
 
-    await store.removeAccount(1);
+    await useAccountsStore.getState().removeAccount(1);
 
-    expect(store.accounts).toHaveLength(0);
+    expect(useAccountsStore.getState().accounts).toHaveLength(0);
   });
 
   it("removeAccount 失败 -> 抛出错误且保留列表", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "账号不存在" }, false, 404)));
-
-    const store = useAccountsStore();
-    await store.fetchAccounts().catch(() => undefined); // 忽略 fetch 失败
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ error: "账号不存在" }, false, 404)),
     );
 
-    await expect(store.removeAccount(1)).rejects.toThrow();
-    expect(store.error).toContain("账号不存在");
+    await useAccountsStore.getState().fetchAccounts().catch(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ error: "账号不存在" }, false, 404)),
+    );
+
+    await expect(useAccountsStore.getState().removeAccount(1)).rejects.toThrow();
+    expect(useAccountsStore.getState().error).toContain("账号不存在");
   });
 
   it("通过 daemon store 的 url 请求", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ accounts: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = useAccountsStore();
-    await store.fetchAccounts();
+    await useAccountsStore.getState().fetchAccounts();
 
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:9999/accounts");
   });
@@ -140,10 +152,7 @@ describe("accounts store（账号管理）", () => {
       .mockResolvedValue(jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = useAccountsStore();
-    const result = await store.relogin(7);
+    const result = await useAccountsStore.getState().relogin(7);
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:9999/accounts/7/relogin",
@@ -160,8 +169,7 @@ describe("accounts store（账号管理）", () => {
       ),
     );
 
-    const store = useAccountsStore();
-    const result = await store.relogin(1);
+    const result = await useAccountsStore.getState().relogin(1);
 
     expect(result.launch_warning).toBe("未找到 Chrome");
   });
@@ -177,25 +185,17 @@ describe("accounts store（账号管理）", () => {
       });
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = useAccountsStore();
-    store.accounts = [
-      {
-        id: 3,
-        platform: "douyin",
-        name: "抖音一号",
-        profile_dir: "/p",
-        cdp_port: 9222,
-        status: "needs_relogin",
-      },
-    ] as never;
+    useAccountsStore.setState({
+      accounts: [{ ...ACCOUNT_A, id: 3, status: "needs_relogin" }],
+    });
 
-    await store.setStatus(3, "active");
+    await useAccountsStore.getState().setStatus(3, "active");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8756/accounts/3/status",
+      "http://127.0.0.1:9999/accounts/3/status",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(store.accounts[0].status).toBe("active");
+    expect(useAccountsStore.getState().accounts[0].status).toBe("active");
   });
 
   it("setStatus 失败 -> 抛出错误且本地状态不变", async () => {
@@ -204,19 +204,13 @@ describe("accounts store（账号管理）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ error: "status 非法" }, false, 400)),
     );
 
-    const store = useAccountsStore();
-    store.accounts = [
-      {
-        id: 3,
-        platform: "douyin",
-        name: "抖音一号",
-        profile_dir: "/p",
-        cdp_port: 9222,
-        status: "needs_relogin",
-      },
-    ] as never;
+    useAccountsStore.setState({
+      accounts: [{ ...ACCOUNT_A, id: 3, status: "needs_relogin" }],
+    });
 
-    await expect(store.setStatus(3, "active")).rejects.toThrow("status 非法");
-    expect(store.accounts[0].status).toBe("needs_relogin");
+    await expect(
+      useAccountsStore.getState().setStatus(3, "active"),
+    ).rejects.toThrow("status 非法");
+    expect(useAccountsStore.getState().accounts[0].status).toBe("needs_relogin");
   });
 });

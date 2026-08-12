@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { useBatchesStore } from "./batches";
+import { initialBatchesState, useBatchesStore } from "./batches";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
 
@@ -42,40 +41,42 @@ function makeResult(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 function seedAccounts(): void {
-  const accounts = useAccountsStore();
-  accounts.accounts = [
-    {
-      id: 1,
-      platform: "douyin",
-      name: "抖音一号",
-      profile_dir: "/tmp/p-douyin",
-      cdp_port: 9222,
-      chrome_path: null,
-      status: "active",
-      last_login_at: null,
-      last_publish_at: null,
-      created_at: "",
-      updated_at: "",
-    },
-    {
-      id: 2,
-      platform: "xiaohongshu",
-      name: "小红书",
-      profile_dir: "/tmp/p-xhs",
-      cdp_port: 9223,
-      chrome_path: null,
-      status: "active",
-      last_login_at: null,
-      last_publish_at: null,
-      created_at: "",
-      updated_at: "",
-    },
-  ];
+  useAccountsStore.setState({
+    accounts: [
+      {
+        id: 1,
+        platform: "douyin",
+        name: "抖音一号",
+        profile_dir: "/tmp/p-douyin",
+        cdp_port: 9222,
+        chrome_path: null,
+        status: "active",
+        last_login_at: null,
+        last_publish_at: null,
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: 2,
+        platform: "xiaohongshu",
+        name: "小红书",
+        profile_dir: "/tmp/p-xhs",
+        cdp_port: 9223,
+        chrome_path: null,
+        status: "active",
+        last_login_at: null,
+        last_publish_at: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ],
+  });
 }
 
 describe("batches store（manifest 批量导入）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    useBatchesStore.setState(initialBatchesState);
     seedAccounts();
   });
 
@@ -87,17 +88,14 @@ describe("batches store（manifest 批量导入）", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(makeResult()));
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = useBatchesStore();
-    store.folderPath = "/tmp/batch";
-    store.selectedAccountId = 1;
+    useBatchesStore.setState({ folderPath: "/tmp/batch", selectedAccountId: 1 });
 
-    const result = await store.parse();
+    const result = await useBatchesStore.getState().parse();
 
+    const s = useBatchesStore.getState();
     expect(result.entries).toHaveLength(2);
-    expect(store.hasHardErrors).toBe(false);
-    expect(store.pendingEntries).toHaveLength(2);
+    expect((s.result?.hard_errors.length ?? 0)).toBe(0);
+    expect(s.result?.entries).toHaveLength(2);
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:9999/batches/import",
       expect.objectContaining({ method: "POST" }),
@@ -111,14 +109,13 @@ describe("batches store（manifest 批量导入）", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = useBatchesStore();
-    await expect(store.parse()).rejects.toThrow(/文件夹/);
-    store.folderPath = "/tmp/batch";
-    await expect(store.parse()).rejects.toThrow(/账号/);
+    await expect(useBatchesStore.getState().parse()).rejects.toThrow(/文件夹/);
+    useBatchesStore.setState({ folderPath: "/tmp/batch" });
+    await expect(useBatchesStore.getState().parse()).rejects.toThrow(/账号/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("parse 含硬错误 -> 保留结果，hasHardErrors 为 true", async () => {
+  it("parse 含硬错误 -> 保留结果，hard_errors 非空", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -132,25 +129,26 @@ describe("batches store（manifest 批量导入）", () => {
         ),
       ),
     );
-    const store = useBatchesStore();
-    store.folderPath = "/tmp/batch";
-    store.selectedAccountId = 1;
+    useBatchesStore.setState({ folderPath: "/tmp/batch", selectedAccountId: 1 });
 
-    await store.parse();
+    await useBatchesStore.getState().parse();
 
-    expect(store.hasHardErrors).toBe(true);
-    expect(store.pendingEntries).toHaveLength(0);
+    const s = useBatchesStore.getState();
+    expect((s.result?.hard_errors.length ?? 0)).toBe(1);
+    expect(s.result?.entries).toHaveLength(0);
   });
 
   it("patchEntry 逐条覆盖标题/正文/封面/定时", () => {
-    const store = useBatchesStore();
-    store.result = makeResult() as never;
+    useBatchesStore.setState({ result: makeResult() as never });
 
-    store.patchEntry(0, { title: "新标题", schedule: null, cover_landscape: null });
+    useBatchesStore
+      .getState()
+      .patchEntry(0, { title: "新标题", schedule: null, cover_landscape: null });
 
-    expect(store.pendingEntries[0].title).toBe("新标题");
-    expect(store.pendingEntries[0].schedule).toBeNull();
-    expect(store.pendingEntries[1].title).toBe("标题2"); // 其他条目不受影响
+    const entries = useBatchesStore.getState().result?.entries ?? [];
+    expect(entries[0].title).toBe("新标题");
+    expect(entries[0].schedule).toBeNull();
+    expect(entries[1].title).toBe("标题2"); // 其他条目不受影响
   });
 
   it("confirm -> POST /batches/confirm 逐条携带账号/平台并保存 task_ids", async () => {
@@ -159,17 +157,16 @@ describe("batches store（manifest 批量导入）", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = useBatchesStore();
-    store.folderPath = "/tmp/batch";
-    store.selectedAccountId = 1;
-    store.result = makeResult() as never;
+    useBatchesStore.setState({
+      folderPath: "/tmp/batch",
+      selectedAccountId: 1,
+      result: makeResult() as never,
+    });
 
-    const taskIds = await store.confirm();
+    const taskIds = await useBatchesStore.getState().confirm();
 
     expect(taskIds).toEqual([1, 2]);
-    expect(store.lastTaskIds).toEqual([1, 2]);
+    expect(useBatchesStore.getState().lastTaskIds).toEqual([1, 2]);
     const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(sent.account_id).toBe(1);
     expect(sent.entries).toHaveLength(2);
@@ -183,12 +180,13 @@ describe("batches store（manifest 批量导入）", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = useBatchesStore();
-    store.selectedAccountId = 1;
-    store.result = makeResult() as never;
-    store.setEntryAccount(0, 2); // 覆盖为小红书账号
+    useBatchesStore.setState({
+      selectedAccountId: 1,
+      result: makeResult() as never,
+    });
+    useBatchesStore.getState().setEntryAccount(0, 2); // 覆盖为小红书账号
 
-    await store.confirm();
+    await useBatchesStore.getState().confirm();
 
     const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(sent.entries[0].account_id).toBe(2);
@@ -201,10 +199,11 @@ describe("batches store（manifest 批量导入）", () => {
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ error: "定时发布时间距现在不足 2 小时" }, false, 400)),
     );
-    const store = useBatchesStore();
-    store.selectedAccountId = 1;
-    store.result = makeResult() as never;
+    useBatchesStore.setState({
+      selectedAccountId: 1,
+      result: makeResult() as never,
+    });
 
-    await expect(store.confirm()).rejects.toThrow(/不足 2 小时/);
+    await expect(useBatchesStore.getState().confirm()).rejects.toThrow(/不足 2 小时/);
   });
 });

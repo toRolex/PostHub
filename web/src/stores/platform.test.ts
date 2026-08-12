@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { usePlatformStore, type PlatformConstraint } from "./platform";
+import { initialPlatformState, usePlatformStore } from "./platform";
 import { useDaemonStore } from "./daemon";
+import type { PlatformConstraint } from "../api/types";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body };
@@ -43,7 +43,8 @@ const SAMPLE: PlatformConstraint[] = [
 
 describe("platform store（平台约束注册表）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    usePlatformStore.setState(initialPlatformState);
   });
 
   afterEach(() => {
@@ -56,24 +57,23 @@ describe("platform store（平台约束注册表）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ constraints: SAMPLE })),
     );
 
-    const store = usePlatformStore();
-    await store.fetchConstraints();
+    await usePlatformStore.getState().fetchConstraints();
 
-    expect(store.constraints.douyin!.min_lead_time_seconds).toBe(7200);
-    expect(store.constraints.xiaohongshu!.min_lead_time_seconds).toBe(3600);
-    expect(store.constraints.wechat!.max_scheduled_per_day).toBe(5);
-    expect(store.constraints.douyin!.cover_required).toBe(true);
-    expect(store.error).toBe("");
+    const s = usePlatformStore.getState();
+    expect(s.constraints.douyin!.min_lead_time_seconds).toBe(7200);
+    expect(s.constraints.xiaohongshu!.min_lead_time_seconds).toBe(3600);
+    expect(s.constraints.wechat!.max_scheduled_per_day).toBe(5);
+    expect(s.constraints.douyin!.cover_required).toBe(true);
+    expect(s.error).toBe("");
   });
 
   it("fetchConstraints 失败 -> 记录 error 且保持空表", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, false, 500)));
 
-    const store = usePlatformStore();
-    await store.fetchConstraints();
+    await usePlatformStore.getState().fetchConstraints();
 
-    expect(store.constraints).toEqual({});
-    expect(store.error).toContain("500");
+    expect(usePlatformStore.getState().constraints).toEqual({});
+    expect(usePlatformStore.getState().error).toContain("500");
   });
 
   it("通过 daemon store 的 url 请求 /platform-constraints", async () => {
@@ -82,10 +82,7 @@ describe("platform store（平台约束注册表）", () => {
       .mockResolvedValue(jsonResponse({ constraints: SAMPLE }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = usePlatformStore();
-    await store.fetchConstraints();
+    await usePlatformStore.getState().fetchConstraints();
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:9999/platform-constraints",

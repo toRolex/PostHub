@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { useInterventionsStore, type Intervention } from "./interventions";
+import { initialInterventionsState, useInterventionsStore } from "./interventions";
 import { useDaemonStore } from "./daemon";
+import type { Intervention } from "../api/types";
 
 // mock 通知函数：poll 检测到新事件时调用（避免测试触发真实弹窗）
 vi.mock("../lib/interventionNotify", () => ({
@@ -34,7 +34,8 @@ function makeIntervention(overrides: Partial<Intervention> = {}): Intervention {
 
 describe("interventions store（人工介入事件轮询）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    useInterventionsStore.setState(initialInterventionsState);
   });
 
   afterEach(() => {
@@ -49,12 +50,12 @@ describe("interventions store（人工介入事件轮询）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ interventions: [iv] })),
     );
 
-    const store = useInterventionsStore();
-    await store.fetchInterventions();
+    await useInterventionsStore.getState().fetchInterventions();
 
-    expect(store.interventions).toHaveLength(1);
-    expect(store.interventions[0].kind).toBe("manual");
-    expect(store.error).toBe("");
+    const s = useInterventionsStore.getState();
+    expect(s.interventions).toHaveLength(1);
+    expect(s.interventions[0].kind).toBe("manual");
+    expect(s.error).toBe("");
   });
 
   it("poll 检测到新事件 -> 触发 notify 并 ack 出列", async () => {
@@ -65,13 +66,12 @@ describe("interventions store（人工介入事件轮询）", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true })); // ack POST
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = useInterventionsStore();
-    await store.poll();
+    await useInterventionsStore.getState().poll();
 
     expect(notifyIntervention).toHaveBeenCalledTimes(1);
     expect(notifyIntervention).toHaveBeenCalledWith(iv);
     // ack 后从 pending 出列
-    expect(store.interventions).toHaveLength(0);
+    expect(useInterventionsStore.getState().interventions).toHaveLength(0);
   });
 
   it("poll 对已见事件不重复触发 notify", async () => {
@@ -81,9 +81,8 @@ describe("interventions store（人工介入事件轮询）", () => {
       .mockResolvedValue(jsonResponse({ interventions: [iv] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = useInterventionsStore();
-    await store.poll();
-    await store.poll();
+    await useInterventionsStore.getState().poll();
+    await useInterventionsStore.getState().poll();
 
     expect(notifyIntervention).toHaveBeenCalledTimes(1);
   });
@@ -94,8 +93,7 @@ describe("interventions store（人工介入事件轮询）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ interventions: [] })),
     );
 
-    const store = useInterventionsStore();
-    await store.poll();
+    await useInterventionsStore.getState().poll();
 
     expect(notifyIntervention).not.toHaveBeenCalled();
   });
@@ -104,17 +102,16 @@ describe("interventions store（人工介入事件轮询）", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = useInterventionsStore();
-    store.interventions = [makeIntervention({ id: 5 })];
+    useInterventionsStore.setState({
+      interventions: [makeIntervention({ id: 5 })],
+    });
 
-    await store.acknowledge(5);
+    await useInterventionsStore.getState().acknowledge(5);
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:9999/interventions/5/ack",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(store.interventions).toHaveLength(0);
+    expect(useInterventionsStore.getState().interventions).toHaveLength(0);
   });
 });

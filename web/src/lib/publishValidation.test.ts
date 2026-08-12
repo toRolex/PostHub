@@ -7,7 +7,7 @@ import {
   validatePublishForm,
   type PublishFormValues,
 } from "./publishValidation";
-import type { Platform, PlatformConstraint } from "../stores/platform";
+import type { Platform, PlatformConstraint } from "../api/types";
 
 const HOUR = 3600;
 const DAY = 24 * HOUR;

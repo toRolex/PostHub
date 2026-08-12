@@ -1,0 +1,171 @@
+import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { ListChecks, ScrollText, Send, User } from "lucide-react";
+import { useAccountsStore } from "../stores/accounts";
+import { useDaemonStore } from "../stores/daemon";
+import { useInterventionsStore } from "../stores/interventions";
+import { usePlatformStore } from "../stores/platform";
+import { useViewStore, type View } from "../stores/view";
+import { isTauri } from "../lib/isTauri";
+import { cn } from "../lib/utils";
+import { Status } from "./ui/status";
+import { ToastHost } from "./ui/toast";
+import { PublishView } from "../views/PublishView";
+import { TasksView } from "../views/TasksView";
+import { AccountsView } from "../views/AccountsView";
+import { LogsView } from "../views/LogsView";
+
+const NAV_ITEMS: { view: View; label: string; icon: typeof Send }[] = [
+  { view: "publish", label: "发布", icon: Send },
+  { view: "tasks", label: "任务", icon: ListChecks },
+  { view: "accounts", label: "账号", icon: User },
+];
+
+async function loadDaemonUrl(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const url = await invoke<string>("get_daemon_url");
+    useDaemonStore.setState({ url });
+  } catch {
+    // 非 Tauri 环境或命令不可用时使用默认地址
+  }
+}
+
+function Topbar() {
+  const connected = useDaemonStore((s) => s.connected);
+  const health = useDaemonStore((s) => s.health);
+  const meta = connected
+    ? { dot: "bg-success", text: "text-success-deep", label: "守护进程 已连通" }
+    : { dot: "bg-danger", text: "text-danger-deep", label: "守护进程 未连接" };
+  return (
+    <header className="flex h-11 shrink-0 items-center gap-4 border-b border-border-soft bg-bg px-4">
+      <Status meta={meta} />
+      <div className="ml-auto flex items-center gap-4">
+        <span className="text-caption tabular-nums text-meta">
+          v{health?.version ?? "0.1.0"}
+          {health?.port ? ` · 端口 ${health.port}` : ""}
+        </span>
+      </div>
+    </header>
+  );
+}
+
+function NavButton({
+  view,
+  active,
+  onClick,
+}: {
+  view: View;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const Icon = NAV_ICONS[view];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md border border-transparent px-3 py-2 text-left text-label font-medium transition-colors duration-150 ease-out",
+        active
+          ? "bg-accent-tint text-accent-ink"
+          : "text-fg-2 hover:bg-surface hover:text-fg",
+      )}
+    >
+      <Icon className="size-4 opacity-85" />
+      {viewLabel(view)}
+    </button>
+  );
+}
+
+const NAV_ICONS: Record<View, typeof Send> = {
+  publish: Send,
+  tasks: ListChecks,
+  accounts: User,
+  logs: ScrollText,
+};
+
+function viewLabel(view: View): string {
+  return { publish: "发布", tasks: "任务", accounts: "账号", logs: "日志" }[view];
+}
+
+function Sidebar() {
+  const view = useViewStore((s) => s.view);
+  const setView = useViewStore((s) => s.setView);
+  return (
+    <aside className="flex min-h-0 flex-col gap-2 border-r border-border-soft bg-surface-warm px-3 py-4">
+      <div className="mb-2 flex items-center gap-2 border-b border-border-soft px-2 pb-4">
+        <span className="grid size-[26px] place-items-center rounded-[7px] bg-accent text-white">
+          <Send className="size-[15px]" />
+        </span>
+        <span className="text-emph font-semibold tracking-[-0.01em]">PostHub</span>
+      </div>
+      <nav className="flex flex-col gap-0.5">
+        {NAV_ITEMS.map((item) => (
+          <NavButton
+            key={item.view}
+            view={item.view}
+            active={view === item.view}
+            onClick={() => setView(item.view)}
+          />
+        ))}
+      </nav>
+      <div className="mt-auto">
+        <NavButton
+          view="logs"
+          active={view === "logs"}
+          onClick={() => setView("logs")}
+        />
+      </div>
+    </aside>
+  );
+}
+
+function ShellView() {
+  const view = useViewStore((s) => s.view);
+  switch (view) {
+    case "publish":
+      return <PublishView />;
+    case "tasks":
+      return <TasksView />;
+    case "accounts":
+      return <AccountsView />;
+    case "logs":
+      return <LogsView />;
+  }
+}
+
+export function AppShell() {
+  useEffect(() => {
+    void loadDaemonUrl();
+    void usePlatformStore.getState().fetchConstraints();
+    void useAccountsStore.getState().fetchAccounts();
+    void useDaemonStore.getState().checkHealth();
+    const { pollIntervalMs } = useDaemonStore.getState();
+    const healthTimer = window.setInterval(
+      () => void useDaemonStore.getState().checkHealth(),
+      pollIntervalMs,
+    );
+    const interventionTimer = window.setInterval(
+      () => void useInterventionsStore.getState().poll(),
+      pollIntervalMs,
+    );
+    return () => {
+      window.clearInterval(healthTimer);
+      window.clearInterval(interventionTimer);
+    };
+  }, []);
+
+  return (
+    <div className="grid h-screen grid-rows-[auto_1fr] overflow-hidden bg-bg text-fg">
+      <Topbar />
+      <div className="grid min-h-0 grid-cols-[216px_1fr]">
+        <Sidebar />
+        <main className="min-h-0 overflow-y-auto">
+          <ShellView />
+        </main>
+      </div>
+      <ToastHost />
+    </div>
+  );
+}

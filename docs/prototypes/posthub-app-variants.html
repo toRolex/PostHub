@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PostHub · 三变体 UI Prototype</title>
+<!--
+  UI PROTOTYPE（throwaway）—— 回答「前端应该长什么样」。
+  三个结构不同的 variant，?variant=A|B|C 切换，浮动底栏翻看。
+  视觉依据 docs/DESIGN.md（正式版）：亮色 Restrained、Apple DS 语系、Action Blue。
+  补全缺口：loading skeleton + manifest 待确认列表。
+  不做持久化；选中的 variant 胜出后并入 craft 实现，本文件留在 throwaway branch。
+-->
+<style>
+/* ═══════════════ 共享 Design Tokens（DESIGN.md 正式版） ═══════════════ */
+:root {
+  --bg: oklch(1 0 0); --surface: oklch(0.966 0.0018 286);
+  --surface-warm: oklch(0.986 0.0013 286); --surface-sunk: oklch(0.948 0.0022 286);
+  --fg: oklch(0.181 0.0028 300); --fg-2: oklch(0.324 0.0035 300);
+  --muted: oklch(0.51 0.0045 300); --meta: oklch(0.53 0.006 300);
+  --border: oklch(0.845 0.004 280); --border-soft: oklch(0.92 0.0036 280);
+  --accent: oklch(0.543 0.215 255); --accent-hover: oklch(0.568 0.22 255);
+  --accent-active: oklch(0.494 0.196 255); --accent-ink: oklch(0.418 0.17 258);
+  --accent-tint: oklch(0.955 0.02 255); --accent-tint-2: oklch(0.91 0.05 255);
+  --success: oklch(0.63 0.19 152); --success-tint: oklch(0.953 0.03 152);
+  --warn: oklch(0.577 0.15 64); --warn-tint: oklch(0.965 0.028 75);
+  --danger: oklch(0.577 0.208 27); --danger-tint: oklch(0.965 0.024 27);
+  --info: oklch(0.51 0.0045 300);
+  --p-douyin: oklch(0.176 0.013 270); --p-xhs: oklch(0.61 0.26 15); --p-wechat: oklch(0.72 0.19 155);
+  --text-caption: 0.75rem; --text-label: 0.8125rem; --text-body: 0.875rem;
+  --text-emph: 0.9375rem; --text-subtitle: 1.125rem; --text-title: 1.25rem; --text-page: 1.5rem;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px oklch(0.3 0.01 300 / 0.05);
+  --shadow-md: 0 4px 12px oklch(0.3 0.01 300 / 0.07);
+  --shadow-lg: 0 12px 32px oklch(0.3 0.01 300 / 0.1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --motion-fast: 150ms; --motion-base: 220ms;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; font-family: var(--font-sans); font-size: var(--text-body); line-height: 1.55; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; }
+input, textarea { font: inherit; color: inherit; }
+h1, h2, h3, p { margin: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+::selection { background: var(--accent-tint-2); }
+
+/* ═══ 共享基础组件 ═══ */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 34px; padding: 6px 14px; border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--text-label); font-weight: 500; line-height: 1.2; background: transparent; color: var(--fg); transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); white-space: nowrap; }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn:active { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn--primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
+.btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn--primary:active:not(:disabled) { background: var(--accent-active); }
+.btn--secondary { background: var(--bg); border-color: var(--border); color: var(--fg); }
+.btn--secondary:hover:not(:disabled) { background: var(--surface); }
+.btn--ghost { color: var(--fg-2); }
+.btn--ghost:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
+.btn--danger { color: var(--danger); }
+.btn--danger:hover:not(:disabled) { background: var(--danger-tint); }
+.btn--sm { min-height: 28px; padding: 4px 10px; font-size: var(--text-caption); border-radius: var(--radius-sm); }
+.btn--lg { min-height: 40px; padding: 8px 20px; font-size: var(--text-body); }
+
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-label); font-weight: 500; }
+.status__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--meta); flex: none; }
+.status--info .status__dot { background: var(--info); } .status--info { color: var(--muted); }
+.status--pub .status__dot { background: var(--accent); } .status--pub { color: var(--accent-ink); }
+.status--ok .status__dot { background: var(--success); } .status--ok { color: var(--success); }
+.status--fail .status__dot { background: var(--danger); } .status--fail { color: var(--danger); }
+.status--warn .status__dot { background: var(--warn); } .status--warn { color: var(--warn); }
+.status--dead .status__dot { background: var(--meta); } .status--dead { color: var(--meta); }
+.status__dot.is-pulse { animation: pulse 1.6s var(--ease-out) infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.platform { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-caption); font-weight: 500; color: var(--fg-2); }
+.platform__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.platform--douyin .platform__dot { background: var(--p-douyin); }
+.platform--xhs .platform__dot { background: var(--p-xhs); }
+.platform--wechat .platform__dot { background: var(--p-wechat); }
+
+.chip { min-height: 28px; padding: 4px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); background: var(--surface-warm); color: var(--fg-2); font-size: var(--text-label); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.chip:hover { border-color: var(--border); color: var(--fg); }
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-5); }
+.chip.is-active { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-ink); }
+.chip__count { color: var(--meta); font-variant-numeric: tabular-nums; font-size: var(--text-caption); }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field__label { font-size: var(--text-label); font-weight: 500; color: var(--fg-2); }
+.field__help { font-size: var(--text-caption); color: var(--meta); }
+.field__input, .field__textarea { width: 100%; min-height: 36px; padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); font-size: var(--text-body); transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
+.field__textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
+.field__input::placeholder, .field__textarea::placeholder { color: var(--meta); }
+.field__input:focus, .field__textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+
+.switch { position: relative; display: inline-flex; align-items: center; }
+.switch__input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch__track { width: 36px; height: 21px; border-radius: var(--radius-pill); background: var(--border); transition: background var(--motion-base) var(--ease-out); display: inline-flex; align-items: center; padding: 2px; flex: none; }
+.switch__track::after { content: ""; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-sm); transition: transform var(--motion-base) var(--ease-out); }
+.switch__input:checked + .switch__track { background: var(--accent); }
+.switch__input:checked + .switch__track::after { transform: translateX(15px); }
+.switch__input:focus-visible + .switch__track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--space-3); padding: var(--space-12) var(--space-6); color: var(--muted); }
+.empty svg { width: 34px; height: 34px; color: var(--meta); }
+.empty__title { font-size: var(--text-subtitle); font-weight: 600; color: var(--fg); }
+.empty__desc { font-size: var(--text-label); max-width: 34ch; line-height: 1.6; }
+
+/* Loading skeleton（补缺口 1） */
+.skeleton { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) 0; }
+.skeleton__row { height: 44px; border-radius: var(--radius-md); background: linear-gradient(90deg, var(--surface) 25%, var(--surface-warm) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.2s var(--ease-out) infinite; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Toast */
+.toast-root { position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: var(--space-2); align-items: center; }
+.toast { display: flex; align-items: center; gap: var(--space-2); padding: 10px 16px; border-radius: var(--radius-md); background: var(--fg); color: var(--bg); font-size: var(--text-label); font-weight: 500; box-shadow: var(--shadow-lg); animation: toast-in var(--motion-base) var(--ease-out); }
+.toast--ok { background: oklch(0.35 0.14 152); }
+.toast--warn { background: oklch(0.4 0.12 64); }
+.toast--err { background: oklch(0.42 0.18 27); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ═══ 顶栏（三变体共享：daemon 状态常驻） ═══ */
+.topbar { display: flex; align-items: center; gap: var(--space-4); height: 44px; padding: 0 var(--space-4); background: var(--bg); border-bottom: 1px solid var(--border-soft); font-size: var(--text-label); z-index: 5; }
+.topbar__status { display: flex; align-items: center; gap: var(--space-2); font-weight: 500; }
+.topbar__right { margin-left: auto; display: flex; align-items: center; gap: var(--space-4); }
+.topbar__meta { color: var(--meta); font-variant-numeric: tabular-nums; }
+
+/* ═══════════════ Variant A — Workbench（窄侧栏 + 顶栏） ═══════════════ */
+.shell-a { display: grid; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+.shell-a .body { display: grid; grid-template-columns: 216px 1fr; min-height: 0; }
+.sidebar { display: flex; flex-direction: column; background: var(--surface-warm); border-right: 1px solid var(--border-soft); padding: var(--space-4) var(--space-3); gap: var(--space-2); min-height: 0; }
+.brand { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2) var(--space-4); margin-bottom: var(--space-2); border-bottom: 1px solid var(--border-soft); }
+.brand__mark { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); display: grid; place-items: center; color: #fff; flex: none; }
+.brand__mark svg { width: 15px; height: 15px; }
+.brand__name { font-size: var(--text-emph); font-weight: 600; letter-spacing: -0.01em; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav__item { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; text-align: left; font-size: var(--text-label); font-weight: 500; color: var(--fg-2); transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); }
+.nav__item svg { width: 16px; height: 16px; flex: none; opacity: 0.85; }
+.nav__item:hover { background: var(--surface); color: var(--fg); }
+.nav__item.is-active { background: var(--accent-tint); color: var(--accent-ink); }
+.nav__item.is-active svg { opacity: 1; }
+.sidebar__foot { margin-top: auto; }
+.main { overflow-y: auto; min-height: 0; }
+.view { display: none; padding: var(--space-8) var(--space-8) var(--space-12); max-width: 960px; margin: 0 auto; }
+.view.is-visible { display: block; animation: fade-in var(--motion-base) var(--ease-out); }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.view-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-6); }
+.view-head h2 { font-size: var(--text-page); font-weight: 600; letter-spacing: -0.015em; }
+.view-head .view-head__hint { color: var(--muted); font-size: var(--text-label); }
+.section { border-top: 1px solid var(--border-soft); padding: var(--space-6) 0; }
+.section:first-of-type { border-top: 0; padding-top: 0; }
+.section__head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-4); }
+.section__title { font-size: var(--text-title); font-weight: 600; letter-spacing: -0.01em; }
+.section__hint { font-size: var(--text-label); color: var(--muted); }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+.asset { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: var(--bg); }
+.asset__thumb { width: 96px; height: 58px; border-radius: var(--radius-sm); background: var(--surface-sunk); display: grid; place-items: center; color: var(--meta); flex: none; position: relative; overflow: hidden; }
+.asset__thumb svg { width: 22px; height: 22px; }
+.asset__thumb--dur { position: absolute; right: 5px; bottom: 5px; font-size: 10px; color: #fff; background: oklch(0.2 0.01 300 / 0.72); padding: 1px 5px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.asset__name { font-weight: 600; font-size: var(--text-body); }
+.asset__meta { font-size: var(--text-caption); color: var(--meta); margin-top: 2px; }
+.asset__actions { margin-left: auto; display: flex; gap: var(--space-2); }
+.check-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); margin-bottom: var(--space-2); transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.check-row:hover { background: var(--surface-warm); }
+.check-row.is-selected { border-color: var(--accent); background: var(--accent-tint); }
+.check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; flex: none; cursor: pointer; }
+.check-row__meta { margin-left: auto; font-size: var(--text-caption); color: var(--meta); }
+.publish-actions { position: sticky; bottom: 0; z-index: 4; display: flex; align-items: center; gap: var(--space-5); margin-top: var(--space-4); padding: var(--space-4) 0; background: linear-gradient(to top, var(--bg) 72%, transparent); }
+.publish-actions__sched { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-label); color: var(--fg-2); }
+.publish-actions__cta { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); }
+
+/* manifest 待确认列表（补缺口 2） */
+.confirm-list { display: flex; flex-direction: column; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden; }
+.confirm-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-soft); background: var(--bg); }
+.confirm-item:last-child { border-bottom: 0; }
+.confirm-item__info { flex: 1; min-width: 0; }
+.confirm-item__title { font-weight: 600; font-size: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.confirm-item__meta { font-size: var(--text-caption); color: var(--meta); margin-top: 2px; }
+.confirm-item__ops { display: flex; gap: var(--space-2); }
+
+/* 任务区（A：列表 + 展开） */
+.task-row { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-3); align-items: center; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-soft); transition: background var(--motion-fast) var(--ease-out); }
+.task-row:hover { background: var(--surface-warm); }
+.task-row.is-alert { background: var(--warn-tint); }
+.task-row__title { font-weight: 600; font-size: var(--text-body); display: flex; align-items: center; gap: var(--space-2); }
+.task-row__plats { display: flex; gap: var(--space-3); margin-top: 3px; }
+.task-row__right { display: flex; align-items: center; gap: var(--space-4); }
+.task-row__time { font-size: var(--text-caption); color: var(--meta); font-variant-numeric: tabular-nums; }
+.task-detail { display: none; padding: 0 var(--space-4) var(--space-4) calc(var(--space-4) + 24px); border-bottom: 1px solid var(--border-soft); }
+.job-table { width: 100%; border-collapse: collapse; font-size: var(--text-label); }
+.job-table th { text-align: left; font-weight: 500; color: var(--meta); font-size: var(--text-caption); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-soft); }
+.job-table td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-soft); color: var(--fg-2); }
+.job-table tr:last-child td { border-bottom: 0; }
+.job-table__msg { color: var(--muted); font-size: var(--text-caption); }
+.job-table__err { color: var(--danger); font-size: var(--text-caption); }
+.job-table__time { color: var(--meta); font-variant-numeric: tabular-nums; font-size: var(--text-caption); }
+
+/* ═══════════════ Variant B — Master-Detail（顶部 tab + 双栏） ═══════════════ */
+.shell-b { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; overflow: hidden; }
+.shell-b .tabs { display: flex; align-items: center; gap: var(--space-1); height: 48px; padding: 0 var(--space-6); background: var(--surface-warm); border-bottom: 1px solid var(--border-soft); }
+.tabs__item { display: flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-4); border: none; border-radius: var(--radius-md); background: transparent; font-size: var(--text-label); font-weight: 500; color: var(--fg-2); }
+.tabs__item:hover { background: var(--surface); color: var(--fg); }
+.tabs__item.is-active { background: var(--accent-tint); color: var(--accent-ink); }
+.shell-b .main { display: none; padding: var(--space-6) var(--space-8) var(--space-12); max-width: 1200px; margin: 0 auto; width: 100%; }
+.shell-b .main.is-visible { display: block; animation: fade-in var(--motion-base) var(--ease-out); }
+.split { display: grid; grid-template-columns: 300px 1fr; gap: var(--space-6); align-items: start; }
+.panel { border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: var(--bg); overflow: hidden; }
+.panel__head { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-soft); font-weight: 600; font-size: var(--text-label); }
+.panel__body { padding: var(--space-3); }
+.asset-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.asset-list__item { display: flex; gap: var(--space-3); align-items: center; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; }
+.asset-list__item:hover { background: var(--surface-warm); }
+.asset-list__item.is-selected { background: var(--accent-tint); }
+.asset-list__thumb { width: 56px; height: 40px; border-radius: var(--radius-sm); background: var(--surface-sunk); display: grid; place-items: center; color: var(--meta); flex: none; font-size: 10px; font-weight: 600; }
+.asset-list__name { font-size: var(--text-label); font-weight: 600; }
+.asset-list__meta { font-size: var(--text-caption); color: var(--meta); }
+.editor { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+.batch-panel { margin-top: var(--space-3); }
+.wide-table { width: 100%; border-collapse: collapse; font-size: var(--text-label); }
+.wide-table th { text-align: left; font-weight: 500; color: var(--meta); font-size: var(--text-caption); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.wide-table td { padding: var(--space-3); border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+.wide-table tr:hover td { background: var(--surface-warm); }
+.wide-table .cell-strong { font-weight: 600; }
+.wide-table .cell-mono { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ═══════════════ Variant C — Wizard（图标侧栏 + 分步向导） ═══════════════ */
+.shell-c { display: grid; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
+.shell-c .body { display: grid; grid-template-columns: 56px 1fr; min-height: 0; }
+.iconbar { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); padding: var(--space-4) var(--space-2); background: var(--surface-warm); border-right: 1px solid var(--border-soft); }
+.iconbar__brand { width: 32px; height: 32px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; margin-bottom: var(--space-3); }
+.iconbar__brand svg { width: 17px; height: 17px; }
+.iconbar__item { width: 36px; height: 36px; display: grid; place-items: center; border: none; border-radius: var(--radius-md); background: transparent; color: var(--fg-2); transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); }
+.iconbar__item svg { width: 18px; height: 18px; }
+.iconbar__item:hover { background: var(--surface); color: var(--fg); }
+.iconbar__item.is-active { background: var(--accent-tint); color: var(--accent-ink); }
+.iconbar__foot { margin-top: auto; }
+.shell-c .main { overflow-y: auto; min-height: 0; }
+.shell-c .view { display: none; padding: var(--space-8) var(--space-8) var(--space-12); max-width: 840px; margin: 0 auto; }
+.shell-c .view.is-visible { display: block; animation: fade-in var(--motion-base) var(--ease-out); }
+.steps { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-8); }
+.step { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-label); color: var(--meta); }
+.step__num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--surface); color: var(--muted); }
+.step.is-active .step__num { background: var(--accent); color: #fff; }
+.step.is-active { color: var(--fg); font-weight: 500; }
+.step.is-done .step__num { background: var(--success); color: #fff; }
+.step__divider { flex: 1; height: 1px; background: var(--border-soft); }
+.wizard-foot { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-8); padding-top: var(--space-4); border-top: 1px solid var(--border-soft); }
+.wizard-foot__nav { display: flex; gap: var(--space-2); }
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.task-card { border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: var(--space-4); background: var(--bg); }
+.task-card.is-alert { background: var(--warn-tint); }
+.task-card__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
+.task-card__title { font-weight: 600; font-size: var(--text-body); }
+.task-card__plats { display: flex; gap: var(--space-3); margin-top: var(--space-2); }
+.task-card__foot { display: flex; align-items: center; justify-content: space-between; margin-top: var(--space-3); }
+.task-card__time { font-size: var(--text-caption); color: var(--meta); }
+
+/* ═══ 浮动 Variant Switcher ═══ */
+.switcher { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 90; display: flex; align-items: center; gap: var(--space-2); padding: 4px 6px; border-radius: var(--radius-pill); background: var(--fg); color: var(--bg); box-shadow: var(--shadow-lg); font-size: var(--text-label); font-weight: 500; }
+.switcher button { border: none; background: transparent; color: var(--bg); opacity: 0.75; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; }
+.switcher button:hover { opacity: 1; background: oklch(1 0 0 / 0.12); }
+.switcher button svg { width: 16px; height: 16px; }
+.switcher__label { min-width: 150px; text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ Variant A — Workbench ═══ -->
+<div class="shell-a" id="shell-A">
+  <header class="topbar">
+    <div class="topbar__status"><span class="status status--ok"><span class="status__dot"></span>守护进程 已连通</span></div>
+    <div class="topbar__right"><span class="topbar__meta">v0.1.0 · 端口 8756</span></div>
+  </header>
+  <div class="body">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand__mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg></span><span class="brand__name">PostHub</span></div>
+      <nav class="nav">
+        <button class="nav__item is-active" data-nav-a="publish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg>发布</button>
+        <button class="nav__item" data-nav-a="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><path d="m17 16 2 2 4-4"/></svg>任务</button>
+        <button class="nav__item" data-nav-a="accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>账号</button>
+      </nav>
+      <div class="sidebar__foot"><button class="nav__item" data-nav-a="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14l-2 7 2 9H5l2-9-2-7Z"/></svg>日志</button></div>
+    </aside>
+    <main class="main">
+      <section class="view is-visible" id="A-publish">
+        <div class="view-head"><h2>发布</h2><span class="view-head__hint">一个视频，一键或定时发到多个平台</span></div>
+        <div class="section">
+          <div class="section__head"><h3 class="section__title">素材</h3><span class="section__hint">本地视频 · 或 manifest 批量导入</span></div>
+          <div class="asset" id="A-asset-card">
+            <div class="asset__thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 12 2 2 4-4"/></svg><span class="asset__thumb--dur">0:30</span></div>
+            <div class="asset__info"><div class="asset__name">新品开箱 · 30s 混剪.mp4</div><div class="asset__meta">4K · 3840×2160 · 42.8 MB</div></div>
+            <div class="asset__actions"><button class="btn btn--ghost btn--sm">移除</button></div>
+          </div>
+          <div style="margin-top: var(--space-3); display:flex; gap: var(--space-2);">
+            <button class="btn btn--secondary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/></svg>本地文件</button>
+            <button class="btn btn--ghost" id="A-batch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>批量导入</button>
+          </div>
+          <!-- manifest 待确认列表（补缺口 2） -->
+          <div id="A-confirm" class="section" style="display:none;">
+            <div class="section__head"><h3 class="section__title">待确认导入</h3><span class="section__hint">manifest 批量导入 · 逐条核对后放行</span></div>
+            <div class="confirm-list" id="A-confirm-list"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section__head"><h3 class="section__title">发布到</h3><span class="section__hint">勾选账号，行内显示平台约束</span></div>
+          <div id="A-accounts"></div>
+        </div>
+        <div class="section">
+          <div class="section__head"><h3 class="section__title">内容与排期</h3><span class="section__hint">平台差异在此收敛</span></div>
+          <div class="form-grid">
+            <div class="field"><label class="field__label">标题</label><input class="field__input" value="新品开箱｜30s 混剪" maxlength="60"/></div>
+            <div class="field"><label class="field__label">标签</label><input class="field__input" value="新品开箱, 好物推荐" placeholder="用逗号分隔"/></div>
+          </div>
+          <div class="field" style="margin-top: var(--space-4);"><label class="field__label">正文</label><textarea class="field__textarea" placeholder="写点正文，留空则仅标题发布">第一次开箱！30 秒带你看完所有亮点。</textarea></div>
+        </div>
+        <div class="publish-actions">
+          <div class="publish-actions__sched"><label class="switch"><input type="checkbox"/><span class="switch__track"></span></label><span>立即发布</span></div>
+          <div class="publish-actions__cta"><button class="btn btn--primary btn--lg">立即发布</button></div>
+        </div>
+      </section>
+      <section class="view" id="A-tasks">
+        <div class="view-head"><h2>任务</h2><span class="view-head__hint" id="A-task-total"></span></div>
+        <div class="chip-row" id="A-chips"></div>
+        <div id="A-task-list"><!-- JS --></div>
+      </section>
+      <section class="view" id="A-accounts-view">
+        <div class="view-head"><h2>账号</h2><span class="view-head__hint">多平台账号与调试端口</span></div>
+        <div id="A-accounts-table"><!-- JS --></div>
+      </section>
+      <section class="view" id="A-logs">
+        <div class="view-head"><h2>日志</h2><span class="view-head__hint">守护进程运行日志</span></div>
+        <div style="font-family:var(--font-mono);font-size:var(--text-caption);color:var(--fg-2);line-height:1.7;background:var(--surface-sunk);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:var(--space-4);min-height:320px;">
+          <div><span style="color:var(--meta);">12:00:01</span> [daemon] 健康检查通过 · 127.0.0.1:8756</div>
+          <div><span style="color:var(--meta);">11:58:42</span> [scheduler] 领取任务 #1042（抖音）· attempt 1</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- ═══ Variant B — Master-Detail ═══ -->
+<div class="shell-b" id="shell-B" hidden>
+  <header class="topbar">
+    <div class="topbar__status"><span class="status status--ok"><span class="status__dot"></span>守护进程 已连通</span></div>
+    <div class="topbar__right"><span class="topbar__meta">v0.1.0 · 端口 8756</span></div>
+  </header>
+  <nav class="tabs">
+    <button class="tabs__item is-active" data-nav-b="publish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg>发布</button>
+    <button class="tabs__item" data-nav-b="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><path d="m17 16 2 2 4-4"/></svg>任务</button>
+    <button class="tabs__item" data-nav-b="accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>账号</button>
+  </nav>
+  <main class="main is-visible" id="B-publish">
+    <div class="view-head"><h2>发布</h2><span class="view-head__hint">主从双栏 · 左侧素材库，右侧编辑器</span></div>
+    <div class="split">
+      <div style="display:flex;flex-direction:column;gap:var(--space-4);">
+        <div class="panel">
+          <div class="panel__head">素材库<span><button class="btn btn--secondary btn--sm">+ 本地文件</button></span></div>
+          <div class="panel__body">
+            <div class="asset-list" id="B-assets"></div>
+          </div>
+        </div>
+        <div class="panel batch-panel">
+          <div class="panel__head">批量导入<span class="chip__count">manifest</span></div>
+          <div class="panel__body">
+            <button class="btn btn--ghost btn--sm" id="B-batch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>导入文件夹</button>
+            <div id="B-confirm" style="display:none;margin-top:var(--space-3);"><div class="confirm-list" id="B-confirm-list"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel__head">编辑器 · 新品开箱<span class="chip__count">0:30</span></div>
+        <div class="editor">
+          <div class="field"><label class="field__label">标题</label><input class="field__input" value="新品开箱｜30s 混剪" maxlength="60"/></div>
+          <div class="field"><label class="field__label">正文</label><textarea class="field__textarea">第一次开箱！30 秒带你看完所有亮点。</textarea></div>
+          <div class="field"><label class="field__label">标签</label><input class="field__input" value="新品开箱, 好物推荐"/></div>
+          <div class="field"><label class="field__label">发布到</label><div id="B-accounts"></div></div>
+          <div class="publish-actions" style="position:static;padding:0;background:none;margin-top:0;"><button class="btn btn--primary">立即发布</button><button class="btn btn--ghost">定时</button></div>
+        </div>
+      </div>
+    </div>
+  </main>
+  <main class="main" id="B-tasks">
+    <div class="view-head"><h2>任务</h2><span class="view-head__hint" id="B-task-total"></span></div>
+    <div class="chip-row" id="B-chips"></div>
+    <div id="B-task-list"></div>
+  </main>
+  <main class="main" id="B-accounts-view">
+    <div class="view-head"><h2>账号</h2><span class="view-head__hint">多平台账号与调试端口</span></div>
+    <div id="B-accounts-table"></div>
+  </main>
+</div>
+
+<!-- ═══ Variant C — Wizard ═══ -->
+<div class="shell-c" id="shell-C" hidden>
+  <header class="topbar">
+    <div class="topbar__status"><span class="status status--ok"><span class="status__dot"></span>守护进程 已连通</span></div>
+    <div class="topbar__right"><span class="topbar__meta">v0.1.0 · 端口 8756</span></div>
+  </header>
+  <div class="body">
+    <aside class="iconbar">
+      <div class="iconbar__brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg></div>
+      <button class="iconbar__item is-active" data-nav-c="publish" title="发布"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/></svg></button>
+      <button class="iconbar__item" data-nav-c="tasks" title="任务"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/><path d="m17 16 2 2 4-4"/></svg></button>
+      <button class="iconbar__item" data-nav-c="accounts" title="账号"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></button>
+      <div class="iconbar__foot"><button class="iconbar__item" data-nav-c="logs" title="日志"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14l-2 7 2 9H5l2-9-2-7Z"/></svg></button></div>
+    </aside>
+    <main class="main">
+      <section class="view is-visible" id="C-publish">
+        <div class="view-head"><h2>发布</h2><span class="view-head__hint">分步向导 · 三步完成一次发布</span></div>
+        <div class="steps" id="C-steps"></div>
+        <div id="C-wizard-body"></div>
+        <div class="wizard-foot">
+          <span class="field__help" id="C-step-hint"></span>
+          <div class="wizard-foot__nav">
+            <button class="btn btn--ghost" id="C-prev" hidden>上一步</button>
+            <button class="btn btn--secondary" id="C-next">下一步</button>
+            <button class="btn btn--primary" id="C-done" hidden>发布</button>
+          </div>
+        </div>
+      </section>
+      <section class="view" id="C-tasks">
+        <div class="view-head"><h2>任务</h2><span class="view-head__hint" id="C-task-total"></span></div>
+        <div id="C-task-cards"></div>
+      </section>
+      <section class="view" id="C-accounts-view">
+        <div class="view-head"><h2>账号</h2><span class="view-head__hint">多平台账号与调试端口</span></div>
+        <div id="C-accounts-table"></div>
+      </section>
+      <section class="view" id="C-logs">
+        <div class="view-head"><h2>日志</h2><span class="view-head__hint">守护进程运行日志</span></div>
+        <div style="font-family:var(--font-mono);font-size:var(--text-caption);color:var(--fg-2);line-height:1.7;background:var(--surface-sunk);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:var(--space-4);min-height:320px;">
+          <div><span style="color:var(--meta);">12:00:01</span> [daemon] 健康检查通过 · 127.0.0.1:8756</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="toast-root" id="toast-root" aria-live="polite"></div>
+
+<!-- ═══ 浮动 Variant Switcher ═══ -->
+<div class="switcher" id="switcher" role="navigation" aria-label="Prototype 变体切换">
+  <button id="sw-prev" aria-label="上一个变体"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+  <span class="switcher__label" id="sw-label">A — Workbench</span>
+  <button id="sw-next" aria-label="下一个变体"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+</div>
+
+<script>
+/* ═══════════════ 共享数据与渲染 ═══════════════ */
+const PLATFORMS = { douyin: { name: "抖音", dot: "var(--p-douyin)" }, xiaohongshu: { name: "小红书", dot: "var(--p-xhs)" }, wechat: { name: "视频号", dot: "var(--p-wechat)" } };
+const STATUS_META = {
+  pending: { cls: "status--info", label: "待发布" }, publishing: { cls: "status--pub", label: "发布中", pulse: true },
+  success: { cls: "status--ok", label: "成功" }, failed: { cls: "status--fail", label: "失败" },
+  manual: { cls: "status--warn", label: "需人工" }, needs_relogin: { cls: "status--warn", label: "需重登" },
+  missed: { cls: "status--dead", label: "错过" }, partial: { cls: "status--warn", label: "部分成功" },
+};
+const ACCOUNT_STATUS = { active: { cls: "status--ok", label: "可用" }, needs_relogin: { cls: "status--warn", label: "需重新扫码" }, disabled: { cls: "status--dead", label: "已停用" } };
+/* 平台约束——以 CONTEXT.md 注册表为准 */
+const PLATFORM_CONSTRAINT = { douyin: "定时窗口 2h~14 天 · 封面强制", xiaohongshu: "定时窗口 2h~7 天 · 缺封面取首帧", wechat: "定时窗口 2h~1 月 · 缺封面取首帧" };
+
+const ACCOUNTS = [
+  { id: 1, platform: "douyin", name: "主号", user: "chanel_dou", port: 9222, status: "active" },
+  { id: 2, platform: "xiaohongshu", name: "主号", user: "chanel_xhs", port: 9223, status: "active" },
+  { id: 3, platform: "wechat", name: "主号", user: "chanel_wx", port: 9224, status: "active" },
+  { id: 4, platform: "douyin", name: "备用号", user: "chanel_dou2", port: 9225, status: "needs_relogin" },
+];
+const TASKS = [
+  { id: 99, title: "新品开箱 · 30s 混剪", time: "5 分钟前", status: "publishing", plats: ["douyin","xiaohongshu","wechat"], jobs: [
+    { platform: "douyin", status: "publishing", msg: "视频上传中 · 38%", time: "5 分钟前" },
+    { platform: "xiaohongshu", status: "publishing", msg: "视频上传中 · 61%", time: "5 分钟前" },
+    { platform: "wechat", status: "pending", msg: "排队等待 · 同平台串行", time: "—" } ] },
+  { id: 98, title: "周末市集探店", time: "18 分钟前", status: "manual", plats: ["douyin","xiaohongshu"], jobs: [
+    { platform: "douyin", status: "success", msg: "发布成功", time: "17 分钟前" },
+    { platform: "xiaohongshu", status: "manual", msg: "验证码挂起，等待人工处理", time: "18 分钟前", err: true } ] },
+  { id: 97, title: "剪映 6 个转场技巧", time: "2 小时前", status: "failed", plats: ["douyin"], jobs: [
+    { platform: "douyin", status: "failed", msg: "抖音返回 412 · 风控拦截，可重试", time: "2 小时前", err: true } ] },
+  { id: 96, title: "大理旅行 vlog · 4K", time: "昨天", status: "success", plats: ["xiaohongshu","wechat"], jobs: [
+    { platform: "xiaohongshu", status: "success", msg: "发布成功", time: "昨天" },
+    { platform: "wechat", status: "success", msg: "发布成功", time: "昨天" } ] },
+  { id: 95, title: "OOTD 穿搭合集", time: "昨天", status: "partial", plats: ["douyin","xiaohongshu","wechat"], jobs: [
+    { platform: "douyin", status: "success", msg: "发布成功", time: "昨天" },
+    { platform: "xiaohongshu", status: "failed", msg: "图片尺寸不符合要求", time: "昨天", err: true },
+    { platform: "wechat", status: "success", msg: "发布成功", time: "昨天" } ] },
+  { id: 94, title: "健身日常打卡", time: "3 天前", status: "missed", plats: ["wechat"], jobs: [
+    { platform: "wechat", status: "missed", msg: "定时窗口错过（>10min 未领取）", time: "3 天前", err: true } ] },
+];
+const CONFIRM_ITEMS = [
+  { file: "city-walk.mp4", title: "城市漫步 vlog", time: "明天 10:00", ok: true },
+  { file: "cafe-review.mp4", title: "咖啡馆探店合集", time: "明天 18:00", ok: true },
+  { file: "long-cut.mp4", title: "（标题缺失）", time: "立即", ok: false, warn: "缺标题，发布将仅用文件名" },
+];
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html !== undefined) n.innerHTML = html; return n; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const platformTag = p => `<span class="platform platform--${p}"><span class="platform__dot"></span>${PLATFORMS[p].name}</span>`;
+const statusSpan = s => { const m = STATUS_META[s] || STATUS_META.pending; return `<span class="status ${m.cls}"><span class="status__dot${m.pulse ? " is-pulse" : ""}"></span>${m.label}</span>`; };
+function toast(msg, kind = "ok") { const t = el("div", `toast toast--${kind}`, msg); $("#toast-root").appendChild(t); setTimeout(() => t.remove(), 2400); }
+
+/* Loading skeleton 渲染器（补缺口 1）：渲染真实数据前先显示 skeleton */
+function withSkeleton(container, rows, render) {
+  container.innerHTML = `<div class="skeleton">${'<div class="skeleton__row"></div>'.repeat(rows)}</div>`;
+  setTimeout(() => { container.innerHTML = ""; container.appendChild(render()); }, 500);
+}
+
+/* ═══════════════ 发布区共享：账号勾选 ═══════════════ */
+function renderAccountChecks(containerId) {
+  const c = $(containerId); c.innerHTML = "";
+  ACCOUNTS.forEach(a => {
+    const st = ACCOUNT_STATUS[a.status];
+    const row = el("div", "check-row is-selected");
+    row.innerHTML = `<input type="checkbox" ${a.status === "active" ? "checked" : "disabled"} aria-label="发布到 ${PLATFORMS[a.platform].name} ${esc(a.name)}"/>
+      <span class="platform platform--${a.platform}"><span class="platform__dot"></span>${PLATFORMS[a.platform].name} · ${esc(a.name)}</span>
+      <span class="check-row__meta">${a.status === "active" ? PLATFORM_CONSTRAINT[a.platform] : st.label}</span>`;
+    if (a.status !== "active") { row.classList.remove("is-selected"); row.style.opacity = 0.55; }
+    c.appendChild(row);
+  });
+}
+
+/* ═══════════════ manifest 待确认列表（补缺口 2） ═══════════════ */
+function openConfirm(listId, blockId) {
+  $(blockId).style.display = "";
+  const list = $(listId); list.innerHTML = "";
+  CONFIRM_ITEMS.forEach((it, i) => {
+    const row = el("div", "confirm-item");
+    row.innerHTML = `<div class="confirm-item__info">
+        <div class="confirm-item__title">${esc(it.title)} ${it.warn ? `<span style="color:var(--warn);font-size:var(--text-caption);font-weight:500;">· ${esc(it.warn)}</span>` : ""}</div>
+        <div class="confirm-item__meta">${esc(it.file)} · 发布到 视频号 · ${esc(it.time)}</div></div>
+      <div class="confirm-item__ops">
+        <button class="btn btn--ghost btn--sm">编辑</button>
+        <button class="btn btn--primary btn--sm">放行</button>
+      </div>`;
+    row.querySelector(".btn--primary").addEventListener("click", () => { row.remove(); toast(`已放行「${it.title}」`); });
+    list.appendChild(row);
+  });
+  toast("manifest 导入：识别到 3 个素材，进入待确认", "ok");
+}
+
+/* ═══════════════ 任务区：筛选 chips ═══════════════ */
+const FILTER_KEYS = ["all","pending","publishing","success","failed","manual","needs_relogin","missed"];
+const taskKey = t => t.status === "partial" ? "partial" : t.status;
+function renderChips(containerId, onChange) {
+  const c = $(containerId); c.innerHTML = "";
+  FILTER_KEYS.forEach(k => {
+    const count = k === "all" ? TASKS.length : TASKS.filter(t => taskKey(t) === k).length;
+    const chip = el("button", "chip" + (k === "all" ? " is-active" : ""), `${k === "all" ? "全部" : (STATUS_META[k]?.label || k)} <span class="chip__count">${count}</span>`);
+    chip.dataset.filter = k;
+    chip.addEventListener("click", () => { c.querySelectorAll(".chip").forEach(x => x.classList.remove("is-active")); chip.classList.add("is-active"); onChange(k); });
+    c.appendChild(chip);
+  });
+}
+function renderTaskRows(listId, filter) {
+  const list = $(listId);
+  withSkeleton(list, 4, () => {
+    const frag = document.createDocumentFragment();
+    TASKS.filter(t => filter === "all" || taskKey(t) === filter).forEach(t => {
+      const isAlert = t.status === "manual" || t.status === "needs_relogin";
+      const row = el("div", "task-row" + (isAlert ? " is-alert" : ""));
+      row.innerHTML = `<div style="display:flex;align-items:center;gap:var(--space-2);"><div class="task-row__title">${isAlert ? '<span class="status status--warn"><span class="status__dot"></span>需处理</span>' : ""}${esc(t.title)}</div><div class="task-row__plats">${t.plats.map(platformTag).join("")}</div></div>
+        <div></div>
+        <div class="task-row__right">${statusSpan(taskKey(t))}<span class="task-row__time">${t.time}</span></div>`;
+      const detail = el("div", "task-detail", `<table class="job-table"><thead><tr><th style="width:110px">平台</th><th style="width:80px">状态</th><th>信息</th><th style="width:90px">时间</th></tr></thead><tbody>${t.jobs.map(j => `<tr><td>${platformTag(j.platform)}</td><td>${statusSpan(j.status)}</td><td class="${j.err ? "job-table__err" : "job-table__msg"}">${esc(j.msg)}</td><td class="job-table__time">${j.time}</td></tr>`).join("")}</tbody></table>`);
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => { const open = row.classList.toggle("is-open"); detail.style.display = open ? "block" : "none"; });
+      frag.appendChild(row); frag.appendChild(detail);
+    });
+    if (!frag.childNodes.length) frag.appendChild(el("div", "empty", `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/></svg><div class="empty__title">没有匹配的任务</div><div class="empty__desc">换一个筛选条件看看。</div>`));
+    return frag;
+  });
+}
+function renderTaskTable(listId, filter) {
+  const list = $(listId);
+  withSkeleton(list, 4, () => {
+    const tbl = el("table", "wide-table");
+    tbl.innerHTML = `<thead><tr><th>任务</th><th>平台</th><th>状态</th><th>结果</th><th style="text-align:right;">操作</th></tr></thead><tbody></tbody>`;
+    const tbody = tbl.querySelector("tbody");
+    TASKS.filter(t => filter === "all" || taskKey(t) === filter).forEach(t => {
+      const tr = el("tr");
+      tr.innerHTML = `<td class="cell-strong">${esc(t.title)}</td>
+        <td>${t.plats.map(platformTag).join("")}</td>
+        <td>${statusSpan(taskKey(t))}</td>
+        <td class="cell-mono">${t.jobs.filter(j => j.status === "success").length}/${t.jobs.length} 成功</td>
+        <td style="text-align:right;"><div style="display:flex;gap:var(--space-1);justify-content:flex-end;">${(t.status === "failed" || t.status === "manual") ? '<button class="btn btn--sm btn--secondary">重试</button>' : ""}</div></td>`;
+      tbody.appendChild(tr);
+    });
+    return tbl;
+  });
+}
+function renderTaskCards(listId) {
+  const list = $(listId);
+  withSkeleton(list, 3, () => {
+    const frag = document.createDocumentFragment();
+    TASKS.forEach(t => {
+      const isAlert = t.status === "manual" || t.status === "needs_relogin";
+      const card = el("div", "task-card" + (isAlert ? " is-alert" : ""));
+      card.innerHTML = `<div class="task-card__head"><div class="task-card__title">${esc(t.title)}</div>${statusSpan(taskKey(t))}</div>
+        <div class="task-card__plats">${t.plats.map(platformTag).join("")}</div>
+        <div class="task-card__foot"><span class="task-card__time">${t.time}</span>${(t.status === "failed" || t.status === "manual") ? '<button class="btn btn--sm btn--secondary">重试</button>' : ""}</div>`;
+      frag.appendChild(card);
+    });
+    return frag;
+  });
+}
+
+/* ═══════════════ 账号表格（三变体复用） ═══════════════ */
+function renderAccountTable(containerId) {
+  const c = $(containerId); c.innerHTML = "";
+  const tbl = el("table", "wide-table");
+  tbl.innerHTML = `<thead><tr><th>平台</th><th>名称</th><th>用户名</th><th>调试端口</th><th>状态</th></tr></thead><tbody></tbody>`;
+  const tbody = tbl.querySelector("tbody");
+  ACCOUNTS.forEach(a => {
+    const tr = el("tr");
+    tr.innerHTML = `<td>${platformTag(a.platform)}</td><td class="cell-strong">${esc(a.name)}</td>
+      <td class="cell-mono">${esc(a.user)}</td><td class="cell-mono">${a.port}</td><td>${statusSpan(a.status)}</td>`;
+    tbody.appendChild(tr);
+  });
+  c.appendChild(tbl);
+}
+
+/* ═══════════════ 导航（三变体各自） ═══════════════ */
+function bindNavA() {
+  document.querySelectorAll("[data-nav-a]").forEach(b => b.addEventListener("click", () => {
+    const name = b.dataset.navA;
+    document.querySelectorAll("[data-nav-a]").forEach(x => x.classList.toggle("is-active", x === b));
+    document.querySelectorAll("#shell-A .view").forEach(v => v.classList.toggle("is-visible", v.id === `A-${name}`));
+    if (name === "tasks") renderChips("#A-chips", f => renderTaskRows("#A-task-list", f)), renderTaskRows("#A-task-list", "all");
+    if (name === "accounts") renderAccountTable("#A-accounts-table");
+  }));
+}
+function bindNavB() {
+  document.querySelectorAll("[data-nav-b]").forEach(b => b.addEventListener("click", () => {
+    const name = b.dataset.navB;
+    document.querySelectorAll("[data-nav-b]").forEach(x => x.classList.toggle("is-active", x === b));
+    document.querySelectorAll("#shell-B .main").forEach(v => v.classList.toggle("is-visible", v.id === `B-${name}`));
+    if (name === "tasks") renderChips("#B-chips", f => renderTaskTable("#B-task-list", f)), renderTaskTable("#B-task-list", "all");
+    if (name === "accounts") renderAccountTable("#B-accounts-table");
+  }));
+}
+function bindNavC() {
+  document.querySelectorAll("[data-nav-c]").forEach(b => b.addEventListener("click", () => {
+    const name = b.dataset.navC;
+    document.querySelectorAll("[data-nav-c]").forEach(x => x.classList.toggle("is-active", x === b));
+    document.querySelectorAll("#shell-C .view").forEach(v => v.classList.toggle("is-visible", v.id === `C-${name}`));
+    if (name === "tasks") renderTaskCards("#C-task-cards");
+    if (name === "accounts") renderAccountTable("#C-accounts-table");
+  }));
+}
+
+/* ═══════════════ Wizard 状态机（Variant C） ═══════════════ */
+let wizardStep = 1;
+const STEP_NAMES = ["素材", "账号", "内容"];
+function renderSteps() {
+  const c = $("#C-steps"); c.innerHTML = "";
+  STEP_NAMES.forEach((name, i) => {
+    const n = i + 1;
+    c.appendChild(el("div", "step" + (n === wizardStep ? " is-active" : n < wizardStep ? " is-done" : ""), `<span class="step__num">${n < wizardStep ? "✓" : n}</span>${name}`));
+    if (n < STEP_NAMES.length) c.appendChild(el("div", "step__divider"));
+  });
+  $("#C-prev").hidden = wizardStep === 1;
+  $("#C-done").hidden = wizardStep !== 3;
+  $("#C-next").hidden = wizardStep === 3;
+}
+function renderWizardBody() {
+  const c = $("#C-wizard-body");
+  if (wizardStep === 1) {
+    c.innerHTML = `<div class="asset"><div class="asset__thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9 12 2 2 4-4"/></svg><span class="asset__thumb--dur">0:30</span></div>
+      <div class="asset__info"><div class="asset__name">新品开箱 · 30s 混剪.mp4</div><div class="asset__meta">4K · 3840×2160 · 42.8 MB</div></div>
+      <div class="asset__actions"><button class="btn btn--ghost btn--sm" id="C-import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>批量导入</button></div></div>
+      <div id="C-confirm" style="display:none;margin-top:var(--space-4);"><div class="section__head"><h3 class="section__title">待确认导入</h3></div><div class="confirm-list" id="C-confirm-list"></div></div>`;
+    $("#C-import").addEventListener("click", () => openConfirm("#C-confirm-list", "#C-confirm"));
+    $("#C-step-hint").textContent = "选择一个本地视频，或批量导入 manifest 文件夹。";
+  } else if (wizardStep === 2) {
+    c.innerHTML = `<div id="C-accounts"></div>`;
+    renderAccountChecks("#C-accounts");
+    $("#C-step-hint").textContent = "勾选要发布的账号，行内显示平台约束。";
+  } else {
+    c.innerHTML = `<div class="form-grid"><div class="field"><label class="field__label">标题</label><input class="field__input" value="新品开箱｜30s 混剪"/></div>
+      <div class="field"><label class="field__label">标签</label><input class="field__input" value="新品开箱, 好物推荐"/></div></div>
+      <div class="field" style="margin-top:var(--space-4);"><label class="field__label">正文</label><textarea class="field__textarea">第一次开箱！30 秒带你看完所有亮点。</textarea></div>
+      <div class="publish-actions" style="position:static;padding:0;background:none;margin-top:var(--space-4);"><span class="field__help">封面缺省时自动取视频首帧</span></div>`;
+    $("#C-step-hint").textContent = "平台差异在此收敛——标题/正文/标签/封面。";
+  }
+}
+function bindWizard() {
+  renderSteps(); renderWizardBody();
+  $("#C-prev").addEventListener("click", () => { wizardStep = Math.max(1, wizardStep - 1); renderSteps(); renderWizardBody(); });
+  $("#C-next").addEventListener("click", () => { if (wizardStep < 3) { wizardStep++; renderSteps(); renderWizardBody(); } });
+  $("#C-done").addEventListener("click", () => { toast("已提交发布 · 进入任务区", "ok"); document.querySelector('[data-nav-c="tasks"]').click(); });
+}
+
+/* ═══════════════ Variant Switcher ═══════════════ */
+const VARIANTS = [
+  { key: "A", label: "A — Workbench" },
+  { key: "B", label: "B — Master-Detail" },
+  { key: "C", label: "C — Wizard" },
+];
+let current = (new URLSearchParams(location.search).get("variant") || "A").toUpperCase();
+if (!VARIANTS.some(v => v.key === current)) current = "A";
+function applyVariant() {
+  VARIANTS.forEach(v => { const shell = $(`#shell-${v.key}`); if (shell) shell.hidden = v.key !== current; });
+  $("#sw-label").textContent = VARIANTS.find(v => v.key === current).label;
+  history.replaceState(null, "", `?variant=${current}`);
+}
+$("#sw-prev").addEventListener("click", () => { current = VARIANTS[(VARIANTS.findIndex(v => v.key === current) + VARIANTS.length - 1) % VARIANTS.length].key; applyVariant(); });
+$("#sw-next").addEventListener("click", () => { current = VARIANTS[(VARIANTS.findIndex(v => v.key === current) + 1) % VARIANTS.length].key; applyVariant(); });
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === "ArrowLeft") { $("#sw-prev").click(); }
+  if (e.key === "ArrowRight") { $("#sw-next").click(); }
+});
+
+/* 初始化（一次性绑定 + 渲染） */
+renderAccountChecks("#A-accounts"); renderAccountChecks("#B-accounts");
+renderChips("#A-chips", f => renderTaskRows("#A-task-list", f)); renderTaskRows("#A-task-list", "all");
+renderChips("#B-chips", f => renderTaskTable("#B-task-list", f)); renderTaskTable("#B-task-list", "all");
+renderAccountTable("#A-accounts-table"); renderAccountTable("#B-accounts-table"); renderAccountTable("#C-accounts-table");
+bindNavA(); bindNavB(); bindNavC(); bindWizard();
+$("#A-batch").addEventListener("click", () => openConfirm("#A-confirm-list", "#A-confirm"));
+$("#B-batch").addEventListener("click", () => openConfirm("#B-confirm-list", "#B-confirm"));
+applyVariant();
+</script>
+</body>
+</html>

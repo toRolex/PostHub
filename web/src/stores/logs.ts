@@ -1,18 +1,7 @@
-import { defineStore } from "pinia";
-
+import { create } from "zustand";
+import { api } from "../api/client";
+import type { LogEntry, LogLevel } from "../api/types";
 import { useDaemonStore } from "./daemon";
-
-export type LogLevel = "debug" | "info" | "warn" | "error";
-
-export interface LogEntry {
-  id: number;
-  task_id: number | null;
-  job_id: number | null;
-  level: LogLevel;
-  source: string;
-  message: string;
-  created_at: string;
-}
 
 export interface LogFilters {
   level?: LogLevel | "";
@@ -24,6 +13,8 @@ interface LogsState {
   filters: Required<LogFilters>;
   loading: boolean;
   error: string;
+  fetchLogs: (filters?: LogFilters) => Promise<void>;
+  setFilters: (partial: LogFilters) => void;
 }
 
 const EMPTY_FILTERS: Required<LogFilters> = {
@@ -31,7 +22,7 @@ const EMPTY_FILTERS: Required<LogFilters> = {
   task_id: "",
 };
 
-function buildQuery(filters: LogFilters): string {
+function buildQuery(filters: Required<LogFilters>): string {
   const params = new URLSearchParams();
   if (filters.level) params.set("level", filters.level);
   if (filters.task_id) params.set("task_id", String(filters.task_id));
@@ -39,41 +30,36 @@ function buildQuery(filters: LogFilters): string {
   return qs ? `?${qs}` : "";
 }
 
-export const useLogsStore = defineStore("logs", {
-  state: (): LogsState => ({
-    logs: [],
-    filters: { ...EMPTY_FILTERS },
-    loading: false,
-    error: "",
-  }),
+export const initialLogsState = {
+  logs: [] as LogEntry[],
+  filters: { ...EMPTY_FILTERS },
+  loading: false,
+  error: "",
+};
 
-  actions: {
-    /** 拉取应用内日志（level / task_id 筛选）。 */
-    async fetchLogs(filters?: LogFilters): Promise<void> {
-      if (filters) {
-        this.filters = { ...EMPTY_FILTERS, ...filters };
-      }
-      const daemon = useDaemonStore();
-      this.loading = true;
-      try {
-        const res = await fetch(`${daemon.url}/logs${buildQuery(this.filters)}`);
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body?.error || `HTTP ${res.status}`);
-        }
-        this.logs = body.logs ?? [];
-        this.error = "";
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
-      } finally {
-        this.loading = false;
-      }
-    },
+export const useLogsStore = create<LogsState>()((set, get) => ({
+  ...initialLogsState,
 
-    /** 更新筛选并重新拉取。 */
-    setFilters(partial: LogFilters): void {
-      this.filters = { ...this.filters, ...partial };
-      void this.fetchLogs();
-    },
+  fetchLogs: async (filters) => {
+    if (filters) {
+      set({ filters: { ...EMPTY_FILTERS, ...filters } });
+    }
+    set({ loading: true });
+    try {
+      const body = await api.logs(
+        useDaemonStore.getState().url,
+        buildQuery(get().filters),
+      );
+      set({ logs: body.logs ?? [], error: "" });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ loading: false });
+    }
   },
-});
+
+  setFilters: (partial) => {
+    set((s) => ({ filters: { ...s.filters, ...partial } }));
+    void get().fetchLogs();
+  },
+}));

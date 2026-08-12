@@ -1,22 +1,7 @@
-import { defineStore } from "pinia";
-
+import { create } from "zustand";
+import { api } from "../api/client";
+import type { Intervention } from "../api/types";
 import { useDaemonStore } from "./daemon";
-import type { Platform } from "./accounts";
-
-export type InterventionKind = "manual" | "needs_relogin";
-
-export interface Intervention {
-  id: number;
-  kind: InterventionKind;
-  job_id: number;
-  task_id: number;
-  account_id: number;
-  platform: Platform;
-  message: string | null;
-  error_type: string | null;
-  created_at: string;
-  acknowledged_at: string | null;
-}
 
 interface InterventionsState {
   interventions: Intervention[];
@@ -24,73 +9,64 @@ interface InterventionsState {
   seenIds: number[];
   loading: boolean;
   error: string;
+  fetchInterventions: () => Promise<void>;
+  acknowledge: (id: number) => Promise<void>;
+  /** 轮询：对新事件触发提示并出列；返回本周期提示的事件数。 */
+  poll: () => Promise<number>;
 }
 
-export const useInterventionsStore = defineStore("interventions", {
-  state: (): InterventionsState => ({
-    interventions: [],
-    seenIds: [],
-    loading: false,
-    error: "",
-  }),
+export const selectPendingCount = (s: InterventionsState): number =>
+  s.interventions.length;
 
-  getters: {
-    pendingCount: (state) => state.interventions.length,
+export const initialInterventionsState = {
+  interventions: [] as Intervention[],
+  seenIds: [] as number[],
+  loading: false,
+  error: "",
+};
+
+export const useInterventionsStore = create<InterventionsState>()((set, get) => ({
+  ...initialInterventionsState,
+
+  fetchInterventions: async () => {
+    set({ loading: true });
+    try {
+      const body = await api.interventions(useDaemonStore.getState().url);
+      set({ interventions: body.interventions ?? [], error: "" });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ loading: false });
+    }
   },
 
-  actions: {
-    /** 请求守护进程 /interventions，拉取待人工介入事件。 */
-    async fetchInterventions(): Promise<void> {
-      const daemon = useDaemonStore();
-      this.loading = true;
+  /** 标记事件已处理：POST /interventions/{id}/ack，并从本地 pending 出列。 */
+  acknowledge: async (id) => {
+    await api.acknowledgeIntervention(useDaemonStore.getState().url, id);
+    set((s) => ({ interventions: s.interventions.filter((iv) => iv.id !== id) }));
+  },
+
+  /**
+   * 轮询 /interventions：对新事件触发提示（Tauri 弹窗 / 浏览器内 Toast），
+   * 提示后 acknowledge 出列，避免下轮重复弹窗。返回本周期提示的事件数。
+   */
+  poll: async () => {
+    await get().fetchInterventions();
+    let notified = 0;
+    for (const iv of get().interventions) {
+      if (get().seenIds.includes(iv.id)) continue;
+      set((s) => ({ seenIds: [...s.seenIds, iv.id] }));
+      const { notifyIntervention } = await import("../lib/interventionNotify");
       try {
-        const res = await fetch(`${daemon.url}/interventions`);
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const body = await res.json();
-        this.interventions = (body.interventions ?? []) as Intervention[];
-        this.error = "";
-      } catch (e) {
-        this.error = e instanceof Error ? e.message : String(e);
+        await notifyIntervention(iv);
       } finally {
-        this.loading = false;
+        // 提示后出列（无论用户是否点确认，避免重复打扰）
+        await get()
+          .acknowledge(iv.id)
+          .catch(() => undefined);
       }
-    },
-
-    /** 标记事件已处理：POST /interventions/{id}/ack，并从本地 pending 出列。 */
-    async acknowledge(id: number): Promise<void> {
-      const daemon = useDaemonStore();
-      const res = await fetch(`${daemon.url}/interventions/${id}/ack`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      this.interventions = this.interventions.filter((iv) => iv.id !== id);
-    },
-
-    /**
-     * 轮询 /interventions：对新事件触发弹窗提示（Tauri 弹窗 / 浏览器内提示），
-     * 提示后 acknowledge 出列，避免下轮重复弹窗。返回本周期提示的事件数。
-     */
-    async poll(): Promise<number> {
-      await this.fetchInterventions();
-      let notified = 0;
-      for (const iv of this.interventions) {
-        if (this.seenIds.includes(iv.id)) continue;
-        this.seenIds = [...this.seenIds, iv.id];
-        const { notifyIntervention } = await import("../lib/interventionNotify");
-        try {
-          await notifyIntervention(iv);
-        } finally {
-          // 提示后出列（无论用户是否点确认，避免重复打扰）
-          void this.acknowledge(iv.id).catch(() => undefined);
-        }
-        notified += 1;
-      }
-      return notified;
-    },
+      notified += 1;
+    }
+    return notified;
   },
-});
+}));

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
 
-import { usePublishStore } from "./publish";
+import { initialPublishState, usePublishStore } from "./publish";
 import { usePlatformStore } from "./platform";
 import { useDaemonStore } from "./daemon";
 import { formatDateTime } from "../lib/publishValidation";
@@ -43,15 +42,11 @@ const CONSTRAINTS = {
   },
 };
 
-function seedStore(): void {
-  const platformStore = usePlatformStore();
-  platformStore.constraints = { ...CONSTRAINTS } as never;
-}
-
 describe("publish store（发布表单 + 任务提交）", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
-    seedStore();
+    useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    usePlatformStore.setState({ constraints: { ...CONSTRAINTS } as never });
+    usePublishStore.setState(initialPublishState);
   });
 
   afterEach(() => {
@@ -71,15 +66,14 @@ describe("publish store（发布表单 + 任务提交）", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const daemon = useDaemonStore();
-    daemon.url = "http://127.0.0.1:9999";
-    const store = usePublishStore();
-    store.title = "春日踏青";
-    store.videoPath = "/tmp/video.mp4";
-    store.selectedPlatforms = ["douyin"];
-    store.accountByPlatform = { douyin: 1, xiaohongshu: null, wechat: null };
+    usePublishStore.setState({
+      title: "春日踏青",
+      videoPath: "/tmp/video.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
+    });
 
-    const result = await store.createTask();
+    const result = await usePublishStore.getState().createTask();
 
     expect(result.task.id).toBe(1);
     expect(result.jobs).toHaveLength(1);
@@ -98,12 +92,13 @@ describe("publish store（发布表单 + 任务提交）", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = usePublishStore();
-    store.title = "";
-    store.selectedPlatforms = ["douyin"];
-    store.accountByPlatform = { douyin: 1, xiaohongshu: null, wechat: null };
+    usePublishStore.setState({
+      title: "",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
+    });
 
-    await expect(store.createTask()).rejects.toThrow(/标题/);
+    await expect(usePublishStore.getState().createTask()).rejects.toThrow(/标题/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -121,17 +116,18 @@ describe("publish store（发布表单 + 任务提交）", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const publishAt = formatDateTime(new Date(Date.now() + 3 * 24 * 3600 * 1000));
-    const store = usePublishStore();
-    store.title = "定时任务";
-    store.videoPath = "/tmp/video.mp4";
-    store.selectedPlatforms = ["wechat"];
-    store.accountByPlatform = { douyin: null, xiaohongshu: null, wechat: 3 };
-    store.schedulePolicy = "scheduled";
-    store.publishMode = "platform_time";
-    store.publishAt = publishAt;
-    store.silent = true;
+    usePublishStore.setState({
+      title: "定时任务",
+      videoPath: "/tmp/video.mp4",
+      selectedPlatforms: ["wechat"],
+      accountByPlatform: { douyin: null, xiaohongshu: null, wechat: 3 },
+      schedulePolicy: "scheduled",
+      publishMode: "platform_time",
+      publishAt,
+      silent: true,
+    });
 
-    await store.createTask();
+    await usePublishStore.getState().createTask();
 
     const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(sent.schedule_policy).toBe("scheduled");
@@ -146,26 +142,27 @@ describe("publish store（发布表单 + 任务提交）", () => {
       vi.fn().mockResolvedValue(jsonResponse({ error: "平台不匹配" }, false, 400)),
     );
 
-    const store = usePublishStore();
-    store.title = "x";
-    store.videoPath = "/tmp/v.mp4";
-    store.selectedPlatforms = ["douyin"];
-    store.accountByPlatform = { douyin: 1, xiaohongshu: null, wechat: null };
+    usePublishStore.setState({
+      title: "x",
+      videoPath: "/tmp/v.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
+    });
 
-    await expect(store.createTask()).rejects.toThrow("平台不匹配");
+    await expect(usePublishStore.getState().createTask()).rejects.toThrow("平台不匹配");
   });
 
   it("setPlatforms 自动为已选平台填充默认账号", () => {
-    const store = usePublishStore();
     const accounts = [
       { id: 1, platform: "douyin", status: "active" },
       { id: 2, platform: "douyin", status: "active" },
       { id: 3, platform: "wechat", status: "active" },
     ];
-    store.setPlatforms(["douyin", "wechat"], accounts as never);
+    usePublishStore.getState().setPlatforms(["douyin", "wechat"], accounts as never);
 
-    expect(store.selectedPlatforms).toEqual(["douyin", "wechat"]);
-    expect(store.accountByPlatform.douyin).toBe(1); // 默认取第一个
-    expect(store.accountByPlatform.wechat).toBe(3);
+    const s = usePublishStore.getState();
+    expect(s.selectedPlatforms).toEqual(["douyin", "wechat"]);
+    expect(s.accountByPlatform.douyin).toBe(1); // 默认取第一个
+    expect(s.accountByPlatform.wechat).toBe(3);
   });
 });

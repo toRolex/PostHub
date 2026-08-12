@@ -1,7 +1,7 @@
 # CONTEXT.md — PostHub（发布中枢）
 
 > single-context 领域文档。术语与决策的唯一事实来源；改术语先改这里，再改代码。
-> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`。
+> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`。
 
 ## 领域
 
@@ -10,7 +10,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 ## 架构
 
 - **形态**：Tauri 2 桌面应用（Windows 托盘 / macOS 菜单栏常驻）+ 常驻 Python 守护进程，本地 IPC 通信。
-- **前端**：Vue 3 + Vite + Element Plus + Pinia。
+- **前端**：React + Vite + shadcn/ui（Tailwind + Radix），自 Vue 3 + Element Plus 全量迁移（ADR-0003）；新 IA：左侧栏 + 内容区，三区 = 多平台发布 / 任务管理 / 账号管理。
 - **发布引擎**：基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload)（patchright），**不 fork**，经 `uv` 作为依赖安装；PostHub 自备 `conf` 模块提供上游依赖字段。
 - **唯一注入面**：patch `chromium.launch` → `connect_over_cdp` 接管账号 Chrome，登录态天然持久化。
 - **唯一 seam**：守护进程「任务执行引擎」接口 `execute(task_spec, context) -> job_updates`；浏览器执行器经依赖注入替换。调度 / 状态机 / 重试 / 限速 / 并发为纯领域逻辑；UI 与真实平台浏览器在 seam 之外。测试只断言 seam 外部行为（`task_spec` + fake 执行器 → `job_updates`）。
