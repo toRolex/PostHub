@@ -12,6 +12,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +58,19 @@ def stage_daemon() -> None:
     print(f"[resources] daemon 源码 -> {DAEMON_DST}")
 
 
+def _download(url: str, dest: Path, retries: int = 4) -> None:
+    """下载文件并带重试；GitHub release 偶发断连（RemoteDisconnected）。"""
+    for attempt in range(1, retries + 1):
+        try:
+            urllib.request.urlretrieve(url, dest)
+            return
+        except Exception as e:
+            if attempt == retries:
+                raise
+            print(f"[resources] 下载失败（{e}），第 {attempt}/{retries} 次重试...")
+            time.sleep(2)
+
+
 def fetch_uv(os_name: str, arch: str) -> Path:
     bin_name = f"uv-{os_name}-{arch}"
     bin_path = BIN_DST / bin_name
@@ -72,8 +86,8 @@ def fetch_uv(os_name: str, arch: str) -> Path:
 
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
         tmp_path = Path(tmp.name)
-        urllib.request.urlretrieve(url, tmp_path)
     try:
+        _download(url, tmp_path)
         with tarfile.open(tmp_path) as tar:
             member = next(m for m in tar.getmembers() if m.isfile() and Path(m.name).name == target)
             extracted = tar.extractfile(member)

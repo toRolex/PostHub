@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.posthub.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --prefix web run dev",
+    "beforeDevCommand": "node ../scripts/run-web.mjs dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm --prefix web run build",
+    "beforeBuildCommand": "node ../scripts/run-web.mjs build",
     "frontendDist": "../web/dist"
   },
   "app": {
