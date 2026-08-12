@@ -1,0 +1,59 @@
+name: build-desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            artifact: posthub-macos
+          - platform: windows-latest
+            artifact: posthub-windows
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install frontend dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Stage daemon resources + platform uv
+        run: uv run --project daemon python scripts/prepare_resources.py
+
+      - name: Daemon smoke test
+        shell: bash
+        run: |
+          uv run --project daemon python -m posthub 8756 &
+          sleep 20
+          curl -fsS --retry 3 http://127.0.0.1:8756/health
+          kill %1 2>/dev/null || true
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "PostHub ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.posthub.desktop",
   "build": {
-    "beforeDevCommand": "npm --prefix ../web run dev",
+    "beforeDevCommand": "pnpm --prefix web run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm --prefix ../web run build",
+    "beforeBuildCommand": "pnpm --prefix web run build",
     "frontendDist": "../web/dist"
   },
   "app": {
@@ -29,6 +29,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "resources/daemon",
+      "resources/bin"
+    ],
     "category": "Utility",
     "shortDescription": "PostHub 三平台短视频自动发布工具",
     "longDescription": "一个视频，一键 / 定时发布到 抖音、小红书、视频号。",

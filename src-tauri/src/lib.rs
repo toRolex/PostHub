@@ -122,18 +122,82 @@ fn resolve_daemon_dir(manifest_dir: &str, env_override: Option<&str>) -> Option<
     }
 }
 
+/// 内置 daemon 目录：安装包 `bundle.resources` 带进来的源码（含 pyproject.toml）。
+/// Tauri v2 把 resources 放在 `<resource_dir>/resources/` 子目录。
+/// dev 时资源未打包，`resource_dir()` 下无 daemon → 返回 None，回退仓库路径。
+fn resolve_bundled_dir(app: &AppHandle) -> Option<PathBuf> {
+    let candidate = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("resources")
+        .join("daemon");
+    if candidate.join("pyproject.toml").is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// 内置 uv 二进制：按当前平台从 resources/bin 选择，命名见 scripts/prepare_resources.py。
+fn resolve_bundled_uv(app: &AppHandle) -> Option<PathBuf> {
+    let name = if cfg!(target_os = "windows") {
+        "uv-windows-x86_64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "uv-darwin-arm64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "uv-darwin-x86_64"
+    } else {
+        return None;
+    };
+    let candidate = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("resources")
+        .join("bin")
+        .join(name);
+    candidate.is_file().then_some(candidate)
+}
+
 /// 拉起 Python 守护进程（uv 管理，`uv run --project <daemon> python -m posthub`）。
+///
+/// 解析顺序：env `POSTHUB_DAEMON_DIR` → 安装包内置 resources → 仓库 `daemon/`（dev）。
+/// 命令：env `POSTHUB_DAEMON_CMD` 覆盖 → 内置 uv → 系统 `uv`。
+/// 使用内置 uv 时，资源目录只读（/Applications、Program Files），venv 建在可写的
+/// `app_data_dir()`，通过 `UV_PROJECT_ENVIRONMENT` 指定，避免写资源目录。
 fn spawn_daemon(app: AppHandle) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let env_override = std::env::var("POSTHUB_DAEMON_DIR").ok();
-    let Some(daemon_dir) = resolve_daemon_dir(manifest_dir, env_override.as_deref()) else {
+    let env_dir = std::env::var("POSTHUB_DAEMON_DIR")
+        .ok()
+        .filter(|d| !d.is_empty() && Path::new(d).join("pyproject.toml").is_file());
+    let Some(daemon_dir) = env_dir
+        .map(PathBuf::from)
+        .or_else(|| resolve_bundled_dir(&app))
+        .or_else(|| resolve_daemon_dir(manifest_dir, None))
+    else {
         eprintln!("[posthub] 未找到 daemon 目录，跳过守护进程拉起");
         return;
     };
 
-    let command = std::env::var("POSTHUB_DAEMON_CMD").unwrap_or_else(|_| "uv".into());
+    let env_cmd = std::env::var("POSTHUB_DAEMON_CMD").ok().filter(|c| !c.is_empty());
+    let bundled_uv = resolve_bundled_uv(&app);
+    let (command, use_bundled_venv) = if let Some(c) = env_cmd {
+        (c, false)
+    } else if let Some(uv) = bundled_uv {
+        (uv.display().to_string(), true)
+    } else {
+        ("uv".to_string(), false)
+    };
+
     let daemon_dir_str = daemon_dir.to_str().unwrap_or(".").to_string();
-    let result = Command::new(command)
+    let mut cmd = Command::new(&command);
+    if use_bundled_venv {
+        if let Ok(app_data) = app.path().app_data_dir() {
+            cmd.env("UV_PROJECT_ENVIRONMENT", app_data.join("venv"));
+        }
+    }
+    let result = cmd
         .args([
             "run",
             "--project",

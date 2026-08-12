@@ -8,15 +8,17 @@ Thumbs.db
 *.swp
 *.swo
 
-# --- Node / 前端 (Vue 3 + Vite) ---
+# --- Node / 前端 (React + Vite) ---
 node_modules/
 dist/
 dist-ssr/
 *.local
+.playwright-cli/
 
 # --- Rust / Tauri ---
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/
 
 # --- Python / uv ---
 .venv/
