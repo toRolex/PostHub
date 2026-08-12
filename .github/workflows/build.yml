@@ -44,7 +44,7 @@ jobs:
       - name: Daemon smoke test
         shell: bash
         run: |
-          uv run --project daemon python -m posthub 8756 &
+          cd daemon && uv run python -m posthub 8756 &
           sleep 20
           curl -fsS --retry 3 http://127.0.0.1:8756/health
           kill %1 2>/dev/null || true

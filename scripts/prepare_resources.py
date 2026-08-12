@@ -20,6 +20,11 @@ RESOURCES = ROOT / "src-tauri" / "resources"
 DAEMON_DST = RESOURCES / "daemon"
 BIN_DST = RESOURCES / "bin"
 
+# Windows CI 控制台默认 cp1252，强制 UTF-8 输出避免中文 print 编码错误
+reconfigure = getattr(sys.stdout, "reconfigure", None)
+if reconfigure is not None:
+    reconfigure(encoding="utf-8")
+
 EXCLUDE = {
     ".venv",
     "__pycache__",
