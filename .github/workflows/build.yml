@@ -36,17 +36,18 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
-      - uses: astral-sh/setup-uv@v6
-
       - name: Stage daemon resources + platform uv
-        run: uv run --project daemon python scripts/prepare_resources.py
+        run: python3 scripts/prepare_resources.py
 
       - name: Daemon smoke test
         shell: bash
         run: |
-          cd daemon && uv run python -m posthub 8756 &
-          sleep 20
-          curl -fsS --retry 3 http://127.0.0.1:8756/health
+          cd src-tauri/resources/daemon
+          UV_BIN="$(ls ../../bin/uv-* | head -1)"
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python -m posthub 8756 &
+          sleep 15
+          curl -fsS --retry 5 http://127.0.0.1:8756/health
           kill %1 2>/dev/null || true
 
       - name: Install Tauri CLI
