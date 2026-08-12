@@ -9,11 +9,11 @@
 import argparse
 import platform
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -61,16 +61,18 @@ def stage_daemon() -> None:
 
 
 def _download(url: str, dest: Path, retries: int = 4) -> None:
-    """下载文件并带重试；GitHub release 偶发断连（RemoteDisconnected）。"""
+    """下载文件并带重试；urllib 在 CI 上拉 GitHub 大文件偶发断连，改走系统 curl。"""
     for attempt in range(1, retries + 1):
-        try:
-            urllib.request.urlretrieve(url, dest)
+        r = subprocess.run(
+            ["curl", "-sL", "--retry", "3", "-o", str(dest), url],
+            capture_output=True,
+        )
+        if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
             return
-        except Exception as e:
-            if attempt == retries:
-                raise
-            print(f"[resources] 下载失败（{e}），第 {attempt}/{retries} 次重试...")
-            time.sleep(2)
+        if attempt == retries:
+            raise RuntimeError(f"下载失败（curl exit {r.returncode}）: {url}")
+        print(f"[resources] 下载失败，第 {attempt}/{retries} 次重试...")
+        time.sleep(2)
 
 
 def _extract_uv(archive: Path, target: str) -> bytes:
