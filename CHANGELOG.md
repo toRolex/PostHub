@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1 (2026-08-13)
+
+### Fixed
+- Windows 首次启动「守护进程未连接」：上游 git 源构建期 wheel 化 + patchright Chromium 预打包 + `UV_PYTHON_INSTALL_DIR` 隔离 managed Python（绕开 `%APPDATA%\uv\python` 不可信 junction，ADR-0004 修订 5）
+- Windows 安装包缺失 Chromium：`bundle.resources` 补 `resources/browser`
+
 ## v0.1.0 (2026-08-13)
 
 ### Added
