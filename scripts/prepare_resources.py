@@ -7,6 +7,7 @@
   src-tauri/resources/bin/uv-<os>-<arch>   平台 uv 单二进制
 """
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -128,6 +129,92 @@ def fetch_uv(os_name: str, arch: str) -> Path:
     return bin_path
 
 
+# ---- Windows 首次启动修复（issue：daemon 未连接）----
+# 真实用户网络经代理拉 GitHub git 源 / patchright 海外 CDN 不可靠（测试机实测：
+# git TLS 断连、chromium 传输 early EOF）。构建期在 CI（网络稳定）把这两项固化为
+# 本地资源随包分发：social-auto-upload → 本地 wheel；patchright Chromium → resources/browser。
+# 运行时只从 PyPI 镜像装 patchright 等，首次启动零海外网络。mac 保持源码+uv 现状。
+
+SAU_REPO = "https://github.com/dreammis/social-auto-upload.git"
+
+
+def build_upstream_wheel(uv_bin: Path) -> Path:
+    """clone 上游 social-auto-upload 并 uv build 成本地 wheel（仅 Windows）。
+
+    仓库根 daemon/pyproject.toml 的 git 源不动（mac 开发链路不变），只有随包分发的
+    staged 副本改引本地 wheel（rewrite_staged_pyproject）。
+    """
+    wheel_dir = DAEMON_DST / "wheels"
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="sau-build-"))
+    try:
+        clone = subprocess.run(
+            ["git", "clone", "--depth", "1", SAU_REPO, str(tmp / "sau")],
+            capture_output=True, text=True,
+        )
+        if clone.returncode != 0:
+            raise RuntimeError(f"clone 上游失败: {clone.stderr[-500:]}")
+        build = subprocess.run(
+            [str(uv_bin), "build", "--project", str(tmp / "sau"), "--out-dir", str(wheel_dir)],
+            capture_output=True, text=True,
+        )
+        if build.returncode != 0:
+            raise RuntimeError(f"uv build 失败: {build.stderr[-500:]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    wheels = sorted(wheel_dir.glob("social_auto_upload-*.whl"))
+    if not wheels:
+        raise RuntimeError("构建后未找到 social_auto_upload wheel")
+    print(f"[resources] social-auto-upload wheel -> {wheels[-1].name}")
+    return wheels[-1]
+
+
+def fetch_chromium(uv_bin: Path) -> None:
+    """用 patchright CLI 预下载 Chromium（revision 与依赖版本匹配）到 resources/browser。
+
+    必须在目标 OS 的 runner 上执行：浏览器二进制平台相关，CI windows-latest 得到 win64 版。
+    通过 PLAYWRIGHT_BROWSERS_PATH 把输出收敛到临时目录，再复制 chromium-*/ 到 resources/browser。
+    """
+    if any((RESOURCES / "browser").glob("chromium-*")):
+        print("[resources] chromium 已存在，跳过")
+        return
+    with tempfile.TemporaryDirectory() as tmpd:
+        env = dict(os.environ)
+        env["PLAYWRIGHT_BROWSERS_PATH"] = tmpd
+        r = subprocess.run(
+            [str(uv_bin), "tool", "run", "--from", "patchright==1.58.2",
+             "patchright", "install", "chromium"],
+            capture_output=True, text=True, env=env, timeout=900,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"patchright install chromium 失败: {r.stderr[-500:]}")
+        for d in Path(tmpd).glob("chromium-*"):
+            shutil.copytree(d, RESOURCES / "browser" / d.name, dirs_exist_ok=True)
+    print(f"[resources] chromium -> {RESOURCES / 'browser'}")
+
+
+def rewrite_staged_pyproject(uv_bin: Path, wheel: Path) -> None:
+    """把 staged daemon pyproject 的 git 源改为本地 wheel 引用，并重锁 uv.lock。
+
+    只改 resources/daemon（随包分发的副本）；仓库根 daemon/pyproject.toml 保持 git 源，
+    mac 开发链路与 mac 打包不受影响。
+    """
+    pp = DAEMON_DST / "pyproject.toml"
+    text = pp.read_text(encoding="utf-8")
+    old = 'social-auto-upload = { git = "https://github.com/dreammis/social-auto-upload.git" }'
+    new = f'social-auto-upload = {{ path = "{wheel.relative_to(DAEMON_DST).as_posix()}" }}'
+    if old not in text:
+        raise RuntimeError(f"staged pyproject 未找到 git 源行: {old}")
+    pp.write_text(text.replace(old, new), encoding="utf-8")
+    lock = subprocess.run(
+        [str(uv_bin), "lock", "--project", str(DAEMON_DST)],
+        capture_output=True, text=True,
+    )
+    if lock.returncode != 0:
+        raise RuntimeError(f"uv lock 失败: {lock.stderr[-500:]}")
+    print("[resources] staged pyproject 已改 path source + 重锁 uv.lock")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--os", choices=["darwin", "windows"])
@@ -140,7 +227,11 @@ def main() -> int:
         return 1
 
     stage_daemon()
-    fetch_uv(os_name, arch)
+    uv_bin = fetch_uv(os_name, arch)
+    if os_name == "windows":
+        wheel = build_upstream_wheel(uv_bin)
+        rewrite_staged_pyproject(uv_bin, wheel)
+        fetch_chromium(uv_bin)
     print("[resources] 完成")
     return 0
 

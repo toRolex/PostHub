@@ -160,6 +160,49 @@ fn resolve_bundled_uv(app: &AppHandle) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// Windows 首次启动修复：把打包的 Chromium 首次复制到可写 app_data，返回 PLAYWRIGHT_BROWSERS_PATH 值。
+///
+/// patchright wheel 不含浏览器本体，首次 launch 从海外 CDN 下载，经不可靠代理会失败
+/// （测试机实测 server closed abruptly）。构建期已用 `patchright install chromium` 把
+/// chromium-*/ 打进 resources/browser（prepare_resources.py），这里首次复制到
+/// `app_data/ms-playwright` 后通过 PLAYWRIGHT_BROWSERS_PATH 指过去，daemon 不再联网下浏览器。
+/// 资源目录（Program Files）只读，故复制到 app_data；已有则跳过。
+#[cfg(target_os = "windows")]
+fn prepare_windows_runtime(app: &AppHandle) -> Option<PathBuf> {
+    let app_data = app.path().app_data_dir().ok()?;
+    let src_browser = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("resources")
+        .join("browser");
+    if !src_browser.is_dir() {
+        return None;
+    }
+    let dst_browser = app_data.join("ms-playwright");
+    if !dst_browser.exists() {
+        let _ = copy_dir_all(&src_browser, &dst_browser);
+    }
+    dst_browser.is_dir().then_some(dst_browser)
+}
+
+#[cfg(target_os = "windows")]
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::fs;
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &to)?;
+        } else {
+            fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// 拉起 Python 守护进程（uv 管理，`uv run --project <daemon> python -m posthub`）。
 ///
 /// 解析顺序：env `POSTHUB_DAEMON_DIR` → 安装包内置 resources → 仓库 `daemon/`（dev）。
@@ -195,7 +238,15 @@ fn spawn_daemon(app: AppHandle) {
     if use_bundled_venv {
         if let Ok(app_data) = app.path().app_data_dir() {
             cmd.env("UV_PROJECT_ENVIRONMENT", app_data.join("venv"));
+            // Windows：隔离 managed Python，绕开 %APPDATA%\uv\python 的不可信 junction（os error 448）
+            #[cfg(target_os = "windows")]
+            cmd.env("UV_PYTHON_INSTALL_DIR", app_data.join("python"));
         }
+    }
+    // Windows：预置 Chromium（wheel 不含浏览器，CDN 经代理不可靠），首次启动零海外下载
+    #[cfg(target_os = "windows")]
+    if let Some(browsers_path) = prepare_windows_runtime(&app) {
+        cmd.env("PLAYWRIGHT_BROWSERS_PATH", browsers_path);
     }
     let result = cmd
         .args([
