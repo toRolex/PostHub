@@ -1,7 +1,7 @@
 //! PostHub Tauri 2 桌面壳：Windows 托盘 / macOS 菜单栏常驻 + 一键退出 + 开机自启 + 拉起 Python 守护进程。
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use tauri::{
@@ -248,6 +248,17 @@ fn spawn_daemon(app: AppHandle) {
     if let Some(browsers_path) = prepare_windows_runtime(&app) {
         cmd.env("PLAYWRIGHT_BROWSERS_PATH", browsers_path);
     }
+    // 子进程 stdio 全量重定向：Windows GUI 进程（posthub.exe）spawn 的子进程若继承
+    // stdout/stderr，Windows 会新建控制台窗口承载它们（每次打开弹终端）。重定向到日志文件
+    // 同时补上 daemon 失败原因不可见的缺陷。
+    redirect_daemon_log(&app, &mut cmd);
+    // Windows：禁止为子进程创建控制台窗口
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let result = cmd
         .args([
             "run",
@@ -270,6 +281,34 @@ fn spawn_daemon(app: AppHandle) {
         }
         Err(e) => eprintln!("[posthub] 拉起守护进程失败: {e}"),
     }
+}
+
+/// 将守护进程子进程的 stdin/stdout/stderr 全量重定向到 app_data/daemon.log。
+///
+/// Windows GUI 进程 spawn 的子进程若继承 stdout/stderr，会新建控制台窗口承载它们（每次
+/// 打开 PostHub 弹终端）。日志落盘同时让 daemon 失败原因可见。app_data 不可用或打开失败
+/// 时退化为丢弃输出，保证不弹窗。
+fn redirect_daemon_log(app: &AppHandle, cmd: &mut Command) {
+    let log = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("daemon.log"))
+        .and_then(|p| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .ok()
+        });
+    let (out, err) = match log {
+        Some(log) => match log.try_clone() {
+            Ok(err_log) => (Stdio::from(log), Stdio::from(err_log)),
+            Err(_) => (Stdio::null(), Stdio::null()),
+        },
+        None => (Stdio::null(), Stdio::null()),
+    };
+    cmd.stdin(Stdio::null()).stdout(out).stderr(err);
 }
 
 #[tauri::command]
