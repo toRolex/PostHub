@@ -227,6 +227,8 @@ def main() -> int:
         return 1
 
     stage_daemon()
+    # browser 目录随 tauri.conf.json bundle.resources 引用，需恒存在（mac 为空目录）
+    (RESOURCES / "browser").mkdir(parents=True, exist_ok=True)
     uv_bin = fetch_uv(os_name, arch)
     if os_name == "windows":
         wheel = build_upstream_wheel(uv_bin)

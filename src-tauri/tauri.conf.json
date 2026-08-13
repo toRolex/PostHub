@@ -31,7 +31,8 @@
     "targets": "all",
     "resources": [
       "resources/daemon",
-      "resources/bin"
+      "resources/bin",
+      "resources/browser"
     ],
     "category": "Utility",
     "shortDescription": "PostHub 三平台短视频自动发布工具",
