@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2 (2026-08-14)
+
+### Fixed
+- Windows 每次打开弹终端：uv 子进程 stdio 全量重定向到 `app_data/daemon.log` + `CREATE_NO_WINDOW`（日志落盘顺带让 daemon 失败原因可见）
+- 视频号发布报「cookie文件不存在」：CDP 接管账号 Chrome 时把登录态导出为上游要求的 `account_file`（`~/.posthub/cookies/{账号id}.json`）
+
 ## v0.1.1 (2026-08-13)
 
 ### Fixed
