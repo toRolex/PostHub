@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import urllib.request
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 try:  # patchright 是上游 social-auto-upload 的依赖，缺失时仅 cdp_attach 运行期报错
@@ -85,6 +86,7 @@ async def cdp_attach(
     is_local: bool = True,
     playwright_factory: Callable | None = None,
     resolve_endpoint: Callable | None = None,
+    storage_state_path: str | None = None,
 ) -> AsyncIterator[Any]:
     """接管账号 Chrome：CDP 连接代替上游自行 launch，复用登录态。
 
@@ -92,6 +94,10 @@ async def cdp_attach(
     - `is_local`：为 True 时连接本机账号 Chrome，先把 http 地址解析为 `ws://` 端点
       （绕过系统代理，见 `resolve_local_cdp_endpoint`）；False 时原样交给驱动。
     - `playwright_factory` / `resolve_endpoint`：测试注入点。
+    - `storage_state_path`：非空时把账号 Chrome 的登录态导出到该文件（Playwright
+      storage_state JSON）。上游 uploader 的 `validate_upload_args` 要求 `account_file`
+      存在且 `cookie_auth` 可用（main.py:504-507）；登录态本就在真实 Chrome profile 里，
+      导出后上游校验才能通过。
 
     yield 的 `pw` 是已 patch 的 Playwright 实例，上游 `app.upload(pw)` 100% 编排。
     退出时仅断开 CDP 连接（`pw.stop()`），不关闭真实 Chrome（browser.close 已中和）。
@@ -107,6 +113,9 @@ async def cdp_attach(
         browser = await pw.chromium.connect_over_cdp(endpoint)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         patch_playwright_for_cdp(pw, browser, context)
+        if storage_state_path:
+            Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
+            await context.storage_state(path=storage_state_path)
         yield pw
     finally:
         try:

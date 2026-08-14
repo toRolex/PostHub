@@ -194,8 +194,15 @@ class UpstreamUploadExecutor:
 
     async def upload(self, spec: TaskSpec, context: ExecutionContext) -> UploadResult:
         app = self._uploader_factory(spec.platform, spec)
+        # 把账号 Chrome 登录态导出到上游要求的 account_file（~/.posthub/cookies/{id}.json），
+        # 否则上游 validate_upload_args 报「cookie文件不存在」。
+        account_file = account_cookie_file(spec.account_id)
         try:
-            async with self._attach(context.account.cdp_url, is_local=True) as pw:
+            async with self._attach(
+                context.account.cdp_url,
+                is_local=True,
+                storage_state_path=account_file,
+            ) as pw:
                 await app.upload(pw)  # 上游 100% 编排
         except Exception as exc:
             return UploadResult(

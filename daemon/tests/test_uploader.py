@@ -150,6 +150,21 @@ def test_executor_attaches_with_account_cdp_url_and_is_local() -> None:
     assert captured["is_local"] is True
 
 
+def test_executor_passes_storage_state_path_to_attach() -> None:
+    captured: dict = {}
+
+    @contextlib.asynccontextmanager
+    async def attach(cdp_url: str, *, is_local: bool = True, **kwargs):
+        captured["storage_state_path"] = kwargs.get("storage_state_path")
+        yield "fake-pw"
+
+    ex = UpstreamUploadExecutor(uploader_factory=lambda p, s: FakeApp(), attach=attach)
+    run(ex.upload(make_spec(), make_context()))
+
+    # 上游 validate 需要的 account_file：~/.posthub/cookies/{account_id}.json
+    assert captured["storage_state_path"] == account_cookie_file("acc-1")
+
+
 def test_executor_maps_uploader_exception_to_unknown() -> None:
     class BoomApp:
         async def upload(self, pw) -> None:

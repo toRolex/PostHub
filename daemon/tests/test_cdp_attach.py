@@ -29,10 +29,15 @@ class FakeContext:
         self.name = name
         self.closed = False
         self.close_calls = 0
+        self.storage_state_calls: list = []
 
     async def close(self) -> None:
         self.close_calls += 1
         self.closed = True
+
+    async def storage_state(self, *args, **kwargs):
+        self.storage_state_calls.append((args, kwargs))
+        return {}
 
 
 class FakeBrowser:
@@ -184,6 +189,31 @@ def test_cdp_attach_yields_patched_pw_and_connects_over_cdp() -> None:
     assert browser.new_context_calls == []
     # playwright 已 stop（断连但不杀浏览器进程）
     assert pw.stopped is True
+
+
+def test_cdp_attach_exports_storage_state_when_path_given(tmp_path) -> None:
+    browser = FakeBrowser()
+    pw = FakePlaywright(browser)
+    factory = lambda: FakePlaywrightContext(pw)
+    identity = lambda url: url
+    target = tmp_path / "cookies" / "10.json"
+
+    async def main() -> None:
+        async with cdp_attach(
+            "http://127.0.0.1:9222",
+            is_local=True,
+            playwright_factory=factory,
+            resolve_endpoint=identity,
+            storage_state_path=str(target),
+        ):
+            pass
+
+    run(main())
+
+    ctx = browser.contexts[0]
+    # 登录态导出到上游 account_file（cdp_attach.py: storage_state）
+    assert ctx.storage_state_calls == [((), {"path": str(target)})]
+    assert target.parent.is_dir()  # cookies 父目录已创建
 
 
 def test_cdp_attach_stops_playwright_on_error() -> None:
