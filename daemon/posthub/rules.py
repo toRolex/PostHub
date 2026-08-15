@@ -9,11 +9,14 @@
 - frontier 谓词 + 排序键（#26）：`is_job_eligible` 组合判定（定时到点、退避未到期、
   限速、账号 active、同账号严格串行、创建序排队），`frontier_sort_key` 排序键；
   跨 job 派生上下文（publishing_accounts / pending_min）由 store 算好传入，规则侧纯。
-- missed 谓词属后续 #27，本模块暂不做。
+- missed 判定谓词（#27）：`is_pending_missed`（local_time 定时超容忍窗口）与
+  `is_stale_publishing`（publishing 按 updated_at 超时）；两份 store 的
+  list_pending_missed / list_stale_publishing 扫描共享同一谓词。
 - 从 state.py 导入时间工具与 `derive_task_status`（state 不依赖本模块，无环）。
 
 本模块为纯领域逻辑，无 IO；副作用执行留在 store 薄包装，规则只计算
-「该迁移要写什么 + 附带什么账号副作用」与「frontier 可领取判定 / 排序」。
+「该迁移要写什么 + 附带什么账号副作用」与「frontier 可领取判定 / 排序」与
+「missed 判定」。
 """
 
 from __future__ import annotations
@@ -22,12 +25,14 @@ from dataclasses import dataclass
 from typing import Any
 
 # 从 state 导入时间工具与 derive_task_status（无环依赖，满足 ADR-0005 依赖方向；
-# frontier 谓词用 effective_publish_at / diff_seconds，#27 missed 谓词将用 add_seconds）
+# frontier 谓词用 effective_publish_at / diff_seconds，missed 谓词用 add_seconds /
+# effective_publish_mode）
 from posthub.state import (
-    add_seconds,  # noqa: F401  # #27 missed 谓词用
+    add_seconds,
     derive_task_status,  # noqa: F401  # 依赖方向锚点（transition 暂未消费）
     diff_seconds,
     effective_publish_at,
+    effective_publish_mode,
 )
 
 __all__ = [
@@ -42,6 +47,8 @@ __all__ = [
     "is_serial_eligible",
     "is_job_eligible",
     "frontier_sort_key",
+    "is_pending_missed",
+    "is_stale_publishing",
 ]
 
 SET_LAST_PUBLISH_AT = "set_last_publish_at"
@@ -209,3 +216,37 @@ def frontier_sort_key(job: Any, task: Any) -> tuple[bool, str, int]:
     """
     pub_at = effective_publish_at(job, task)
     return (pub_at is not None, pub_at or "", job.id)
+
+
+# ---- #27 missed 判定谓词 ----
+
+# 两份 store 的 list_pending_missed / list_stale_publishing 扫描共享同一判定：
+# store 只负责候选迭代（InMemory 遍历 / Sqlite 宽候选拉取），本组函数保持纯
+# （无 IO、无 store 访问）。
+
+
+def is_pending_missed(job: Any, task: Any, now: str, tolerance_seconds: int) -> bool:
+    """pending-missed 判定：local_time 定时超容忍窗口（纯函数）。
+
+    job 为 pending、生效 publish_mode 为 `local_time`、生效 publish_at 非空且
+    `publish_at <= now - tolerance_seconds` → True（错过定时窗口的 missed 候选）。
+    """
+    if job.status != "pending":
+        return False
+    if effective_publish_mode(job, task) != "local_time":
+        return False
+    pub_at = effective_publish_at(job, task)
+    if pub_at is None:
+        return False
+    return pub_at <= add_seconds(now, -tolerance_seconds)
+
+
+def is_stale_publishing(job: Any, now: str, timeout_seconds: int) -> bool:
+    """stale-publishing 判定：publishing 按 updated_at 超时（纯函数）。
+
+    job 为 publishing 且 `updated_at <= now - timeout_seconds` → True
+    （publishing 超时兜底 missed 的候选）。
+    """
+    if job.status != "publishing":
+        return False
+    return job.updated_at <= add_seconds(now, -timeout_seconds)

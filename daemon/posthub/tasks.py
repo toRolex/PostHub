@@ -31,13 +31,12 @@ from posthub.rules import (
     SET_NEEDS_RELOGIN,
     frontier_sort_key,
     is_job_eligible,
+    is_pending_missed,
+    is_stale_publishing,
     transition,
 )
 from posthub.state import (
-    add_seconds,
     derive_task_status,
-    effective_publish_at,
-    effective_publish_mode,
 )
 
 Platform = Literal["douyin", "xiaohongshu", "wechat"]
@@ -644,28 +643,23 @@ class InMemoryTaskStore:
             return True
 
     def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
+        """missed 判定扫描：遍历 + rules 共享谓词（与 Sqlite 同一判定）。"""
         with self._lock:
-            cutoff = add_seconds(now, -tolerance_seconds)
             hits: list[PlatformJob] = []
             for job in self._all_jobs():
-                if job.status != "pending":
-                    continue
                 task = self._tasks.get(job.task_id)
                 if task is None:
                     continue
-                if effective_publish_mode(job, task) != "local_time":
-                    continue
-                pub_at = effective_publish_at(job, task)
-                if pub_at is not None and pub_at <= cutoff:
+                if is_pending_missed(job, task, now, tolerance_seconds):
                     hits.append(job)
             return hits
 
     def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
+        """missed 兜底扫描：遍历 + rules 共享谓词（与 Sqlite 同一判定）。"""
         with self._lock:
-            cutoff = add_seconds(now, -timeout_seconds)
             return [
                 job for job in self._all_jobs()
-                if job.status == "publishing" and job.updated_at <= cutoff
+                if is_stale_publishing(job, now, timeout_seconds)
             ]
 
     def delete_account_jobs(self, account_id: int) -> None:
@@ -1154,31 +1148,39 @@ class SqliteTaskStore:
             return True
 
     def list_pending_missed(self, now: str, tolerance_seconds: int) -> list[PlatformJob]:
+        """missed 判定扫描：SQL 退化为 pending 宽候选拉取 + rules 共享谓词
+        （与 InMemory 同一判定）。"""
         with self._lock:
-            cutoff = add_seconds(now, -tolerance_seconds)
             rows = self._conn.execute(
-                """
-                SELECT j.*
-                FROM platform_job j
-                JOIN task t ON t.id = j.task_id
-                WHERE j.status = 'pending'
-                  AND COALESCE(j.publish_mode, t.publish_mode) = 'local_time'
-                  AND COALESCE(j.publish_at, t.publish_at) IS NOT NULL
-                  AND COALESCE(j.publish_at, t.publish_at) <= :cutoff
-                ORDER BY j.id ASC
-                """,
-                {"cutoff": cutoff},
+                "SELECT * FROM platform_job WHERE status='pending' ORDER BY id ASC"
             ).fetchall()
-            return [self._row_to_job(row) for row in rows]
+            hits: list[PlatformJob] = []
+            task_cache: dict[int, Task] = {}
+            for row in rows:
+                job = self._row_to_job(row)
+                task = task_cache.get(job.task_id)
+                if task is None:
+                    task = self._fetch_task(job.task_id)
+                    if task is None:
+                        continue
+                    task_cache[job.task_id] = task
+                if is_pending_missed(job, task, now, tolerance_seconds):
+                    hits.append(job)
+            return hits
 
     def list_stale_publishing(self, now: str, timeout_seconds: int) -> list[PlatformJob]:
+        """missed 兜底扫描：SQL 退化为 publishing 宽候选拉取 + rules 共享谓词
+        （与 InMemory 同一判定）。"""
         with self._lock:
-            cutoff = add_seconds(now, -timeout_seconds)
             rows = self._conn.execute(
-                "SELECT * FROM platform_job WHERE status='publishing' AND updated_at <= ?",
-                (cutoff,),
+                "SELECT * FROM platform_job WHERE status='publishing'"
             ).fetchall()
-            return [self._row_to_job(row) for row in rows]
+            hits: list[PlatformJob] = []
+            for row in rows:
+                job = self._row_to_job(row)
+                if is_stale_publishing(job, now, timeout_seconds):
+                    hits.append(job)
+            return hits
 
     def delete_account_jobs(self, account_id: int) -> None:
         with self._lock:
