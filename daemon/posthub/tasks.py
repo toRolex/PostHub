@@ -29,12 +29,13 @@ from posthub.logs import LogEntry, LogFilters
 from posthub.rules import (
     SET_LAST_PUBLISH_AT,
     SET_NEEDS_RELOGIN,
+    frontier_sort_key,
+    is_job_eligible,
     transition,
 )
 from posthub.state import (
     add_seconds,
     derive_task_status,
-    diff_seconds,
     effective_publish_at,
     effective_publish_mode,
 )
@@ -527,51 +528,47 @@ class InMemoryTaskStore:
         *,
         rate_limit_seconds: int = 300,
     ) -> list[PlatformJob]:
+        """Frontier 领取：eligible 判定与排序全走 rules 纯函数（与 Sqlite 共享）。"""
         with self._lock:
-            candidates: list[PlatformJob] = []
-            for job in self._all_jobs():
+            all_jobs = self._all_jobs()
+            # 跨 job 派生上下文（rules 保持纯，只消费这些参数）
+            publishing_accounts = {
+                j.account_id for j in all_jobs if j.status == "publishing"
+            }
+            # 每账号 pending 最小 id（创建序）：对全部 pending 计算，含未到点 / 退避中，
+            # 保证「同账号按创建序排队」不被定时 / 退避跳过（与 Sqlite 语义一致）。
+            pending_min: dict[int, int] = {}
+            for job in all_jobs:
+                if job.status != "pending":
+                    continue
+                cur = pending_min.get(job.account_id)
+                if cur is None or job.id < cur:
+                    pending_min[job.account_id] = job.id
+
+            eligible: list[PlatformJob] = []
+            for job in all_jobs:
                 if job.status != "pending":
                     continue
                 task = self._tasks.get(job.task_id)
                 if task is None:
                     continue
-                pub_at = effective_publish_at(job, task)
-                if pub_at is not None and pub_at > now:
-                    continue  # 定时未到点
-                if job.retry_at is not None and job.retry_at > now:
-                    continue  # 退避未到期
-                candidates.append(job)
+                account = self._accounts.get(job.account_id)
+                if not is_job_eligible(
+                    job,
+                    task,
+                    account,
+                    now,
+                    rate_limit_seconds=rate_limit_seconds,
+                    publishing_accounts=publishing_accounts,
+                    pending_min=pending_min,
+                ):
+                    continue
+                eligible.append(job)
 
-            def account_eligible(job: PlatformJob) -> bool:
-                acc = self._accounts.get(job.account_id)
-                if acc is None or acc.status != "active":
-                    return False
-                if acc.last_publish_at is not None and diff_seconds(now, acc.last_publish_at) < rate_limit_seconds:
-                    return False
-                return True
-
-            publishing_accounts = {
-                j.account_id for j in self._all_jobs() if j.status == "publishing"
-            }
-            pending_min: dict[int, int] = {}
-            for job in candidates:
-                cur = pending_min.get(job.account_id)
-                if cur is None or job.id < cur:
-                    pending_min[job.account_id] = job.id
-
-            def serial_eligible(job: PlatformJob) -> bool:
-                # 同账号严格串行：无 publishing 且是本账号 pending 中最先创建
-                return (
-                    job.account_id not in publishing_accounts
-                    and job.id == pending_min[job.account_id]
-                )
-
-            candidates = [j for j in candidates if account_eligible(j) and serial_eligible(j)]
-            # ORDER BY (publish_at IS NULL) DESC, publish_at ASC, id ASC
-            candidates.sort(key=lambda j: (j.publish_at is not None, j.publish_at or "", j.id))
+            eligible.sort(key=lambda j: frontier_sort_key(j, self._tasks[j.task_id]))
 
             claimed: list[PlatformJob] = []
-            for job in candidates:
+            for job in eligible:
                 if len(claimed) >= limit:
                     break
                 updated = self._update_job(
@@ -1027,41 +1024,55 @@ class SqliteTaskStore:
         *,
         rate_limit_seconds: int = 300,
     ) -> list[PlatformJob]:
+        """Frontier 领取：SQL 退化为宽候选拉取（`status='pending'` 剪枝）+ 乐观锁领取；
+        eligible 判定与排序全走 rules 纯函数（与 InMemory 共享同一判定与排序）。"""
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT j.*
-                FROM platform_job j
-                JOIN task t ON t.id = j.task_id
-                WHERE j.status = 'pending'
-                  AND (COALESCE(j.publish_at, t.publish_at) IS NULL
-                       OR COALESCE(j.publish_at, t.publish_at) <= :now)
-                  AND (j.retry_at IS NULL OR j.retry_at <= :now)
-                  AND j.account_id NOT IN (
-                      SELECT account_id FROM platform_job WHERE status = 'publishing'
-                  )
-                  AND j.id = (SELECT MIN(j2.id) FROM platform_job j2
-                              WHERE j2.account_id = j.account_id
-                                AND j2.status = 'pending')
-                ORDER BY (COALESCE(j.publish_at, t.publish_at) IS NULL) DESC,
-                         COALESCE(j.publish_at, t.publish_at) ASC, j.id ASC
-                LIMIT :limit
-                """,
-                {"now": now, "limit": limit},
+            pending_rows = self._conn.execute(
+                "SELECT * FROM platform_job WHERE status='pending'"
             ).fetchall()
+            # 跨 job 派生上下文（rules 保持纯，只消费这些参数）
+            pub_rows = self._conn.execute(
+                "SELECT DISTINCT account_id FROM platform_job WHERE status='publishing'"
+            ).fetchall()
+            publishing_accounts = {r["account_id"] for r in pub_rows}
+            # 每账号 pending 最小 id（创建序）：对全部 pending 计算（宽拉取未剪定时/退避），
+            # 保证「同账号按创建序排队」不被定时 / 退避跳过。
+            pending_min: dict[int, int] = {}
+            for row in pending_rows:
+                acc = row["account_id"]
+                cur = pending_min.get(acc)
+                if cur is None or row["id"] < cur:
+                    pending_min[acc] = row["id"]
+
+            task_cache: dict[int, Task] = {}
+            eligible: list[PlatformJob] = []
+            for row in pending_rows:
+                job = self._row_to_job(row)
+                task = task_cache.get(job.task_id)
+                if task is None:
+                    task = self._fetch_task(job.task_id)
+                    if task is None:
+                        continue
+                    task_cache[job.task_id] = task
+                account = self._accounts.get(job.account_id)
+                if not is_job_eligible(
+                    job,
+                    task,
+                    account,
+                    now,
+                    rate_limit_seconds=rate_limit_seconds,
+                    publishing_accounts=publishing_accounts,
+                    pending_min=pending_min,
+                ):
+                    continue
+                eligible.append(job)
+
+            eligible.sort(key=lambda j: frontier_sort_key(j, task_cache[j.task_id]))
 
             claimed: list[PlatformJob] = []
-            for row in rows:
+            for job in eligible:
                 if len(claimed) >= limit:
                     break
-                job = self._row_to_job(row)
-                acc = self._accounts.get(job.account_id)
-                if acc is None or acc.status != "active":
-                    continue
-                if acc.last_publish_at is not None and diff_seconds(
-                    now, acc.last_publish_at
-                ) < rate_limit_seconds:
-                    continue
                 cur = self._conn.execute(
                     """
                     UPDATE platform_job

@@ -186,6 +186,33 @@ def test_claim_respects_retry_at_backoff(stores) -> None:
     assert re[0].attempt_count == 2  # 重试次数累加
 
 
+def test_claim_oldest_pending_scheduled_blocks_newer_due(stores) -> None:
+    """创建序排队：最早 pending 的定时 job 未到点，后创建的立即 job 也被挡住。
+
+    钉住 #26 收敛的 pending_min 派生语义：每账号 pending 最小 id 对「全部 pending」
+    计算（含定时未到点 / 退避中的 job），而非仅定时 / 退避已通过的候选。
+    """
+    store, _ = stores
+    publish_at = future_at(3)
+    _, jobs_a = store.create_task(
+        make_spec(
+            title="定时A",
+            schedule_policy="scheduled",
+            publish_mode="local_time",
+            publish_at=publish_at,
+            jobs=[PlatformJobSpec(platform="douyin", account_id=1)],
+        )
+    )
+    _, jobs_b = make_immediate(store, "douyin", 1, title="立即B")
+    assert jobs_a[0].id < jobs_b[0].id  # A 先创建 = 最早 pending
+    # A 定时未到点：最早 pending 的 A 挡住后创建的立即 B（创建序排队，不被跳过）
+    assert store.claim_eligible_jobs(T0, limit=3, scheduler_id="s1") == []
+    # A 到点后：按创建序先领 A
+    at_due = add_seconds(publish_at, 1)
+    claimed = store.claim_eligible_jobs(at_due, limit=3, scheduler_id="s1")
+    assert [j.id for j in claimed] == [jobs_a[0].id]
+
+
 # ---- 状态迁移 + task 聚合回写 ----
 
 def test_apply_success_updates_job_account_task(stores) -> None:
