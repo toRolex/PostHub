@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 # 从 state 导入时间工具与 derive_task_status（无环依赖，满足 ADR-0005 依赖方向；
 # frontier 谓词用 effective_publish_at / diff_seconds，missed 谓词用 add_seconds /
@@ -45,6 +45,7 @@ __all__ = [
     "is_account_active",
     "is_rate_limited",
     "is_serial_eligible",
+    "derive_pending_min",
     "is_job_eligible",
     "frontier_sort_key",
     "is_pending_missed",
@@ -74,7 +75,9 @@ class Transition:
 def transition(job: Any, new_status: str, **target: Any) -> Transition:
     """计算一次状态迁移应写入的 job 字段与账号副作用（纯函数）。
 
-    `job` 为 `PlatformJob` 实例或 dict（Sqlite row），目前只作迁移上下文传入；
+    `job` 为 `PlatformJob` 实例或 dict（Sqlite row），仅作签名契约传入
+    （ADR-0005 规定 `transition(job, new_status, **target)`），本阶段各迁移
+    均为与当前状态无关的纯 set 计算，故函数体不读取它；
     `new_status` 为 success / failed / manual / needs_relogin / pending / missed；
     `**target` 承载附加目标字段（post_id / post_url / message / error_type /
     retry_at / finished_at）。`pending` 按是否携带 `retry_at` 区分 requeue
@@ -152,7 +155,7 @@ def is_time_due(job: Any, task: Any, now: str) -> bool:
 
 
 def is_backoff_expired(job: Any, now: str) -> bool:
-    """退避未到期：retry_at 为空或已到点（<= now）。"""
+    """退避已到期：retry_at 为空或已到点（<= now）→ True（可领取）。"""
     return job.retry_at is None or job.retry_at <= now
 
 
@@ -179,6 +182,22 @@ def is_serial_eligible(job: Any, publishing_accounts: set[int], pending_min: dic
         job.account_id not in publishing_accounts
         and job.id == pending_min.get(job.account_id)
     )
+
+
+def derive_pending_min(pending_jobs: Iterable[tuple[int, int]]) -> dict[int, int]:
+    """派生每账号最小 pending job id（创建序排队）——纯函数，两份 store 共用。
+
+    `pending_jobs`：已过滤为 pending 的 `(account_id, job_id)` 序列，由 store 投影
+    （InMemory 遍历全部 job 取 status=='pending'；Sqlite 用宽拉取结果）。对全部
+    pending 计算（含定时未到点 / 退避中），保证「同账号按创建序排队」不被定时 /
+    退避跳过（与 Sqlite 语义一致，#26 收敛点）。
+    """
+    pending_min: dict[int, int] = {}
+    for account_id, job_id in pending_jobs:
+        cur = pending_min.get(account_id)
+        if cur is None or job_id < cur:
+            pending_min[account_id] = job_id
+    return pending_min
 
 
 def is_job_eligible(

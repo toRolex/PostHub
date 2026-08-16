@@ -29,6 +29,7 @@ from posthub.logs import LogEntry, LogFilters
 from posthub.rules import (
     SET_LAST_PUBLISH_AT,
     SET_NEEDS_RELOGIN,
+    derive_pending_min,
     frontier_sort_key,
     is_job_eligible,
     is_pending_missed,
@@ -536,13 +537,9 @@ class InMemoryTaskStore:
             }
             # 每账号 pending 最小 id（创建序）：对全部 pending 计算，含未到点 / 退避中，
             # 保证「同账号按创建序排队」不被定时 / 退避跳过（与 Sqlite 语义一致）。
-            pending_min: dict[int, int] = {}
-            for job in all_jobs:
-                if job.status != "pending":
-                    continue
-                cur = pending_min.get(job.account_id)
-                if cur is None or job.id < cur:
-                    pending_min[job.account_id] = job.id
+            pending_min = derive_pending_min(
+                (j.account_id, j.id) for j in all_jobs if j.status == "pending"
+            )
 
             eligible: list[PlatformJob] = []
             for job in all_jobs:
@@ -1031,12 +1028,9 @@ class SqliteTaskStore:
             publishing_accounts = {r["account_id"] for r in pub_rows}
             # 每账号 pending 最小 id（创建序）：对全部 pending 计算（宽拉取未剪定时/退避），
             # 保证「同账号按创建序排队」不被定时 / 退避跳过。
-            pending_min: dict[int, int] = {}
-            for row in pending_rows:
-                acc = row["account_id"]
-                cur = pending_min.get(acc)
-                if cur is None or row["id"] < cur:
-                    pending_min[acc] = row["id"]
+            pending_min = derive_pending_min(
+                (r["account_id"], r["id"]) for r in pending_rows
+            )
 
             task_cache: dict[int, Task] = {}
             eligible: list[PlatformJob] = []
