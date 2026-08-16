@@ -244,6 +244,10 @@ CREATE INDEX idx_log_created ON log(created_at);
 
 ### 调度器 Frontier 查询（取可领取的 job）
 
+> **已 superseded（ADR-0005）**：本小节的 frontier SQL 记作行为规范，实现已改为
+> `rules.py` 纯函数单一真源（eligible 判定 + 排序），存储只负责候选拉取 + 乐观锁领取。
+> 行为语义不变，仅真源位置迁移，见 `docs/adr/0005-scheduler-rules-single-source.md`。
+
 ```sql
 SELECT j.*
 FROM platform_job j

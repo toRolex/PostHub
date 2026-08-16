@@ -1,7 +1,7 @@
 # CONTEXT.md — PostHub（发布中枢）
 
 > single-context 领域文档。术语与决策的唯一事实来源；改术语先改这里，再改代码。
-> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`。
+> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`、`docs/adr/0005-scheduler-rules-single-source.md`。
 
 ## 领域
 
@@ -26,6 +26,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **CDP 接管** | `connect_over_cdp` 连接账号 Chrome 调试端口，复用其登录态；`browser.close()` 不得关闭真实 Chrome、不得掉登录态 |
 | **conf 模块** | PostHub 自备的上游依赖配置（`BASE_DIR / DEBUG_MODE / LOCAL_CHROME_HEADLESS / LOCAL_CHROME_PATH / XHS_SERVER / YT_PROXY`），否则上游 `import conf` 即崩 |
 | **Seam** | `execute(task_spec, context) -> job_updates`；调度/状态机为纯逻辑，浏览器经依赖注入 |
+| **规则模块 rules** | `daemon/posthub/rules.py`：调度 frontier（eligible/排序/限速/串行）+ 状态迁移（`transition`）+ missed 谓词的纯函数单一真源；两份 store（InMemory/Sqlite）只做持久化与副作用执行（ADR-0005） |
 | **平台约束注册表** | 按平台注册的约束（min_lead_time、定时窗口、每日上限、封面要求），发布表单校验引用 |
 
 ## 平台约束注册表（已实测/调研）
@@ -59,6 +60,8 @@ failed / manual / needs_relogin → pending（手动重试，重试次数保留�
 `task.status` 为聚合冗余列，服务层按序判定：`success → missed → needs_relogin → manual → failed → publishing → partial → pending`，在 job 状态变更同一事务内重算。
 
 ## 调度与重试约束（seam 内的纯领域逻辑）
+
+> 以下约束的真源在 `daemon/posthub/rules.py`（ADR-0005）：调度 frontier（eligible 判定 / 排序 / 限速 / 串行）与状态迁移（`transition`，job 字段 + 账号副作用标记）为纯函数单一真源，InMemory / Sqlite 两份 store 只做持久化与副作用执行。
 
 - **并发**：同平台（同账号）严格串行，跨平台并行 2–3 路；同账号内按创建序排队。
 - **限速**：同一账号距上次发布 ≥ 5 分钟。

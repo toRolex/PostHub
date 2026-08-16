@@ -35,3 +35,6 @@ daemon/logs/
 # --- 敏感配置 ---
 .env
 .env.*
+
+# --- 工具本地缓存 ---
+.impeccable/
