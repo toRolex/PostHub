@@ -44,15 +44,19 @@ pgrep -fl "run_backend.py" || true
 # 4) 退出：killer == 壳 RunEvent::Exit 的 child.kill()
 log "kill ${CHILD}（模拟点叉退出）"
 kill "${CHILD}" 2>/dev/null || true
-sleep 2
 
-# 5) 断言端口释放 + 进程消失
-if lsof -ti tcp:${PORT} >/dev/null 2>&1; then
-  log "FAIL: ${PORT} 仍被监听"
-  exit 1
-fi
-if pgrep -fl "run_backend.py" >/dev/null 2>&1; then
-  log "FAIL: run_backend.py 进程残留"
+# 5) 轮询断言：端口释放 + run_backend.py 进程消失（最多 10s，避免信号未及时传递误判）
+released=0
+for i in $(seq 1 20); do
+  port_busy=$(lsof -ti tcp:${PORT} >/dev/null 2>&1 && echo 1 || echo 0)
+  proc_left=$(pgrep -fl "run_backend.py" >/dev/null 2>&1 && echo 1 || echo 0)
+  if [ "${port_busy}" = "0" ] && [ "${proc_left}" = "0" ]; then released=1; break; fi
+  sleep 0.5
+done
+if [ "${released}" != "1" ]; then
+  log "FAIL: 退出后 ${PORT} 仍被监听或 run_backend.py 残留"
+  lsof -ti tcp:${PORT} 2>/dev/null || true
+  pgrep -fl "run_backend.py" 2>/dev/null || true
   exit 1
 fi
 log "PASS: 退出后 ${PORT} 端口释放、无 run_backend.py 残留进程"
