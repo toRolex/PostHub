@@ -12,3 +12,8 @@ export function formatRelative(iso: string): string {
   if (days < 7) return `${days} 天前`;
   return iso.slice(0, 10);
 }
+
+/** 官方 SQLite `DEFAULT CURRENT_TIMESTAMP` 为 UTC（无时区后缀）；补 Z 按 UTC 解析，避免 formatRelative 按本地时区偏移。 */
+export function parseOfficialUtcTime(iso: string): string {
+  return `${iso.replace(" ", "T")}Z`;
+}

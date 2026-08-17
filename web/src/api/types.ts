@@ -161,6 +161,16 @@ export interface LogEntry {
   created_at: string;
 }
 
+/** 官方 file_records 表记录（GET /getFiles，daemon/sau_backend.py）。 */
+export interface OfficialFileRecord {
+  id: number;
+  filename: string; // 不带 uuid 前缀的用户可见文件名
+  filesize: number; // MB（uploadSave 写入时 round(...,2)）
+  upload_time: string; // "YYYY-MM-DD HH:MM:SS"
+  file_path: string; // 磁盘/videoFile/ 下的实际文件名（uuid_原名）
+  uuid: string; // 官方从 file_path 提 uuid 的派生字段
+}
+
 export interface CreateTaskPayload {
   title: string;
   video_path: string;
