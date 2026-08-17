@@ -13,6 +13,7 @@ import { Empty } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
 import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
@@ -263,6 +264,88 @@ function ContentSection() {
   );
 }
 
+/* ───────────────────────── 定时发布（enableTimer）───────────────────────── */
+
+function TimerSection({ errors }: { errors: string[] }) {
+  const timerEnabled = usePublishStore((s) => s.timerEnabled);
+  const videosPerDay = usePublishStore((s) => s.videosPerDay);
+  const dailyTimes = usePublishStore((s) => s.dailyTimes);
+  const startDays = usePublishStore((s) => s.startDays);
+  const setForm = usePublishStore((s) => s.setForm);
+
+  // 时刻输入（整数小时）→ number[]：逗号/空格分隔，丢弃非 0-23 与重复项。
+  function parseDailyTimes(raw: string): number[] {
+    return Array.from(
+      new Set(
+        raw
+          .split(/[\s,，]+/)
+          .map(Number)
+          .filter((h) => Number.isInteger(h) && h >= 0 && h <= 23),
+      ),
+    ).sort((a, b) => a - b);
+  }
+
+  return (
+    <section className="border-t border-border-soft py-6">
+      <div className="mb-4 flex items-center gap-3">
+        <Switch
+          id="publish-timer-enabled"
+          checked={timerEnabled}
+          onCheckedChange={(v) => setForm({ timerEnabled: v })}
+        />
+        <h3 className="text-title font-semibold tracking-[-0.01em]">定时发布</h3>
+        <span className="text-label text-muted">
+          启用后按官方 enableTimer 三字段随发布提交
+        </span>
+      </div>
+      {timerEnabled && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="publish-timer-perday" className="text-label font-medium text-fg-2">
+              每日条数（videosPerDay）
+            </label>
+            <Input
+              id="publish-timer-perday"
+              type="number"
+              min={1}
+              value={videosPerDay}
+              onChange={(e) => setForm({ videosPerDay: Number(e.target.value) })}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="publish-timer-times" className="text-label font-medium text-fg-2">
+              每日时刻（dailyTimes）
+            </label>
+            <Input
+              id="publish-timer-times"
+              value={dailyTimes.join(" ")}
+              placeholder="整点小时，空格分隔，如 10 14 20"
+              onChange={(e) => setForm({ dailyTimes: parseDailyTimes(e.target.value) })}
+            />
+            <span className="text-caption text-meta">当前 {dailyTimes.length} 个时刻</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="publish-timer-days" className="text-label font-medium text-fg-2">
+              起始天（startDays）
+            </label>
+            <Input
+              id="publish-timer-days"
+              type="number"
+              min={0}
+              value={startDays}
+              onChange={(e) => setForm({ startDays: Number(e.target.value) })}
+            />
+            <span className="text-caption text-meta">0 = 明天起</span>
+          </div>
+          {errors.filter((e) => e.includes("条数") || e.includes("时刻") || e.includes("起始")).map((e) => (
+            <p key={e} className="text-label text-danger-deep">{e}</p>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
 function FeedbackPanel() {
@@ -360,13 +443,40 @@ export function PublishView() {
   const selectedPlatforms = usePublishStore((s) => s.selectedPlatforms);
   const accountByPlatform = usePublishStore((s) => s.accountByPlatform);
   const selectedFile = usePublishStore((s) => s.selectedFile);
+  const timerEnabled = usePublishStore((s) => s.timerEnabled);
+  const videosPerDay = usePublishStore((s) => s.videosPerDay);
+  const dailyTimes = usePublishStore((s) => s.dailyTimes);
+  const startDays = usePublishStore((s) => s.startDays);
   const validate = usePublishStore((s) => s.validate);
 
   // 订阅表单字段以驱动校验重算（validate 与 store 校验共享同一规则）。
   const errors = useMemo<string[]>(
     () =>
-      validate({ title, caption, tags, selectedPlatforms, accountByPlatform, selectedFile }),
-    [validate, title, caption, tags, selectedPlatforms, accountByPlatform, selectedFile],
+      validate({
+        title,
+        caption,
+        tags,
+        selectedPlatforms,
+        accountByPlatform,
+        selectedFile,
+        timerEnabled,
+        videosPerDay,
+        dailyTimes,
+        startDays,
+      }),
+    [
+      validate,
+      title,
+      caption,
+      tags,
+      selectedPlatforms,
+      accountByPlatform,
+      selectedFile,
+      timerEnabled,
+      videosPerDay,
+      dailyTimes,
+      startDays,
+    ],
   );
 
   return (
@@ -375,6 +485,7 @@ export function PublishView() {
       <AssetSection errors={errors} />
       <TargetSection />
       <ContentSection />
+      <TimerSection errors={errors} />
       <PublishActions errors={errors} />
     </div>
   );

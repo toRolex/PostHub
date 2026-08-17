@@ -18,6 +18,10 @@ const initialForm = (): PublishFormValues => ({
   selectedPlatforms: [],
   accountByPlatform: { ...EMPTY_ACCOUNTS },
   selectedFile: null,
+  timerEnabled: false,
+  videosPerDay: 1,
+  dailyTimes: [10, 14, 20],
+  startDays: 0,
 });
 
 /** 表单可写字段。 */
@@ -35,6 +39,14 @@ export interface PublishFormValues {
   accountByPlatform: Partial<Record<Platform, number | null>>;
   /** 选中素材（来自文件页素材库的 file_path，即官方 videoFile 磁盘名）。 */
   selectedFile: string | null;
+  /** 定时发布开关。 */
+  timerEnabled: boolean;
+  /** 定时：每日条数（videosPerDay，官方要求 1..len(dailyTimes)）。 */
+  videosPerDay: number;
+  /** 定时：每日时刻（dailyTimes，整点小时数组 0-23，官方取 dailyTimes[daily_video_index]）。 */
+  dailyTimes: number[];
+  /** 定时：起始天（startDays，0 = 明天起）。 */
+  startDays: number;
 }
 
 interface PublishState extends PublishFormValues {
@@ -104,6 +116,28 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
         break;
       }
     }
+    // 定时：仅启用时校验，规则与官方 generate_schedule_time_next_day 对齐。
+    if (s.timerEnabled) {
+      if (!Number.isInteger(s.videosPerDay) || s.videosPerDay <= 0) {
+        errors.push("每日条数需为正整数");
+      }
+      if (!Array.isArray(s.dailyTimes) || s.dailyTimes.length === 0) {
+        errors.push("每日时刻不能为空");
+      } else if (
+        s.dailyTimes.some((h) => !Number.isInteger(h) || h < 0 || h > 23)
+      ) {
+        errors.push("每日时刻须为整点小时（0-23）");
+      } else if (
+        s.videosPerDay > 0 &&
+        s.dailyTimes.length > 0 &&
+        s.videosPerDay > s.dailyTimes.length
+      ) {
+        errors.push(`每日条数不能超过时刻数量（${s.dailyTimes.length}）`);
+      }
+      if (!Number.isInteger(s.startDays) || s.startDays < 0) {
+        errors.push("起始天需为非负整数");
+      }
+    }
     return errors;
   },
 
@@ -141,6 +175,12 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
               title: s.title,
               caption: s.caption,
               tags,
+              timer: {
+                enableTimer: s.timerEnabled,
+                videosPerDay: s.videosPerDay,
+                dailyTimes: s.dailyTimes,
+                startDays: s.startDays,
+              },
             }),
           );
           results[p] = { ok: true, msg: "发布任务已提交" };

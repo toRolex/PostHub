@@ -79,6 +79,42 @@ describe("buildPostVideoRequest（表单 → /postVideo 契约）", () => {
     });
     expect(body.thumbnail).toBe("cover.jpg");
   });
+
+  it("未启用定时：请求体不含三字段，enableTimer=false", () => {
+    const body = buildPostVideoRequest({
+      platform: "douyin",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+    });
+    expect(body.enableTimer).toBe(false);
+    expect(body.videosPerDay).toBeUndefined();
+    expect(body.dailyTimes).toBeUndefined();
+    expect(body.startDays).toBeUndefined();
+  });
+
+  it("启用定时：请求体含官方 enableTimer 完整三字段", () => {
+    const body = buildPostVideoRequest({
+      platform: "douyin",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+      timer: {
+        enableTimer: true,
+        videosPerDay: 2,
+        dailyTimes: [10, 14, 20],
+        startDays: 1,
+      },
+    });
+    expect(body.enableTimer).toBe(true);
+    expect(body.videosPerDay).toBe(2);
+    // dailyTimes 为「整点小时」数字数组（官方 generate_schedule_time_next_day 语义）。
+    expect(body.dailyTimes).toEqual([10, 14, 20]);
+    expect(body.dailyTimes).toHaveLength(3);
+    expect(body.startDays).toBe(1);
+  });
 });
 
 describe("officialApi.postVideo（mock fetch）", () => {
