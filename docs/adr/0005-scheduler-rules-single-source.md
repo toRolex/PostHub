@@ -22,7 +22,7 @@
    - missed 谓词（`local_time` 定时超容忍窗口；`publishing` 超时）。
    - **不引入 string 副作用清单层**：账号副作用仅两类且已经 `AccountStore` seam 共享、参数化测试已锁行为，套清单 + store 内 switch 是多余间接层（顾问审查修正）。
 2. **`TaskStore` interface 不变**，`apply_*` 方法名保留：内部改为调用 `rules.transition` 拿 `job_fields` 做持久化 + 按 `account_effect` 执行副作用。scheduler / management 零改动；副作用执行留在 store 薄包装（持久化职责），规则收敛不改变调用语义。
-3. **Sqlite `claim_eligible_jobs` SQL 退化为宽候选拉取 + 乐观锁领取**：`WHERE status='pending'` 剪枝保留（防历史终态膨胀），eligible 判定与排序全部走 `rules` 纯函数；乐观锁 `UPDATE ... WHERE status='pending'` 保留（存储层原子性职责，非规则重复）。拆分不引入新并发窗口——claim 全程持 store 自锁且单进程，乐观锁本就为跨进程防御；个人数据量级每 tick O(n) 可忽略（顾问审查验证）。
+3. **Sqlite `claim_eligible_jobs` SQL 退化为宽候选拉取 + 乐观锁领取**：`WHERE status='pending'` 剪枝保留（防历史终态膨胀），eligible 判定 / 排序 / claim 迁移字段（publishing + 锁 + attempt_count+1）全部走 `rules` 纯函数；乐观锁 `UPDATE ... WHERE status='pending'` 保留（存储层原子性职责，非规则重复）。拆分不引入新并发窗口——claim 全程持 store 自锁且单进程，乐观锁本就为跨进程防御；个人数据量级每 tick O(n) 可忽略（顾问审查验证）。
 4. **测试**：新增规则单测直接测 `transition / eligible / 排序键 / missed 谓词`（现在规则只能经 store 间接测到）；现有 `params=["in-memory", "sqlite"]` 参数化行为测试原样保留作「薄包装正确接规则」的回归，不加新的双实现对照测试（参数化已覆盖一致性）。**保留 InMemory 实现**——双实现是行为一致性回归资产，不删除。
 
 ## 与 ADR-0001 的关系

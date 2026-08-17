@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from conftest import T0, make_job, make_task
 
 from posthub.accounts import Account
 from posthub.rules import (
@@ -23,43 +23,6 @@ from posthub.rules import (
     is_serial_eligible,
     is_time_due,
 )
-from posthub.tasks import PlatformJob
-
-T0 = "2026-08-08 00:00:00"
-
-
-def make_job(status: str = "pending", **kw) -> PlatformJob:
-    """一个 pending job，可按需覆盖排期 / 退避 / 账号 / id。"""
-    base = dict(
-        id=1,
-        task_id=1,
-        account_id=1,
-        platform="douyin",
-        status=status,
-        schedule_policy=None,
-        publish_mode=None,
-        publish_at=None,
-        retry_at=None,
-        title=None,
-        caption=None,
-        tags=None,
-        cover_horizontal=None,
-        cover_vertical=None,
-        platform_fields=None,
-        post_id=None,
-        post_url=None,
-        attempt_count=0,
-        last_error=None,
-        last_error_type=None,
-        locked_at=None,
-        locked_by=None,
-        created_at=T0,
-        started_at=None,
-        finished_at=None,
-        updated_at=T0,
-    )
-    base.update(kw)
-    return PlatformJob(**base)
 
 
 def make_account(status: str = "active", last_publish_at: str | None = None) -> Account:
@@ -77,11 +40,6 @@ def make_account(status: str = "active", last_publish_at: str | None = None) -> 
         created_at=T0,
         updated_at=T0,
     )
-
-
-def make_task(publish_at: str | None = None) -> SimpleNamespace:
-    """task 排期上下文（rules 只消费 task.publish_at 生效值，鸭子类型即可）。"""
-    return SimpleNamespace(publish_at=publish_at, publish_mode="platform_time")
 
 
 # ---- 定时到点 is_time_due ----

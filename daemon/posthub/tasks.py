@@ -29,6 +29,7 @@ from posthub.logs import LogEntry, LogFilters
 from posthub.rules import (
     SET_LAST_PUBLISH_AT,
     SET_NEEDS_RELOGIN,
+    TERMINAL_STATUSES,
     derive_pending_min,
     frontier_sort_key,
     is_job_eligible,
@@ -541,7 +542,7 @@ class InMemoryTaskStore:
                 (j.account_id, j.id) for j in all_jobs if j.status == "pending"
             )
 
-            eligible: list[PlatformJob] = []
+            eligible: list[tuple[PlatformJob, Task]] = []
             for job in all_jobs:
                 if job.status != "pending":
                     continue
@@ -559,23 +560,19 @@ class InMemoryTaskStore:
                     pending_min=pending_min,
                 ):
                     continue
-                eligible.append(job)
+                eligible.append((job, task))
 
-            eligible.sort(key=lambda j: frontier_sort_key(j, self._tasks[j.task_id]))
+            eligible.sort(key=lambda p: frontier_sort_key(p[0], p[1]))
 
             claimed: list[PlatformJob] = []
-            for job in eligible:
+            for job, _task in eligible:
                 if len(claimed) >= limit:
                     break
-                updated = self._update_job(
-                    job.id,
-                    status="publishing",
-                    locked_at=now,
-                    locked_by=scheduler_id,
-                    started_at=now,
+                t = transition(
+                    job, "publishing", now=now, actor=scheduler_id,
                     attempt_count=job.attempt_count + 1,
-                    updated_at=now,
                 )
+                updated = self._update_job(job.id, updated_at=now, **t.job_fields)
                 if updated is not None:
                     claimed.append(updated)
             return claimed
@@ -587,7 +584,8 @@ class InMemoryTaskStore:
             if job is None:
                 return
             t = transition(
-                job, "success", post_id=post_id, post_url=post_url, finished_at=now
+                job, "success", post_id=post_id, post_url=post_url, now=now,
+                finished_at=now,
             )
             self._update_job(job_id, updated_at=now, **t.job_fields)
             if t.account_effect == SET_LAST_PUBLISH_AT:
@@ -601,7 +599,8 @@ class InMemoryTaskStore:
             if job is None:
                 return
             t = transition(
-                job, status, message=message, error_type=error_type, finished_at=now
+                job, status, message=message, error_type=error_type, now=now,
+                finished_at=now,
             )
             self._update_job(job_id, updated_at=now, **t.job_fields)
             if t.account_effect == SET_NEEDS_RELOGIN:
@@ -615,7 +614,8 @@ class InMemoryTaskStore:
             if job is None:
                 return
             t = transition(
-                job, "pending", retry_at=retry_at, message=message, error_type=error_type
+                job, "pending", retry_at=retry_at, message=message, error_type=error_type,
+                now=now,
             )
             self._update_job(job_id, updated_at=now, **t.job_fields)
             self._recompute_task_status(job.task_id, now)
@@ -625,16 +625,16 @@ class InMemoryTaskStore:
             job = self._find_job(job_id)
             if job is None:
                 return
-            t = transition(job, "missed", finished_at=now)
+            t = transition(job, "missed", now=now, finished_at=now)
             self._update_job(job_id, updated_at=now, **t.job_fields)
             self._recompute_task_status(job.task_id, now)
 
     def retry_job(self, job_id: int, now: str) -> bool:
         with self._lock:
             job = self._find_job(job_id)
-            if job is None or job.status not in ("failed", "manual", "needs_relogin"):
+            if job is None or job.status not in TERMINAL_STATUSES:
                 return False
-            t = transition(job, "pending")
+            t = transition(job, "pending", now=now)
             self._update_job(job_id, updated_at=now, **t.job_fields)
             self._recompute_task_status(job.task_id, now)
             return True
@@ -989,16 +989,43 @@ class SqliteTaskStore:
         )
         return cur.fetchone()
 
-    def _apply_job_fields(self, job_id: int, now: str, fields: dict) -> None:
-        """按 rules.transition 返回的 job_fields 做持久化（字段 + updated_at 置 now）。"""
+    _MUTABLE_JOB_FIELDS = frozenset(
+        {
+            "status",
+            "retry_at",
+            "post_id",
+            "post_url",
+            "attempt_count",
+            "last_error",
+            "last_error_type",
+            "locked_at",
+            "locked_by",
+            "started_at",
+            "finished_at",
+        }
+    )
+
+    def _apply_job_fields(self, job_id: int, now: str, fields: dict,
+                          *, where_extra: str = "") -> int:
+        """按 rules.transition 返回的 job_fields 做持久化（字段 + updated_at 置 now）。
+
+        只允许写白名单内的可迁移列；rules 拼错 key 会在写入前抛错而不是让 SQL 列名
+        直插成运行时 OperationalError（与 InMemory 的 dataclasses.replace 报错对齐）。
+        `where_extra` 追加到 WHERE 条件（如 claim 的 `AND status='pending'` 乐观锁）；
+        返回受影响的 rowcount（乐观锁按受影响行数判定）。
+        """
         if not fields:
-            return
+            return 0
+        unknown = set(fields) - self._MUTABLE_JOB_FIELDS
+        if unknown:
+            raise ValueError(f"不支持写入的 job 字段：{sorted(unknown)}")
         cols = ", ".join(f"{name}=?" for name in fields)
         params = list(fields.values()) + [now, job_id]
-        self._conn.execute(
-            f"UPDATE platform_job SET {cols}, updated_at=? WHERE id=?",
+        cur = self._conn.execute(
+            f"UPDATE platform_job SET {cols}, updated_at=? WHERE id=?{where_extra}",
             params,
         )
+        return cur.rowcount
 
     def _recompute_task_status(self, task_id: int, now: str) -> None:
         status = derive_task_status(self._list_jobs(task_id))
@@ -1033,7 +1060,7 @@ class SqliteTaskStore:
             )
 
             task_cache: dict[int, Task] = {}
-            eligible: list[PlatformJob] = []
+            eligible: list[tuple[PlatformJob, Task]] = []
             for row in pending_rows:
                 job = self._row_to_job(row)
                 task = task_cache.get(job.task_id)
@@ -1053,24 +1080,21 @@ class SqliteTaskStore:
                     pending_min=pending_min,
                 ):
                     continue
-                eligible.append(job)
+                eligible.append((job, task))
 
-            eligible.sort(key=lambda j: frontier_sort_key(j, task_cache[j.task_id]))
+            eligible.sort(key=lambda p: frontier_sort_key(p[0], p[1]))
 
             claimed: list[PlatformJob] = []
-            for job in eligible:
+            for job, _task in eligible:
                 if len(claimed) >= limit:
                     break
-                cur = self._conn.execute(
-                    """
-                    UPDATE platform_job
-                       SET status='publishing', locked_at=?, locked_by=?,
-                           started_at=?, attempt_count=attempt_count+1, updated_at=?
-                     WHERE id=? AND status='pending'
-                    """,
-                    (now, scheduler_id, now, now, job.id),
+                t = transition(
+                    job, "publishing", now=now, actor=scheduler_id,
+                    attempt_count=job.attempt_count + 1,
                 )
-                if cur.rowcount == 1:
+                if self._apply_job_fields(
+                    job.id, now, t.job_fields, where_extra=" AND status='pending'"
+                ) == 1:
                     row2 = self._fetch_job(job.id)
                     if row2 is not None:
                         claimed.append(self._row_to_job(row2))
@@ -1084,7 +1108,7 @@ class SqliteTaskStore:
             if job is None:
                 return
             t = transition(
-                job, "success", post_id=post_id, post_url=post_url, finished_at=now
+                job, "success", post_id=post_id, post_url=post_url, now=now, finished_at=now
             )
             self._apply_job_fields(job_id, now, t.job_fields)
             if t.account_effect == SET_LAST_PUBLISH_AT:
@@ -1099,7 +1123,7 @@ class SqliteTaskStore:
             if job is None:
                 return
             t = transition(
-                job, status, message=message, error_type=error_type, finished_at=now
+                job, status, message=message, error_type=error_type, now=now, finished_at=now
             )
             self._apply_job_fields(job_id, now, t.job_fields)
             if t.account_effect == SET_NEEDS_RELOGIN:
@@ -1114,7 +1138,8 @@ class SqliteTaskStore:
             if job is None:
                 return
             t = transition(
-                job, "pending", retry_at=retry_at, message=message, error_type=error_type
+                job, "pending", retry_at=retry_at, message=message, error_type=error_type,
+                now=now,
             )
             self._apply_job_fields(job_id, now, t.job_fields)
             self._recompute_task_status(job["task_id"], now)
@@ -1125,7 +1150,7 @@ class SqliteTaskStore:
             job = self._fetch_job(job_id)
             if job is None:
                 return
-            t = transition(job, "missed", finished_at=now)
+            t = transition(job, "missed", now=now, finished_at=now)
             self._apply_job_fields(job_id, now, t.job_fields)
             self._recompute_task_status(job["task_id"], now)
             self._conn.commit()
@@ -1133,9 +1158,9 @@ class SqliteTaskStore:
     def retry_job(self, job_id: int, now: str) -> bool:
         with self._lock:
             job = self._fetch_job(job_id)
-            if job is None or job["status"] not in ("failed", "manual", "needs_relogin"):
+            if job is None or job["status"] not in TERMINAL_STATUSES:
                 return False
-            t = transition(job, "pending")
+            t = transition(job, "pending", now=now)
             self._apply_job_fields(job_id, now, t.job_fields)
             self._recompute_task_status(job["task_id"], now)
             self._conn.commit()

@@ -12,51 +12,9 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from conftest import T0, make_job, make_task
 
 from posthub.rules import is_pending_missed, is_stale_publishing
-from posthub.tasks import PlatformJob
-
-T0 = "2026-08-08 00:00:00"
-
-
-def make_job(status: str = "pending", **kw) -> PlatformJob:
-    """一个 pending job，可按需覆盖状态 / 排期 / updated_at。"""
-    base = dict(
-        id=1,
-        task_id=1,
-        account_id=1,
-        platform="douyin",
-        status=status,
-        schedule_policy=None,
-        publish_mode=None,
-        publish_at=None,
-        retry_at=None,
-        title=None,
-        caption=None,
-        tags=None,
-        cover_horizontal=None,
-        cover_vertical=None,
-        platform_fields=None,
-        post_id=None,
-        post_url=None,
-        attempt_count=0,
-        last_error=None,
-        last_error_type=None,
-        locked_at=None,
-        locked_by=None,
-        created_at=T0,
-        started_at=None,
-        finished_at=None,
-        updated_at=T0,
-    )
-    base.update(kw)
-    return PlatformJob(**base)
-
-
-def make_task(publish_mode: str = "local_time", publish_at: str | None = None) -> SimpleNamespace:
-    """task 排期上下文（rules 只消费生效 publish_mode / publish_at，鸭子类型即可）。"""
-    return SimpleNamespace(publish_mode=publish_mode, publish_at=publish_at)
 
 
 # ---- pending-missed 谓词（local_time 定时超容忍窗口）----
