@@ -161,6 +161,36 @@ export interface LogEntry {
   created_at: string;
 }
 
+/**
+ * 官方后端 user_info 的一行：`/getAccounts` / `/getValidAccounts` 官方实现
+ * `[list(row) for row in rows]` 返回的是数组行（非对象），顺序与 db/createTable.py
+ * 列顺序一致：`[id, type, filePath, userName, status]`。
+ * 这是 cookie 导入/导出的账号维度：`filePath` = playwright storage_state
+ * cookie 文件在 `BASE_DIR/cookiesFile/` 下的相对文件名（如 `xxx.json`）。
+ */
+export type OfficialAccountRow = readonly [
+  id: number,
+  type: OfficialPlatform,
+  filePath: string,
+  userName: string,
+  status: OfficialCookieStatus,
+];
+
+/** 官方 user_info.type 释义：1 小红书 2 视频号 3 抖音 4 快手。 */
+export type OfficialPlatform = 1 | 2 | 3 | 4;
+
+/** 官方 user_info.status：1 有效 / 0 失效。 */
+export type OfficialCookieStatus = 0 | 1;
+
+/** 解析后的官方账号（cookie 维度）。type 用官方释义：1 小红书 2 视频号 3 抖音 4 快手。 */
+export interface CookiedAccount {
+  id: number;
+  type: OfficialPlatform;
+  filePath: string;
+  userName: string;
+  status: OfficialCookieStatus;
+}
+
 export interface CreateTaskPayload {
   title: string;
   video_path: string;
