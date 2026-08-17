@@ -4,9 +4,8 @@ import { initialInterventionsState, useInterventionsStore } from "./intervention
 import { useDaemonStore } from "./daemon";
 import type { Intervention } from "../api/types";
 
-// mock 通知函数：poll 检测到新事件时调用（避免测试触发真实弹窗）
+// mock 通知函数：poll 检测到新事件时调用（避免测试触发真实 Toast）
 vi.mock("../lib/interventionNotify", () => ({
-  isTauri: () => false,
   notifyIntervention: vi.fn().mockResolvedValue(undefined),
 }));
 

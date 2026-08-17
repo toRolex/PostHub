@@ -21,7 +21,7 @@ export type SchedulePolicy = "immediate" | "scheduled";
 export type CoverMode = "file" | "auto";
 export type PublishMode = "platform_time" | "local_time";
 
-export const DEFAULT_DAEMON_URL = "http://127.0.0.1:8756";
+export const DEFAULT_DAEMON_URL = "http://127.0.0.1:5409";
 
 export interface DaemonHealth {
   status: string;

@@ -1,16 +1,11 @@
 /**
  * 人工介入提示（issue #21）：验证码挂起 / 需重新扫码 的可观测呈现。
  *
- * 桌面端（Tauri）调用原生弹窗命令 `show_intervention_dialog`；浏览器开发环境
- * 回退为应用内 Toast。非 Tauri 时 `invoke` 会抛错，catch 后走回退。
+ * 无原生弹窗命令（正式后端不提供弹窗能力），统一走应用内 Toast。
  */
-import { invoke } from "@tauri-apps/api/core";
+import { useToastStore } from "../stores/toast";
 
 import type { Intervention } from "../api/types";
-import { useToastStore } from "../stores/toast";
-import { isTauri } from "./isTauri";
-
-export { isTauri }; // 统一环境判定，组件 / 其他模块复用
 
 export function interventionTitle(iv: Intervention): string {
   return iv.kind === "manual" ? "发布需要人工处理" : "账号需重新扫码";
@@ -27,20 +22,7 @@ export function interventionMessage(iv: Intervention): string {
 }
 
 export async function notifyIntervention(iv: Intervention): Promise<void> {
-  const title = interventionTitle(iv);
   const message = interventionMessage(iv);
-  if (isTauri()) {
-    try {
-      await invoke("show_intervention_dialog", {
-        title,
-        message,
-        kind: iv.kind,
-      });
-      return;
-    } catch {
-      // Tauri 命令不可用 → 回退浏览器内提示
-    }
-  }
   useToastStore.getState().show(
     message,
     iv.kind === "manual" ? "warn" : "err",
