@@ -14,6 +14,7 @@ import { Input } from "../components/ui/input";
 import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
+import { BatchPublishSection } from "../components/publish/BatchPublishSection";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
@@ -376,6 +377,7 @@ export function PublishView() {
       <TargetSection />
       <ContentSection />
       <PublishActions errors={errors} />
+      <BatchPublishSection />
     </div>
   );
 }
