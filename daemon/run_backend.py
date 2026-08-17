@@ -26,6 +26,9 @@ if str(_DAEMON_DIR) not in sys.path:
 
 import conf  # noqa: E402  # 先建 conf 模块（上游依赖解析），并触发配置校验
 
+HOST = "127.0.0.1"
+PORT = 5409
+
 
 def _ensure_schema() -> None:
     """幂等创建 db 目录与 user_info 表（DDL 取自上游 db/createTable.py）。"""
@@ -51,4 +54,4 @@ import sau_backend  # noqa: E402  # 官方主入口（原样）
 
 # 官方 `__main__` 是 app.run(host='0.0.0.0', port=5409)；
 # 仅监听 127.0.0.1:5409，不暴露局域网（ADR-0006 安全项）。
-sau_backend.app.run(host="127.0.0.1", port=5409)
+sau_backend.app.run(host=HOST, port=PORT)
