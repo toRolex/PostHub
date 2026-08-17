@@ -1,46 +1,39 @@
-//! PostHub Tauri 2 桌面壳：Windows 托盘 / macOS 菜单栏常驻 + 一键退出 + 开机自启 + 拉起 Python 守护进程。
+//! PostHub Tauri 2 桌面壳：拉起官方后端（127.0.0.1:5409）、点叉即关（无托盘）。
+//!
+//! 官方后端即上游 `sau_backend.py`，入口 `daemon/run_backend.py`（launcher，负责
+//! 幂等建库 + 仅监听 127.0.0.1）。壳启动时用 uv 拉起子进程并做端口就绪轮询，
+//! 退出时确保杀掉子进程。
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent,
-};
+use tauri::{AppHandle, Manager, RunEvent};
 
-/// 守护进程健康检查地址（与 daemon/posthub/server.py 的 DEFAULT_PORT 保持一致）。
-pub const DAEMON_URL: &str = "http://127.0.0.1:8756";
+/// 官方后端探活地址（与 daemon/run_backend.py 的监听一致）。
+pub const DAEMON_URL: &str = "http://127.0.0.1:5409";
+/// 后端端口就绪轮询：每次探活超时、总超时。
+const BACKEND_POLL_TIMEOUT: Duration = Duration::from_secs(2);
+const BACKEND_POLL_TOTAL: Duration = Duration::from_secs(30);
 
-/// 守护进程句柄：应用退出时一并结束子进程。
+/// 官方后端子进程句柄：应用退出时一并结束。
 struct DaemonGuard(Mutex<Option<Child>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .plugin(tauri_plugin_dialog::init())
         .manage(DaemonGuard(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![
-            get_daemon_url,
-            get_autostart,
-            set_autostart,
-            show_intervention_dialog
-        ])
+        .invoke_handler(tauri::generate_handler![get_daemon_url])
         .setup(|app| {
-            build_tray(app)?;
             spawn_daemon(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 关闭主窗口仅隐藏，应用常驻托盘 / 菜单栏；「退出 PostHub」才真正退出。
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            // 无托盘：点叉即真关闭（不 prevent_close / 仅隐藏）。
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let _ = window;
             }
         })
         .build(tauri::generate_context!())
@@ -59,51 +52,7 @@ pub fn run() {
         });
 }
 
-/// 构建托盘 / 菜单栏：显示主窗口 + 一键退出。
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show_i = MenuItem::with_id(app, "show", "显示 PostHub", true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", "退出 PostHub", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
-
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .unwrap_or_else(|| tauri::image::Image::new_owned(vec![0, 0, 0, 0], 1, 1));
-
-    let _tray = TrayIconBuilder::new()
-        .icon(icon)
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-        })
-        .build(app)?;
-
-    Ok(())
-}
-
-/// 解析守护进程目录：env `POSTHUB_DAEMON_DIR` 优先，否则 `CARGO_MANIFEST_DIR` 的父目录下的 `daemon/`。
+/// 解析 daemon 目录：env `POSTHUB_DAEMON_DIR` 优先，否则 `CARGO_MANIFEST_DIR` 的父目录下的 `daemon/`。
 fn resolve_daemon_dir(manifest_dir: &str, env_override: Option<&str>) -> Option<PathBuf> {
     if let Some(dir) = env_override {
         if !dir.is_empty() {
@@ -165,7 +114,7 @@ fn resolve_bundled_uv(app: &AppHandle) -> Option<PathBuf> {
 /// patchright wheel 不含浏览器本体，首次 launch 从海外 CDN 下载，经不可靠代理会失败
 /// （测试机实测 server closed abruptly）。构建期已用 `patchright install chromium` 把
 /// chromium-*/ 打进 resources/browser（prepare_resources.py），这里首次复制到
-/// `app_data/ms-playwright` 后通过 PLAYWRIGHT_BROWSERS_PATH 指过去，daemon 不再联网下浏览器。
+/// `app_data/ms-playwright` 后通过 PLAYWRIGHT_BROWSERS_PATH 指过去，后端不再联网下浏览器。
 /// 资源目录（Program Files）只读，故复制到 app_data；已有则跳过。
 #[cfg(target_os = "windows")]
 fn prepare_windows_runtime(app: &AppHandle) -> Option<PathBuf> {
@@ -203,12 +152,14 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 拉起 Python 守护进程（uv 管理，`uv run --project <daemon> python -m posthub`）。
+/// 拉起官方后端（uv 管理，`uv run --project <daemon> run_backend.py`）。
 ///
 /// 解析顺序：env `POSTHUB_DAEMON_DIR` → 安装包内置 resources → 仓库 `daemon/`（dev）。
 /// 命令：env `POSTHUB_DAEMON_CMD` 覆盖 → 内置 uv → 系统 `uv`。
 /// 使用内置 uv 时，资源目录只读（/Applications、Program Files），venv 建在可写的
 /// `app_data_dir()`，通过 `UV_PROJECT_ENVIRONMENT` 指定，避免写资源目录。
+/// 端口就绪：每 `BACKEND_POLL_TIMEOUT` 探活一次 `127.0.0.1:5409`，最多
+/// `BACKEND_POLL_TOTAL`；任何探活异常（子进程早退/连不上）都写 stderr 可见。
 fn spawn_daemon(app: AppHandle) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let env_dir = std::env::var("POSTHUB_DAEMON_DIR")
@@ -219,7 +170,7 @@ fn spawn_daemon(app: AppHandle) {
         .or_else(|| resolve_bundled_dir(&app))
         .or_else(|| resolve_daemon_dir(manifest_dir, None))
     else {
-        eprintln!("[posthub] 未找到 daemon 目录，跳过守护进程拉起");
+        eprintln!("[posthub] 未找到 daemon 目录，跳过官方后端拉起");
         return;
     };
 
@@ -250,8 +201,8 @@ fn spawn_daemon(app: AppHandle) {
     }
     // 子进程 stdio 全量重定向：Windows GUI 进程（posthub.exe）spawn 的子进程若继承
     // stdout/stderr，Windows 会新建控制台窗口承载它们（每次打开弹终端）。重定向到日志文件
-    // 同时补上 daemon 失败原因不可见的缺陷。
-    redirect_daemon_log(&app, &mut cmd);
+    // 同时补上后端失败原因不可见的缺陷。
+    redirect_backend_log(&app, &mut cmd);
     // Windows：禁止为子进程创建控制台窗口
     #[cfg(target_os = "windows")]
     {
@@ -264,9 +215,7 @@ fn spawn_daemon(app: AppHandle) {
             "run",
             "--project",
             &daemon_dir_str,
-            "python",
-            "-m",
-            "posthub",
+            "run_backend.py",
         ])
         .current_dir(&daemon_dir)
         .spawn();
@@ -277,30 +226,88 @@ fn spawn_daemon(app: AppHandle) {
             if let Ok(mut g) = guard.0.lock() {
                 *g = Some(child);
             }
-            eprintln!("[posthub] 守护进程已拉起: {}", daemon_dir.display());
+            eprintln!("[posthub] 官方后端已拉起: {}", daemon_dir.display());
+            poll_backend_ready(&app, &daemon_dir);
         }
-        Err(e) => eprintln!("[posthub] 拉起守护进程失败: {e}"),
+        Err(e) => eprintln!("[posthub] 拉起官方后端失败: {e}"),
     }
 }
 
-/// 将守护进程子进程的 stdin/stdout/stderr 全量重定向到 app_data/daemon.log。
+/// 轮询 `127.0.0.1:5409` 直到就绪或超时；失败写 stderr 可见（配合 daemon.log 定位原因）。
+fn poll_backend_ready(app: &AppHandle, daemon_dir: &Path) {
+    let deadline = Instant::now() + BACKEND_POLL_TOTAL;
+    loop {
+        if Instant::now() >= deadline {
+            eprintln!(
+                "[posthub] 官方后端 {BACKEND_POLL_TOTAL:?} 内未就绪（探活 {}），详见 {}",
+                DAEMON_URL,
+                backend_log_path(app)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "app_data 不可用".to_string())
+            );
+            return;
+        }
+
+        let subprocess_exited = {
+            let guard = app.state::<DaemonGuard>();
+            let mut exited = false;
+            if let Ok(mut g) = guard.0.lock() {
+                if let Some(child) = g.as_mut() {
+                    exited = child.try_wait().ok().flatten().is_some();
+                }
+            }
+            exited
+        };
+        if subprocess_exited {
+            eprintln!(
+                "[posthub] 官方后端子进程提前退出，详见 {}",
+                backend_log_path(app)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "app_data 不可用".to_string())
+            );
+            return;
+        }
+
+        match probe_backend() {
+            Ok(true) => {
+                eprintln!("[posthub] 官方后端就绪: {DAEMON_URL}（{}）", daemon_dir.display());
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("[posthub] 探活 {DAEMON_URL} 异常: {e}"),
+        }
+        std::thread::sleep(BACKEND_POLL_TIMEOUT);
+    }
+}
+
+/// 发起一次探活，返回是否收到 2xx。
+///
+/// 探 `/getAccounts`（未启用账号校验的真实 API 路由）而非 `/`：官方 Flask 的
+/// `/` serve 的是 `sau_frontend` 静态产物（未随 daemon 打包），无此文件会稳定 404，
+/// 不能作后端就绪的判断依据。`/getAccounts` 访问 payload 后返回 JSON 200，是
+/// 「后端真正可服务」的最小无副作用信号。
+fn probe_backend() -> Result<bool, String> {
+    let code = ureq::get(&format!("{DAEMON_URL}/getAccounts"))
+        .timeout(BACKEND_POLL_TIMEOUT)
+        .call()
+        .map(|r| r.status())
+        .map_err(|e| e.to_string())?;
+    Ok((200..300).contains(&code))
+}
+
+/// 将官方后端子进程的 stdin/stdout/stderr 全量重定向到 app_data/backend.log。
 ///
 /// Windows GUI 进程 spawn 的子进程若继承 stdout/stderr，会新建控制台窗口承载它们（每次
-/// 打开 PostHub 弹终端）。日志落盘同时让 daemon 失败原因可见。app_data 不可用或打开失败
-/// 时退化为丢弃输出，保证不弹窗。
-fn redirect_daemon_log(app: &AppHandle, cmd: &mut Command) {
-    let log = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join("daemon.log"))
-        .and_then(|p| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .ok()
-        });
+/// 打开 PostHub 弹终端）。日志落盘同时让后端失败原因可见。app_data 不可用或打开失败时
+/// 退化为丢弃输出，保证不弹窗。
+fn redirect_backend_log(app: &AppHandle, cmd: &mut Command) {
+    let log = backend_log_path(app).and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
     let (out, err) = match log {
         Some(log) => match log.try_clone() {
             Ok(err_log) => (Stdio::from(log), Stdio::from(err_log)),
@@ -311,51 +318,17 @@ fn redirect_daemon_log(app: &AppHandle, cmd: &mut Command) {
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
 }
 
+/// 官方后端日志文件路径：`<app_data>/backend.log`。
+fn backend_log_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("backend.log"))
+}
+
 #[tauri::command]
 fn get_daemon_url() -> String {
     DAEMON_URL.to_string()
-}
-
-#[tauri::command]
-fn get_autostart(app: AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    if enabled {
-        app.autolaunch().enable().map_err(|e| e.to_string())?;
-    } else {
-        app.autolaunch().disable().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// 人工介入弹窗（issue #21）：验证码挂起 / 需重新扫码 时由前端 invoke。
-///
-/// `kind` 为 `manual`（需人工）或 `needs_relogin`（需重新扫码），决定弹窗类型。
-/// 使用 `tauri-plugin-dialog` 的原生消息框；用户点「知道了」关闭。
-#[tauri::command]
-fn show_intervention_dialog(
-    app: AppHandle,
-    title: String,
-    message: String,
-    kind: String,
-) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-
-    let dialog_kind = if kind == "needs_relogin" {
-        MessageDialogKind::Error
-    } else {
-        MessageDialogKind::Warning
-    };
-    app.dialog()
-        .message(message)
-        .title(title)
-        .kind(dialog_kind)
-        .show(|_| {});
 }
 
 #[cfg(test)]

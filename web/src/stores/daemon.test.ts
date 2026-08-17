@@ -16,7 +16,7 @@ describe("daemon store（守护进程健康检查）", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ status: "ok", version: "0.1.0", port: 8756 }),
+        json: async () => ({ status: "ok", version: "0.1.0", port: 5409 }),
       }),
     );
 

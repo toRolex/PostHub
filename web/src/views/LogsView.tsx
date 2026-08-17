@@ -1,16 +1,13 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, ScrollText } from "lucide-react";
 import { useLogsStore, type LogFilters } from "../stores/logs";
 import { useDaemonStore } from "../stores/daemon";
 import type { LogLevel } from "../api/types";
-import { isTauri } from "../lib/isTauri";
 import { Button } from "../components/ui/button";
 import { Empty } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
-import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 
 const LEVEL_META: Record<LogLevel, string> = {
@@ -31,45 +28,18 @@ const LEVEL_OPTIONS: { value: LogLevel | ""; label: string }[] = [
 function DaemonSettings() {
   const connected = useDaemonStore((s) => s.connected);
   const url = useDaemonStore((s) => s.url);
-  const [autostart, setAutostart] = useState(false);
-  const [autostartLoading, setAutostartLoading] = useState(false);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    invoke<boolean>("get_autostart")
-      .then(setAutostart)
-      .catch(() => undefined);
-  }, []);
-
-  async function toggle(on: boolean): Promise<void> {
-    if (!isTauri()) return;
-    setAutostartLoading(true);
-    try {
-      await invoke("set_autostart", { enabled: on });
-      setAutostart(on);
-    } catch {
-      setAutostart(!on);
-    } finally {
-      setAutostartLoading(false);
-    }
-  }
 
   return (
     <section className="mt-8 rounded-lg border border-border-soft bg-bg p-4">
-      <h3 className="text-title font-semibold tracking-[-0.01em]">守护进程</h3>
-      <div className="mt-3 flex items-center gap-3">
-        <Switch
-          checked={autostart}
-          disabled={!isTauri() || autostartLoading}
-          onCheckedChange={(on) => void toggle(on)}
-        />
-        <div>
-          <p className="text-body font-medium text-fg">开机自启</p>
-          <p className="text-caption text-meta">
-            随系统启动常驻（托盘 / 菜单栏）。仅桌面应用环境可用。
-          </p>
-        </div>
-      </div>
+      <h3 className="text-title font-semibold tracking-[-0.01em]">后端运行状态</h3>
+      <p className="mt-2 text-caption text-meta">
+        官方后端（<code className="font-mono">127.0.0.1:5409</code>）由桌面壳启动。
+        界面「守护进程 未连接」时，查看
+        <code className="mx-1 rounded bg-surface-sunk px-1.5 py-0.5 font-mono">
+          {"<app_data>/backend.log"}
+        </code>
+        中的启动与探活日志。
+      </p>
       <p className="mt-3 text-caption text-meta">
         健康接口{" "}
         <code className="font-mono tabular-nums">{url}/health</code>

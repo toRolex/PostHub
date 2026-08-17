@@ -53,7 +53,7 @@ async (page) => {
   await step("T1 守护进程已连通", async () => {
     await page.locator("text=已连通").first().waitFor({ state: "visible", timeout: 10000 });
     const card = await page.locator(".el-descriptions").first().innerText();
-    if (!card.includes("0.1.0") || !card.includes("8756")) {
+    if (!card.includes("0.1.0") || !card.includes("5409")) {
       throw new Error("版本/端口不符: " + card.replace(/\n/g, " "));
     }
   });
