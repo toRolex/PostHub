@@ -1,27 +1,21 @@
-import { useMemo, useState } from "react";
-import { FolderOpen, ListPlus, Video } from "lucide-react";
+import { useEffect, useMemo } from "react";
+import { CheckCircle2, FileVideo, RefreshCw, Send, XCircle } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
-import { usePlatformStore } from "../stores/platform";
-import { usePublishStore } from "../stores/publish";
-import { useToastStore } from "../stores/toast";
-import { useViewStore } from "../stores/view";
-import type { Platform, PlatformConstraint } from "../api/types";
-import { validatePublishForm } from "../lib/publishValidation";
-import { pickImagePath, pickVideoPath } from "../lib/picker";
-import { isTauri } from "../lib/isTauri";
+import { useFilesStore } from "../stores/files";
+import { usePublishStore, parseTags } from "../stores/publish";
+import type { Platform } from "../api/types";
+import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../api/types";
 import { cn } from "../lib/utils";
-import { BatchImportSection } from "../components/publish/BatchImportSection";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import { Empty } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
 import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 
-const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat"];
+const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 function ViewHead({ title, hint }: { title: string; hint: string }) {
   return (
@@ -41,90 +35,82 @@ function SectionHead({ title, hint }: { title: string; hint: string }) {
   );
 }
 
-function formatSpan(seconds: number): string {
-  const h = seconds / 3600;
-  if (h < 24) return `${h} 小时`;
-  const d = h / 24;
-  if (d < 30) return `${d} 天`;
-  return `${Math.round(d / 30)} 个月`;
-}
+/* ───────────────────────── 素材（从文件页素材库选）───────────────────────── */
 
-function constraintSummary(c: PlatformConstraint): string {
-  const min = formatSpan(c.schedule_min_seconds);
-  const max = formatSpan(c.schedule_max_seconds);
-  const cover = c.cover_required
-    ? "封面强制"
-    : c.auto_cover_first_frame
-      ? "缺封面取首帧"
-      : "";
-  return `定时窗口 ${min}~${max}${cover ? ` · ${cover}` : ""}`;
-}
-
-/* ───────────────────────── 素材 ───────────────────────── */
-
-function AssetSection({ onImport }: { onImport: () => void }) {
-  const videoPath = usePublishStore((s) => s.videoPath);
+function AssetSection({ errors }: { errors: string[] }) {
+  const files = useFilesStore((s) => s.files);
+  const loading = useFilesStore((s) => s.loading);
+  const fetchFiles = useFilesStore((s) => s.fetchFiles);
+  const selectedFile = usePublishStore((s) => s.selectedFile);
   const setForm = usePublishStore((s) => s.setForm);
 
-  async function handlePickVideo(): Promise<void> {
-    try {
-      const path = await pickVideoPath();
-      if (path) setForm({ videoPath: path });
-    } catch {
-      // 浏览器环境由原生 input 兜底（下方 BrowserVideoPicker）
-    }
-  }
+  useEffect(() => {
+    void fetchFiles();
+  }, [fetchFiles]);
 
-  const name = videoPath.split(/[\\/]/).pop() ?? videoPath;
+  // 素材库只呈现视频（官方发布 /postVideo 以视频为准）。
+  const videos = useMemo(() => {
+    const VIDEO_EXT = ["mp4", "mov", "webm", "m4v", "mkv"];
+    return files.filter((f) =>
+      VIDEO_EXT.includes(f.filename?.split(".").pop()?.toLowerCase() ?? ""),
+    );
+  }, [files]);
 
   return (
     <section className="border-t border-border-soft py-6 first:border-t-0 first:pt-0">
-      <SectionHead title="素材" hint="本地视频 · 或 manifest 批量导入" />
-      {videoPath ? (
-        <div className="flex items-center gap-4 rounded-lg border border-border-soft bg-bg p-4">
-          <div className="grid h-[58px] w-24 shrink-0 place-items-center overflow-hidden rounded-sm bg-surface-sunk text-meta">
-            <Video className="size-[22px]" strokeWidth={1.5} />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-body font-semibold">{name}</p>
-            <p className="mt-0.5 text-caption text-meta">
-              {videoPath.startsWith("/mock/") ? "浏览器预览 · 模拟素材" : "本地视频文件"}
-            </p>
-          </div>
-          <div className="ml-auto flex gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setForm({ videoPath: "" })}>
-              移除
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex gap-2">
-          {isTauri() ? (
-            <Button variant="secondary" onClick={() => void handlePickVideo()}>
-              <FolderOpen className="size-4" />
-              本地文件
-            </Button>
-          ) : (
-            // 浏览器开发环境兜底：原生 input（Tauri 下由 plugin-dialog 提供真实路径）
-            <label className="inline-flex h-[34px] cursor-pointer items-center gap-2 rounded-md px-3.5 text-label font-medium text-fg-2 transition-colors duration-150 ease-out hover:bg-surface hover:text-fg">
-              <FolderOpen className="size-4" />
-              本地文件
-              <input
-                type="file"
-                accept="video/*"
-                className="sr-only"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) setForm({ videoPath: `/mock/${file.name}` });
-                }}
-              />
-            </label>
-          )}
-          <Button variant="ghost" onClick={onImport}>
-            <ListPlus className="size-4" />
-            批量导入
+      <div className="mb-4 flex items-center gap-3">
+        <h3 className="text-title font-semibold tracking-[-0.01em]">视频素材</h3>
+        <span className="text-label text-muted">从「文件」素材库选取</span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={loading}
+            onClick={() => void fetchFiles()}
+          >
+            <RefreshCw className="size-4" />
+            刷新
           </Button>
         </div>
+      </div>
+
+      {videos.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border-soft">
+          <Empty
+            icon={<FileVideo className="size-[34px] text-meta" strokeWidth={1.5} />}
+            title="素材库还没有视频"
+            description="先到「文件」页上传视频素材，发布时直接选取"
+          />
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {videos.map((f) => {
+            const checked = selectedFile === f.file_path;
+            return (
+              <label
+                key={f.id}
+                className={cn(
+                  "flex cursor-pointer items-center gap-3 rounded-lg border border-border-soft bg-bg px-4 py-3 transition-colors duration-150 ease-out hover:bg-surface-warm",
+                  checked && "border-accent bg-accent-tint",
+                )}
+              >
+                <Checkbox
+                  checked={checked}
+                  onChange={() => setForm({ selectedFile: checked ? null : f.file_path })}
+                  aria-label={`选择素材 ${f.filename}`}
+                />
+                <span className="min-w-0 truncate text-body font-medium text-fg">
+                  {f.filename}
+                </span>
+                <span className="ml-auto text-caption text-meta">{f.filesize} MB</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {errors.includes("请选择视频素材") && !selectedFile && (
+        <p className="mt-2 text-label text-danger-deep">请选择视频素材</p>
       )}
     </section>
   );
@@ -134,16 +120,20 @@ function AssetSection({ onImport }: { onImport: () => void }) {
 
 function TargetSection() {
   const accounts = useAccountsStore((s) => s.accounts);
-  const constraints = usePlatformStore((s) => s.constraints);
+  const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const selected = usePublishStore((s) => s.selectedPlatforms);
   const accountByPlatform = usePublishStore((s) => s.accountByPlatform);
   const setForm = usePublishStore((s) => s.setForm);
   const setPlatforms = usePublishStore((s) => s.setPlatforms);
 
+  useEffect(() => {
+    if (accounts.length === 0) void fetchAccounts();
+  }, [accounts.length, fetchAccounts]);
+
   if (accounts.length === 0) {
     return (
       <section className="border-t border-border-soft py-6">
-        <SectionHead title="发布到" hint="勾选账号，行内显示平台约束" />
+        <SectionHead title="发布到" hint="勾选平台账号，可多平台" />
         <div className="rounded-lg border border-dashed border-border-soft">
           <Empty
             title="还没有账号"
@@ -163,13 +153,12 @@ function TargetSection() {
 
   return (
     <section className="border-t border-border-soft py-6">
-      <SectionHead title="发布到" hint="勾选账号，行内显示平台约束" />
+      <SectionHead title="发布到" hint="勾选平台账号，可多平台" />
       {PLATFORMS.map((p) => {
         const list = accounts.filter((a) => a.platform === p);
         if (list.length === 0) return null;
         const checked = selected.includes(p);
-        const first = list[0];
-        const usable = first.status === 1;
+        const usable = list.some((a) => a.status === 1);
         return (
           <div
             key={p}
@@ -184,25 +173,25 @@ function TargetSection() {
               checked={checked}
               disabled={!usable}
               onChange={() => togglePlatform(p)}
-              aria-label={`发布到${first.platform === "douyin" ? "抖音" : first.platform === "xiaohongshu" ? "小红书" : "视频号"} ${first.name}`}
+              aria-label={`发布到${OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}`}
             />
             <PlatformMark platform={p} />
-            <span className="text-body font-medium text-fg">{first.name}</span>
+            <span className="text-body font-medium text-fg">
+              {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+            </span>
             <span className="ml-auto text-caption text-meta">
-              {constraints[p]
-                ? constraintSummary(constraints[p])
-                : `账号 ${first.name}`}
+              {list.length > 1 ? `${list.length} 个账号` : list[0].name}
             </span>
             {checked && list.length > 1 && (
               <Select
-                value={String(accountByPlatform[p] ?? first.id)}
+                value={String(accountByPlatform[p] ?? list[0].id)}
                 onValueChange={(v) =>
                   setForm({
                     accountByPlatform: { ...accountByPlatform, [p]: Number(v) },
                   })
                 }
               >
-                <SelectTrigger className="h-7 w-[140px] text-label" aria-label="选择账号">
+                <SelectTrigger className="h-7 w-[150px] text-label" aria-label="选择账号">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -221,35 +210,19 @@ function TargetSection() {
   );
 }
 
-/* ───────────────────────── 内容与排期 ───────────────────────── */
+/* ───────────────────────── 内容（标题 / 描述 / 标签）───────────────────────── */
 
-function ContentSection({ errors }: { errors: string[] }) {
+function ContentSection() {
   const title = usePublishStore((s) => s.title);
   const caption = usePublishStore((s) => s.caption);
-  const coverMode = usePublishStore((s) => s.coverMode);
-  const schedulePolicy = usePublishStore((s) => s.schedulePolicy);
-  const publishAt = usePublishStore((s) => s.publishAt);
-  const publishMode = usePublishStore((s) => s.publishMode);
-  const silent = usePublishStore((s) => s.silent);
+  const tags = usePublishStore((s) => s.tags);
   const setForm = usePublishStore((s) => s.setForm);
-  const setPublishAt = usePublishStore((s) => s.setPublishAt);
-
-  const datetimeValue = publishAt ? publishAt.replace(" ", "T").slice(0, 16) : "";
-  const minDatetime = new Date(Date.now() + 3600_000).toISOString().slice(0, 16);
-
-  async function handlePickCover(): Promise<void> {
-    try {
-      const path = await pickImagePath();
-      if (path) setForm({ coverHorizontal: path });
-    } catch {
-      // 浏览器环境跳过真实封面选择
-    }
-  }
+  const tagCount = parseTags(tags).length;
 
   return (
     <section className="border-t border-border-soft py-6">
-      <SectionHead title="内容与排期" hint="平台差异在此收敛" />
-      <div className="grid grid-cols-2 gap-4">
+      <SectionHead title="内容" hint="标题 / 描述 / 标签" />
+      <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <label htmlFor="publish-title" className="text-label font-medium text-fg-2">
             标题
@@ -263,201 +236,146 @@ function ContentSection({ errors }: { errors: string[] }) {
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="publish-cover-mode" className="text-label font-medium text-fg-2">
-            封面
+          <label htmlFor="publish-caption" className="text-label font-medium text-fg-2">
+            描述
           </label>
-          <div className="flex h-9 items-center gap-3 text-body text-fg-2">
-            <label className="flex items-center gap-1.5 text-label">
-              <Checkbox
-                checked={coverMode === "auto"}
-                onChange={() => setForm({ coverMode: "auto", coverHorizontal: "" })}
-              />
-              自动
-            </label>
-            <label className="flex items-center gap-1.5 text-label">
-              <Checkbox
-                checked={coverMode === "file"}
-                onChange={() => setForm({ coverMode: "file" })}
-              />
-              自定义
-            </label>
-            {coverMode === "file" && (
-              <Button variant="secondary" size="sm" onClick={() => void handlePickCover()}>
-                选择封面
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="mt-4 flex flex-col gap-1.5">
-        <label htmlFor="publish-caption" className="text-label font-medium text-fg-2">
-          正文
-        </label>
-        <Textarea
-          id="publish-caption"
-          value={caption}
-          placeholder="写点正文，留空则仅标题发布"
-          onChange={(e) => setForm({ caption: e.target.value })}
-        />
-      </div>
-
-      {/* 排期 */}
-      <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
-        <div className="flex items-center gap-3 text-label text-fg-2">
-          <Switch
-            checked={schedulePolicy === "immediate"}
-            onCheckedChange={(on) =>
-              setForm({
-                schedulePolicy: on ? "immediate" : "scheduled",
-                ...(on ? { publishAt: null } : {}),
-              })
-            }
+          <Textarea
+            id="publish-caption"
+            value={caption}
+            placeholder="正文/描述（可选），留空则仅用标题"
+            onChange={(e) => setForm({ caption: e.target.value })}
           />
-          <span>{schedulePolicy === "immediate" ? "立即发布" : "定时发布"}</span>
         </div>
-        {schedulePolicy === "scheduled" && (
-          <>
-            <div className="flex items-center gap-2 text-label text-fg-2">
-              <Input
-                type="datetime-local"
-                className="w-[220px]"
-                value={datetimeValue}
-                min={minDatetime}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setPublishAt(v ? new Date(v) : null);
-                }}
-              />
-            </div>
-            <div className="flex items-center gap-2 text-label text-fg-2">
-              <span className="text-caption text-meta">定时方式</span>
-              <Select
-                value={publishMode}
-                onValueChange={(v) =>
-                  setForm({ publishMode: v as "platform_time" | "local_time" })
-                }
-              >
-                <SelectTrigger className="h-7 w-[140px] text-label" aria-label="定时方式">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="platform_time">平台原生定时</SelectItem>
-                  <SelectItem value="local_time">工具到点兜底</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </>
-        )}
-        <div className="flex items-center gap-3 text-label text-fg-2">
-          <Switch
-            checked={silent}
-            onCheckedChange={(on) => setForm({ silent: on })}
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="publish-tags" className="text-label font-medium text-fg-2">
+            标签
+          </label>
+          <Input
+            id="publish-tags"
+            value={tags}
+            placeholder="用空格或逗号分隔，如 春天 旅行 #美食"
+            onChange={(e) => setForm({ tags: e.target.value })}
           />
-          <span>静默发布</span>
+          <span className="text-caption text-meta">已识别 {tagCount} 个标签</span>
         </div>
       </div>
-
-      {errors.length > 0 && (
-        <ul className="mt-4 flex flex-col gap-1 text-label text-danger-deep">
-          {errors.map((e) => (
-            <li key={e}>{e}</li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }
 
-/* ───────────────────────── 主行动 ───────────────────────── */
+/* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
-function PublishActions() {
+function FeedbackPanel() {
+  const results = usePublishStore((s) => s.results);
+  const submitting = usePublishStore((s) => s.submitting);
+  const keys = Object.keys(results) as Platform[];
+  if (keys.length === 0) return null;
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      {keys.map((p) => {
+        const r = results[p]!;
+        return (
+          <div
+            key={p}
+            className={cn(
+              "flex items-start gap-2 rounded-lg border px-4 py-3 text-label",
+              r.ok
+                ? "border-success bg-success-tint text-success-deep"
+                : "border-danger bg-danger-tint text-danger-deep",
+            )}
+          >
+            {r.ok ? (
+              <CheckCircle2 className="size-4 shrink-0 translate-y-0.5" />
+            ) : (
+              <XCircle className="size-4 shrink-0 translate-y-0.5" />
+            )}
+            <div className="min-w-0">
+              <p className="font-semibold">
+                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                <span className="ml-2 font-normal text-muted">
+                  {r.ok ? "发布任务已提交" : "失败"}
+                </span>
+              </p>
+              {!r.ok && <p className="mt-0.5 break-words text-danger-deep">{r.msg}</p>}
+            </div>
+          </div>
+        );
+      })}
+      {submitting && <p className="text-caption text-meta">正在提交剩余平台…</p>}
+    </div>
+  );
+}
+
+function PublishActions({ errors }: { errors: string[] }) {
   const submitting = usePublishStore((s) => s.submitting);
   const connected = useDaemonStore((s) => s.connected);
-  const schedulePolicy = usePublishStore((s) => s.schedulePolicy);
-  const createTask = usePublishStore((s) => s.createTask);
+  const submit = usePublishStore((s) => s.submit);
   const reset = usePublishStore((s) => s.reset);
-  const setView = useViewStore((s) => s.setView);
-
-  const immediate = schedulePolicy === "immediate";
 
   async function handlePublish(): Promise<void> {
     try {
-      const result = await createTask();
-      useToastStore.getState().show(
-        `任务 #${result.task.id} 已创建，共 ${result.jobs.length} 个平台子任务`,
-        "ok",
-      );
-      reset();
-      setView("tasks");
-    } catch (e) {
-      useToastStore.getState().show(
-        e instanceof Error ? e.message : String(e),
-        "err",
-      );
+      await submit();
+    } catch {
+      // 前端校验错误已由 errors 列表展示；不再重复弹错。
     }
   }
 
   return (
-    <div className="sticky bottom-0 z-4 mt-4 flex items-center gap-5 bg-[linear-gradient(to_top,var(--color-bg)_72%,transparent)] pb-4 pt-4">
-      <Button
-        variant="primary"
-        size="lg"
-        disabled={!connected || submitting}
-        onClick={() => void handlePublish()}
-      >
-        {submitting ? "提交中…" : immediate ? "立即发布" : "定时发布"}
-      </Button>
-      {!connected && (
-        <span className="text-caption text-meta">守护进程未连接，无法发布</span>
-      )}
-    </div>
+    <>
+      <div className="sticky bottom-0 z-4 mt-4 flex items-center gap-5 bg-[linear-gradient(to_top,var(--color-bg)_72%,transparent)] pb-4 pt-4">
+        <Button
+          variant="primary"
+          size="lg"
+          disabled={!connected || submitting || errors.length > 0}
+          onClick={() => void handlePublish()}
+        >
+          <Send className="size-4" />
+          {submitting ? "提交中…" : "发布"}
+        </Button>
+        {!connected && (
+          <span className="text-caption text-meta">守护进程未连接，无法发布</span>
+        )}
+        {errors.length > 0 && (
+          <ul className="flex flex-col gap-1 text-label text-danger-deep">
+            {errors.map((e) => (
+              <li key={e}>{e}</li>
+            ))}
+          </ul>
+        )}
+        <Button variant="ghost" size="sm" onClick={reset}>
+          重置
+        </Button>
+      </div>
+      <FeedbackPanel />
+    </>
   );
 }
 
 /* ───────────────────────── 发布视图 ───────────────────────── */
 
 export function PublishView() {
-  const [batchOpen, setBatchOpen] = useState(false);
   const title = usePublishStore((s) => s.title);
-  const videoPath = usePublishStore((s) => s.videoPath);
   const caption = usePublishStore((s) => s.caption);
-  const coverMode = usePublishStore((s) => s.coverMode);
-  const coverHorizontal = usePublishStore((s) => s.coverHorizontal);
-  const coverVertical = usePublishStore((s) => s.coverVertical);
+  const tags = usePublishStore((s) => s.tags);
   const selectedPlatforms = usePublishStore((s) => s.selectedPlatforms);
   const accountByPlatform = usePublishStore((s) => s.accountByPlatform);
-  const schedulePolicy = usePublishStore((s) => s.schedulePolicy);
-  const publishAt = usePublishStore((s) => s.publishAt);
-  const constraints = usePlatformStore((s) => s.constraints);
+  const selectedFile = usePublishStore((s) => s.selectedFile);
+  const validate = usePublishStore((s) => s.validate);
 
+  // 订阅表单字段以驱动校验重算（validate 与 store 校验共享同一规则）。
   const errors = useMemo<string[]>(
     () =>
-      validatePublishForm(
-        {
-          title,
-          videoPath,
-          caption,
-          coverMode,
-          coverHorizontal,
-          coverVertical,
-          selectedPlatforms,
-          accountByPlatform,
-          schedulePolicy,
-          publishAt,
-        },
-        constraints,
-      ),
-    [title, videoPath, caption, coverMode, coverHorizontal, coverVertical, selectedPlatforms, accountByPlatform, schedulePolicy, publishAt, constraints],
+      validate({ title, caption, tags, selectedPlatforms, accountByPlatform, selectedFile }),
+    [validate, title, caption, tags, selectedPlatforms, accountByPlatform, selectedFile],
   );
 
   return (
     <div className="mx-auto max-w-[960px] animate-fade-in px-8 pb-12 pt-8">
-      <ViewHead title="发布" hint="一个视频，一键或定时发到多个平台" />
-      <AssetSection onImport={() => setBatchOpen(true)} />
-      <BatchImportSection open={batchOpen} onOpenChange={setBatchOpen} />
+      <ViewHead title="发布" hint="一个视频，发布到所选平台" />
+      <AssetSection errors={errors} />
       <TargetSection />
-      <ContentSection errors={errors} />
-      <PublishActions />
+      <ContentSection />
+      <PublishActions errors={errors} />
     </div>
   );
 }

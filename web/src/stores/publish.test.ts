@@ -1,51 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initialPublishState, usePublishStore } from "./publish";
-import { usePlatformStore } from "./platform";
+import { initialPublishState, usePublishStore, parseTags } from "./publish";
 import { useDaemonStore } from "./daemon";
-import { formatDateTime } from "../lib/publishValidation";
+import { useAccountsStore, initialAccountsState } from "./accounts";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body };
 }
 
-const CONSTRAINTS = {
-  douyin: {
+/** 官方账号（含 cookieFile，供 accountList 构造用）。 */
+const ACCOUNTS = [
+  {
+    id: 1,
     platform: "douyin",
-    label: "抖音",
-    min_lead_time_seconds: 7200,
-    schedule_min_seconds: 7200,
-    schedule_max_seconds: 1209600,
-    max_scheduled_per_day: null,
-    cover_required: true,
-    auto_cover_first_frame: false,
+    name: "抖音一号",
+    status: 1,
+    cookieFile: "douyin_a.json",
+    typeNum: 3,
+    cookieValid: true,
   },
-  xiaohongshu: {
-    platform: "xiaohongshu",
-    label: "小红书",
-    min_lead_time_seconds: 3600,
-    schedule_min_seconds: 7200,
-    schedule_max_seconds: 604800,
-    max_scheduled_per_day: null,
-    cover_required: false,
-    auto_cover_first_frame: true,
-  },
-  wechat: {
+  {
+    id: 2,
     platform: "wechat",
-    label: "微信视频号",
-    min_lead_time_seconds: 7200,
-    schedule_min_seconds: 7200,
-    schedule_max_seconds: 2592000,
-    max_scheduled_per_day: 5,
-    cover_required: false,
-    auto_cover_first_frame: true,
+    name: "视频号A",
+    status: 1,
+    cookieFile: "wechat_a.json",
+    typeNum: 2,
+    cookieValid: true,
   },
-};
+];
 
-describe("publish store（发布表单 + 任务提交）", () => {
+describe("publish store（发布表单 → 官方 /postVideo）", () => {
   beforeEach(() => {
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
-    usePlatformStore.setState({ constraints: { ...CONSTRAINTS } as never });
+    useAccountsStore.setState({ ...initialAccountsState, accounts: ACCOUNTS as never });
     usePublishStore.setState(initialPublishState);
   });
 
@@ -53,116 +41,118 @@ describe("publish store（发布表单 + 任务提交）", () => {
     vi.unstubAllGlobals();
   });
 
-  it("createTask 成功 -> POST /tasks 并返回 task + jobs", async () => {
+  it("parseTags 拆分与去 #", () => {
+    expect(parseTags(" 春天 旅行 #美食，摄影 ")).toEqual(["春天", "旅行", "美食", "摄影"]);
+    expect(parseTags("  ")).toEqual([]);
+  });
+
+  it("submit 成功 -> 每平台各调一次 /postVideo，携带官方契约体", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse(
-        {
-          task: { id: 1, status: "pending", title: "春日踏青" },
-          jobs: [{ id: 1, platform: "douyin", status: "pending" }],
-        },
-        true,
-        201,
-      ),
+      jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     usePublishStore.setState({
       title: "春日踏青",
-      videoPath: "/tmp/video.mp4",
-      selectedPlatforms: ["douyin"],
-      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
+      caption: "一起出发",
+      tags: "春天 旅行",
+      selectedFile: "uuid_a_春天.mp4",
+      selectedPlatforms: ["douyin", "wechat"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: 2, kuaishou: null },
     });
 
-    const result = await usePublishStore.getState().createTask();
+    await usePublishStore.getState().submit();
 
-    expect(result.task.id).toBe(1);
-    expect(result.jobs).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:9999/tasks",
-      expect.objectContaining({ method: "POST" }),
-    );
-    const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-    expect(sent.title).toBe("春日踏青");
-    expect(sent.jobs).toEqual([{ platform: "douyin", account_id: 1 }]);
-    expect(sent.schedule_policy).toBe("immediate");
-    expect(sent.silent).toBe(false);
+    // 两个平台各一次 POST /postVideo
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    for (const [url, init] of calls) {
+      expect(url).toBe("http://127.0.0.1:9999/postVideo");
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body as string);
+      expect(body.fileList).toEqual(["uuid_a_春天.mp4"]);
+      expect(body.tags).toEqual(["春天", "旅行"]);
+      expect(body.enableTimer).toBe(false);
+    }
+    // 抖音 type=3 + accountList 用账号 cookieFile
+    const douyinCall = calls.find(([, init]) =>
+      (JSON.parse(init.body as string).type) === 3,
+    )![1];
+    expect(JSON.parse(douyinCall.body as string).accountList).toEqual(["douyin_a.json"]);
+    // 视频号 type=2
+    const wechatCall = calls.find(([, init]) =>
+      (JSON.parse(init.body as string).type) === 2,
+    )![1];
+    expect(JSON.parse(wechatCall.body as string).accountList).toEqual(["wechat_a.json"]);
+
+    const s = usePublishStore.getState();
+    expect(s.results.douyin?.ok).toBe(true);
+    expect(s.results.wechat?.ok).toBe(true);
   });
 
-  it("createTask 校验失败 -> 抛错且不发起请求", async () => {
+  it("submit 校验失败 -> 抛错且不发起请求", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    usePublishStore.setState({ title: "", selectedPlatforms: ["douyin"] });
 
-    usePublishStore.setState({
-      title: "",
-      selectedPlatforms: ["douyin"],
-      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
-    });
-
-    await expect(usePublishStore.getState().createTask()).rejects.toThrow(/标题/);
+    await expect(usePublishStore.getState().submit()).rejects.toThrow(/标题/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("createTask 定时载荷含 publish_at / publish_mode", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse(
-        {
-          task: { id: 2, status: "pending" },
-          jobs: [{ id: 2, platform: "wechat", status: "pending" }],
-        },
-        true,
-        201,
-      ),
-    );
+  it("某个平台官方 400 -> 该平台失败消息透传，其余继续", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 400, msg: "账号列表不能为空", data: null }, false, 400),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
+      );
     vi.stubGlobal("fetch", fetchMock);
-
-    const publishAt = formatDateTime(new Date(Date.now() + 3 * 24 * 3600 * 1000));
-    usePublishStore.setState({
-      title: "定时任务",
-      videoPath: "/tmp/video.mp4",
-      selectedPlatforms: ["wechat"],
-      accountByPlatform: { douyin: null, xiaohongshu: null, wechat: 3 },
-      schedulePolicy: "scheduled",
-      publishMode: "platform_time",
-      publishAt,
-      silent: true,
-    });
-
-    await usePublishStore.getState().createTask();
-
-    const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-    expect(sent.schedule_policy).toBe("scheduled");
-    expect(sent.publish_at).toBe(publishAt);
-    expect(sent.publish_mode).toBe("platform_time");
-    expect(sent.silent).toBe(true);
-  });
-
-  it("createTask 服务端 400 -> 抛出错误消息", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(jsonResponse({ error: "平台不匹配" }, false, 400)),
-    );
 
     usePublishStore.setState({
       title: "x",
-      videoPath: "/tmp/v.mp4",
-      selectedPlatforms: ["douyin"],
-      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null },
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin", "wechat"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: 2, kuaishou: null },
+    });
+    // 抖音账号 cookieFile 置空以触发官方校验错误（douyin 先调用 → 400）
+    useAccountsStore.setState({
+      ...initialAccountsState,
+      accounts: [
+        { ...ACCOUNTS[0], cookieFile: "" },
+        ACCOUNTS[1],
+      ] as never,
     });
 
-    await expect(usePublishStore.getState().createTask()).rejects.toThrow("平台不匹配");
+    await usePublishStore.getState().submit();
+    const s = usePublishStore.getState();
+    expect(s.results.douyin?.ok).toBe(false);
+    expect(s.results.douyin?.msg).toBe("账号列表不能为空");
+    expect(s.results.wechat?.ok).toBe(true);
   });
 
   it("setPlatforms 自动为已选平台填充默认账号", () => {
-    const accounts = [
-      { id: 1, platform: "douyin", status: "active" },
-      { id: 2, platform: "douyin", status: "active" },
-      { id: 3, platform: "wechat", status: "active" },
-    ];
-    usePublishStore.getState().setPlatforms(["douyin", "wechat"], accounts as never);
-
+    usePublishStore
+      .getState()
+      .setPlatforms(["douyin", "wechat"], ACCOUNTS as never);
     const s = usePublishStore.getState();
     expect(s.selectedPlatforms).toEqual(["douyin", "wechat"]);
-    expect(s.accountByPlatform.douyin).toBe(1); // 默认取第一个
-    expect(s.accountByPlatform.wechat).toBe(3);
+    expect(s.accountByPlatform.douyin).toBe(1);
+    expect(s.accountByPlatform.wechat).toBe(2);
+  });
+
+  it("validate 前端校验：缺素材 / 缺平台", () => {
+    usePublishStore.setState({ title: "x" });
+    const noFile = usePublishStore.getState().validate();
+    expect(noFile.some((e) => e.includes("素材"))).toBe(true);
+
+    usePublishStore.setState({
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: null, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+    const noAccount = usePublishStore.getState().validate();
+    expect(noAccount.some((e) => e.includes("账号"))).toBe(true);
   });
 });
