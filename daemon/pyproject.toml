@@ -6,6 +6,17 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "social-auto-upload",
+    # 官方 sau_backend.py（Flask 主入口）import 依赖；上游 web extra 中声明，
+    # 主依赖不含，PostHub 显式补齐（版本对齐上游 pyproject web extra）
+    "Flask[async]==3.1.1",
+    "flask-cors==6.0.0",
+    # 官方 myUtils/auth.py 顶层 `from playwright.async_api import async_playwright`
+    # 需要 playwright 顶层模块；上游主依赖已换 patchright 但源码仍 import playwright 名。
+    # 按官方 requirements.txt 版本补齐（版本对齐上游 requirements.txt）。
+    "playwright==1.52.0",
+    # 官方 myUtils/auth.py 顶层 `from xhs import XhsClient`（小红书 client）。
+    # 上游 requirements.txt 声明但主依赖缺失，PostHub 显式补齐。
+    "xhs==0.2.13",
 ]
 
 [dependency-groups]
