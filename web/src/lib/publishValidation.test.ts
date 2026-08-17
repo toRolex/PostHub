@@ -43,6 +43,16 @@ const CONSTRAINTS: Record<Platform, PlatformConstraint> = {
     cover_required: false,
     auto_cover_first_frame: true,
   },
+  kuaishou: {
+    platform: "kuaishou",
+    label: "快手",
+    min_lead_time_seconds: 1 * HOUR,
+    schedule_min_seconds: 2 * HOUR,
+    schedule_max_seconds: 7 * DAY,
+    max_scheduled_per_day: null,
+    cover_required: false,
+    auto_cover_first_frame: true,
+  },
 };
 
 const NOW = new Date(2099, 0, 1, 0, 0, 0); // 2099-01-01 00:00:00 本地

@@ -41,6 +41,7 @@
   --color-p-douyin: oklch(0.176 0.013 270);
   --color-p-xhs: oklch(0.61 0.26 15);
   --color-p-wechat: oklch(0.72 0.19 155);
+  --color-p-kuaishou: oklch(0.53 0.21 35);
 
   /* ── Typography ───────────────────────────────────────── */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",

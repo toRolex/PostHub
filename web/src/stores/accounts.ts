@@ -1,35 +1,88 @@
 import { create } from "zustand";
-import { api } from "../api/client";
-import type { Account, AccountStatus, Platform } from "../api/types";
+import { officialApi } from "../api/official";
+import type { DaoUserInfo, OfficialAccount } from "../api/types";
+import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { useDaemonStore } from "./daemon";
 
+/** 官方 user_info 行 -> 展示模型（复用旧 Account 核心字段，兼容发布页）。 */
+export function mapDaoAccount(row: DaoUserInfo): OfficialAccount {
+  return {
+    id: row.id,
+    typeNum: row.type,
+    platform: OFFICIAL_TYPE_PLATFORM[row.type],
+    name: row.userName,
+    cookieFile: row.filePath,
+    cookieValid: row.status === 1,
+    status: row.status,
+    // 以下兼容字段保留旧接口空值（官方无 Chrome/CDP 概念）。
+    profile_dir: "",
+    cdp_port: 0,
+    chrome_path: null,
+    last_login_at: null,
+    last_publish_at: null,
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+async function fetchValidInner(): Promise<DaoUserInfo[]> {
+  return officialApi.getValidAccounts(useDaemonStore.getState().url);
+}
+
+/** 用 getValidAccounts 校验结果更新 cookie 有效性（官方：校验后逐行落库 status 0/1）。 */
+function mergeCookieValidity(
+  accounts: OfficialAccount[],
+  valid: DaoUserInfo[],
+): { accounts: OfficialAccount[]; ids: Set<number> } {
+  const byId = new Map(valid.map((v) => [v.id, v]));
+  return {
+    accounts: accounts.map((a) => {
+      const v = byId.get(a.id);
+      const ok = v ? v.status === 1 : a.cookieValid;
+      return { ...a, status: ok ? 1 : 0, cookieValid: ok };
+    }),
+    ids: new Set(valid.filter((v) => v.status === 1).map((v) => v.id)),
+  };
+}
+
 interface AccountsState {
-  accounts: Account[];
+  /** 账号列表（getValidAccounts 校验后的真实有效态）。 */
+  accounts: OfficialAccount[];
+  /** 最近一次校验状态（列表页展示 cookie 有效性）。 */
+  validAccountIds: Set<number>;
   loading: boolean;
-  creating: boolean;
   error: string;
+  fetchingValid: boolean;
   fetchAccounts: () => Promise<void>;
-  createAccount: (payload: { platform: Platform; name?: string }) => Promise<Account>;
+  refetchValidAccounts: () => Promise<void>;
   removeAccount: (id: number) => Promise<void>;
-  relogin: (id: number) => Promise<{ ok: boolean; launch_warning?: string }>;
-  setStatus: (id: number, status: AccountStatus) => Promise<void>;
 }
 
 export const initialAccountsState = {
-  accounts: [] as Account[],
+  accounts: [] as OfficialAccount[],
+  validAccountIds: new Set<number>(),
   loading: false,
-  creating: false,
   error: "",
+  fetchingValid: false,
 };
 
-export const useAccountsStore = create<AccountsState>()((set) => ({
+export const useAccountsStore = create<AccountsState>()((set, get) => ({
   ...initialAccountsState,
 
+  /** 拉取账号列表：getAccounts（快）合并 getValidAccounts（cookie 校验）。 */
   fetchAccounts: async () => {
     set({ loading: true });
     try {
-      const body = await api.accounts(useDaemonStore.getState().url);
-      set({ accounts: body.accounts ?? [], error: "" });
+      const base = useDaemonStore.getState().url;
+      const [all, valid] = await Promise.all([
+        officialApi.getAccounts(base),
+        fetchValidInner(),
+      ]);
+      const { accounts, ids } = mergeCookieValidity(
+        all.map(mapDaoAccount),
+        valid,
+      );
+      set({ accounts, validAccountIds: ids, error: "" });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -37,49 +90,28 @@ export const useAccountsStore = create<AccountsState>()((set) => ({
     }
   },
 
-  /** 添加账号：POST /accounts，守护进程拉起独立 Chrome 扫码登录。 */
-  createAccount: async (payload) => {
-    set({ creating: true });
+  /** 仅重新校验（删除后/登录后刷新 cookie 有效态）。 */
+  refetchValidAccounts: async () => {
+    set({ fetchingValid: true });
     try {
-      const body = await api.createAccount(useDaemonStore.getState().url, payload);
-      set((s) => ({ accounts: [...s.accounts, body.account], error: "" }));
-      return body.account;
+      const valid = await fetchValidInner();
+      const { accounts, ids } = mergeCookieValidity(get().accounts, valid);
+      set({ accounts, validAccountIds: ids, error: "" });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
     } finally {
-      set({ creating: false });
+      set({ fetchingValid: false });
     }
   },
 
+  /** 删除账号：官方 /deleteAccount，删除后本地移除。 */
   removeAccount: async (id) => {
     try {
-      await api.deleteAccount(useDaemonStore.getState().url, id);
-      set((s) => ({ accounts: s.accounts.filter((a) => a.id !== id), error: "" }));
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
-    }
-  },
-
-  /** 重登引导（issue #21）：拉起该账号 Chrome 供重新扫码。 */
-  relogin: async (id) => {
-    try {
-      const body = await api.reloginAccount(useDaemonStore.getState().url, id);
-      set({ error: "" });
-      return body;
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
-    }
-  },
-
-  /** 更新账号状态（issue #21）：重新扫码后恢复 active，或手动停用。 */
-  setStatus: async (id, status) => {
-    try {
-      await api.setAccountStatus(useDaemonStore.getState().url, id, status);
+      const base = useDaemonStore.getState().url;
+      await officialApi.deleteAccount(base, id);
       set((s) => ({
-        accounts: s.accounts.map((a) => (a.id === id ? { ...a, status } : a)),
+        accounts: s.accounts.filter((a) => a.id !== id),
+        validAccountIds: new Set([...s.validAccountIds].filter((x) => x !== id)),
         error: "",
       }));
     } catch (e) {

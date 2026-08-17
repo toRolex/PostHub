@@ -5,6 +5,7 @@ export const PLATFORM_META: Record<Platform, { dot: string; name: string }> = {
   douyin: { dot: "bg-p-douyin", name: "抖音" },
   xiaohongshu: { dot: "bg-p-xhs", name: "小红书" },
   wechat: { dot: "bg-p-wechat", name: "视频号" },
+  kuaishou: { dot: "bg-p-kuaishou", name: "快手" },
 };
 
 interface PlatformMarkProps {
