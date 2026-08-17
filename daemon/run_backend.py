@@ -30,6 +30,9 @@ import db_init  # noqa: E402  # 建库模块；其顶层 `import conf` 触发配
 HOST = "127.0.0.1"
 PORT = 5409
 
+HOST = "127.0.0.1"
+PORT = 5409
+
 
 db_init.ensure_db()
 
