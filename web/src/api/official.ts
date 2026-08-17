@@ -23,7 +23,9 @@ import type {
   OfficialApiResponse,
   OfficialFileRecord,
   OfficialPlatformType,
+  Platform,
 } from "./types";
+import { OFFICIAL_PLATFORM_TYPE } from "./types";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -294,6 +296,13 @@ export const officialApi = {
   getFiles: (base: string): Promise<OfficialFileRecord[]> =>
     request<OfficialFileRecord[]>(base, "/getFiles"),
 
+  /** 单视频发布：走官方 /postVideo（仅契约级提交，真实发布需登录态）。 */
+  postVideo: (base: string, payload: PostVideoRequest) =>
+    request<null>(base, "/postVideo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   /** 上传并记录素材：走 /uploadSave，文件同时进入磁盘与官方 file_records。 */
   upload: (base: string, file: File, customName?: string) => {
     const form = new FormData();
@@ -318,3 +327,63 @@ export const officialApi = {
   deleteAccount,
   openLoginSse,
 };
+
+/* ───────────────────────── 单视频发布（/postVideo 契约）───────────────────────── */
+
+/**
+ * 官方 /postVideo 请求体（@see daemon/sau_backend.py:408 postVideo）。
+ * 契约要点：
+ * - `fileList`   素材数组（videoFile/ 下的磁盘文件名，postVideo.py 会拼接 BASE_DIR）。
+ * - `accountList` 账号数组（cookiesFile/ 下的 cookie 文件名，postVideo.py 拼接 BASE_DIR）。
+ * - `type`       平台整型：1 小红书 2 视频号 3 抖音 4 快手。
+ * - `tags`       字符串数组（上线器逐项加 # 前缀）。
+ * - `enableTimer` 为 false 时立即发布；true 才用到 videosPerDay/dailyTimes/startDays。
+ * - `category=0` 官方会置为 None；typing 上沿用官方默认 LIFESTYLE。
+ */
+export interface PostVideoRequest {
+  fileList: string[];
+  accountList: string[];
+  type: OfficialPlatformType;
+  title: string;
+  tags: string[];
+  category?: number;
+  enableTimer?: boolean;
+  videosPerDay?: number;
+  dailyTimes?: string[] | null;
+  startDays?: number;
+  thumbnail?: string;
+  isDraft?: boolean;
+  productLink?: string;
+  productTitle?: string;
+}
+
+/** 前端表单（发布页语义）→ 官方 /postVideo 请求体的纯函数。 */
+export function buildPostVideoRequest(input: {
+  platform: Platform;
+  files: string[];
+  accounts: string[];
+  title: string;
+  tags: string[];
+  /** 正文/描述：官方 /postVideo 无独立 desc 字段，折叠进 title（title\ncaption）。 */
+  caption?: string;
+  thumbnail?: string;
+}): PostVideoRequest {
+  // 官方单个发布动作只针对单一平台（type 唯一）；多平台则由页面拆成多次提交。
+  let title = input.title;
+  const caption = input.caption?.trim();
+  if (caption) {
+    // 官方契约仅 title/tags 两处承载文本；正文（小红书/抖音以 title 作为正文，视频号作标题）
+    // 与标题拆分无官方字段承接，故合入 title 一并下发，避免信息丢失。
+    title = input.title ? `${input.title}\n${caption}` : caption;
+  }
+  const body: PostVideoRequest = {
+    fileList: input.files,
+    accountList: input.accounts,
+    type: OFFICIAL_PLATFORM_TYPE[input.platform],
+    title,
+    tags: input.tags ?? [],
+    enableTimer: false,
+  };
+  if (input.thumbnail) body.thumbnail = input.thumbnail;
+  return body;
+}
