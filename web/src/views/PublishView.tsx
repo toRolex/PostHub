@@ -169,7 +169,7 @@ function TargetSection() {
         if (list.length === 0) return null;
         const checked = selected.includes(p);
         const first = list[0];
-        const usable = first.status === "active";
+        const usable = first.status === 1;
         return (
           <div
             key={p}

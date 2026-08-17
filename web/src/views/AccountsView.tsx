@@ -1,10 +1,18 @@
-import { useEffect, useState } from "react";
-import { Plus, UserPlus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Loader2,
+  Plus,
+  ScanLine,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useToastStore } from "../stores/toast";
 import { PLATFORM_NAMES } from "../api/platformNames";
-import type { Account, Platform } from "../api/types";
+import { openLoginSse, type LoginSseHandle } from "../api/official";
+import { OFFICIAL_PLATFORM_TYPE } from "../api/types";
+import type { OfficialAccount, Platform } from "../api/types";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import {
@@ -20,106 +28,179 @@ import { Label } from "../components/ui/label";
 import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
-import { ACCOUNT_STATUS_META, Status } from "../components/ui/status";
 import { CookieManager } from "../components/CookieManager";
 
-const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat"];
+const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat", "kuaishou"];
 
-function AddAccountDialog({
+function ErrorHint({ message }: { message: string }) {
+  if (!message) return null;
+  return (
+    <p className="rounded-md bg-danger-tint px-3 py-2 text-label text-danger-deep">
+      {message}
+    </p>
+  );
+}
+
+function ScanLoginDialog({
   open,
   onOpenChange,
+  onLoginSuccess,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onLoginSuccess: () => void;
 }) {
-  const createAccount = useAccountsStore((s) => s.createAccount);
+  const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
+  const baseUrl = useDaemonStore((s) => s.url);
   const [platform, setPlatform] = useState<Platform>("douyin");
   const [name, setName] = useState("");
-  const [warning, setWarning] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [phase, setPhase] = useState<"form" | "scanning" | "success" | "failed">("form");
+  const [qrSrc, setQrSrc] = useState("");
+  const [error, setError] = useState("");
+  const handleRef = useRef<LoginSseHandle | null>(null);
 
   useEffect(() => {
     if (open) {
       setPlatform("douyin");
       setName("");
-      setWarning("");
+      setError("");
+      setQrSrc("");
+      setPhase("form");
+    } else {
+      handleRef.current?.abort();
+      handleRef.current = null;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  async function handleSubmit(): Promise<void> {
-    setCreating(true);
+  async function startScan(): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError("请填写账号名（用于区分不同账号）");
+      return;
+    }
+    setPhase("scanning");
+    setError("");
+    setQrSrc("");
     try {
-      const account = await createAccount({
-        platform,
-        name: name.trim() || undefined,
+      const handle = await openLoginSse({
+        url: baseUrl,
+        type: OFFICIAL_PLATFORM_TYPE[platform],
+        accountName: trimmed,
       });
-      if (account.launch_warning) {
-        setWarning(account.launch_warning);
+      handleRef.current = handle;
+      const qr = await handle.readQr;
+      setQrSrc(qr.src);
+      const ok = await handle.readResult;
+      if (ok) {
+        setPhase("success");
+        await fetchAccounts();
+        onLoginSuccess();
+        // 成功停留片刻展示反馈，随后自动关闭。
+        window.setTimeout(() => onOpenChange(false), 900);
       } else {
-        useToastStore.getState().show(
-          "账号已添加，Chrome 已拉起等待扫码登录",
-          "info",
-        );
-        onOpenChange(false);
+        setPhase("failed");
+        setError("登录失败或超时，请重试");
       }
     } catch (e) {
-      useToastStore.getState().show(
-        e instanceof Error ? e.message : String(e),
-        "err",
-      );
-    } finally {
-      setCreating(false);
+      setPhase("failed");
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 
+  const running = phase === "scanning";
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogTitle>添加账号</DialogTitle>
+    <Dialog open={open} onOpenChange={(o) => !o && onOpenChange(false)}>
+      <DialogContent className="w-[min(480px,92vw)]">
+        <DialogTitle>扫码登录账号</DialogTitle>
         <DialogDescription className="text-label text-muted">
-          添加后守护进程将拉起该平台独立 Chrome，请在新窗口完成扫码登录。
+          通过官方后端 /login 拉起扫码会话，登录成功后登录态自动写入 cookie 文件。
         </DialogDescription>
-        <div className="mt-4 flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="account-platform">平台</Label>
-            <Select
-              value={platform}
-              onValueChange={(v) => setPlatform(v as Platform)}
-            >
-              <SelectTrigger id="account-platform" aria-label="平台">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PLATFORMS.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {PLATFORM_NAMES[p]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+
+        {phase === "form" && (
+          <div className="mt-4 flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="scan-platform">平台</Label>
+              <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
+                <SelectTrigger id="scan-platform" aria-label="平台">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLATFORMS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {PLATFORM_NAMES[p]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="scan-name">账号名</Label>
+              <Input
+                id="scan-name"
+                value={name}
+                placeholder="例如：主号 / 备用号（用于区分账号）"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <ErrorHint message={error} />
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="account-name">名称</Label>
-            <Input
-              id="account-name"
-              value={name}
-              placeholder="例如：主号 / 备用号（可选）"
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          {warning && (
-            <p className="rounded-md bg-warn-tint px-3 py-2 text-label text-warn-deep">
-              {warning}
+        )}
+
+        {(phase === "scanning" || phase === "success") && (
+          <div className="mt-4 flex flex-col items-center gap-3">
+            {qrSrc ? (
+              <img
+                src={qrSrc}
+                alt="扫码登录二维码"
+                className="h-56 w-56 rounded-md border border-border object-contain bg-bg"
+              />
+            ) : (
+              <div className="grid h-56 w-56 place-items-center rounded-md border border-border bg-surface">
+                <Loader2 className="size-6 animate-spin text-meta" />
+              </div>
+            )}
+            <p className="text-label text-muted">
+              {phase === "success"
+                ? "登录成功，正在刷新账号列表…"
+                : "请用「目标平台 App」扫码完成登录，本窗口会自动更新…"}
             </p>
-          )}
-        </div>
+            {error && <ErrorHint message={error} />}
+          </div>
+        )}
+
+        {phase === "failed" && (
+          <div className="mt-4 flex flex-col gap-2">
+            <ErrorHint message={error} />
+            <p className="text-label text-muted">
+              未能完成扫码登录。可再次发起登录。
+            </p>
+          </div>
+        )}
+
         <DialogFooter>
-          <Button variant="ghost" disabled={creating} onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button variant="primary" disabled={creating} onClick={() => void handleSubmit()}>
-            {creating ? "添加中…" : "添加并拉起 Chrome"}
-          </Button>
+          {phase === "form" && (
+            <>
+              <Button variant="ghost" disabled={running} onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button variant="primary" disabled={running} onClick={() => void startScan()}>
+                <ScanLine className="size-4" />
+                发起扫码登录
+              </Button>
+            </>
+          )}
+          {phase === "scanning" && (
+            <Button variant="ghost" onClick={() => handleRef.current?.abort()}>
+              取消登录
+            </Button>
+          )}
+          {(phase === "success" || phase === "failed") && (
+            <Button variant="primary" onClick={() => onOpenChange(false)}>
+              完成
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -130,7 +211,7 @@ function DeleteAccountDialog({
   account,
   onClose,
 }: {
-  account: Account | null;
+  account: OfficialAccount | null;
   onClose: () => void;
 }) {
   const removeAccount = useAccountsStore((s) => s.removeAccount);
@@ -141,7 +222,7 @@ function DeleteAccountDialog({
     setRemoving(true);
     try {
       await removeAccount(account.id);
-      useToastStore.getState().show("账号已删除", "ok");
+      useToastStore.getState().show(`已删除「${account.name}」及关联 cookie`, "ok");
       onClose();
     } catch (e) {
       useToastStore.getState().show(
@@ -159,7 +240,7 @@ function DeleteAccountDialog({
         <DialogTitle>删除账号</DialogTitle>
         <DialogDescription className="text-label text-muted">
           将删除「{account?.name}」({account ? PLATFORM_NAMES[account.platform] : ""})
-          及其关联任务记录。此操作不可撤销。
+          及其关联的 cookie 文件。此操作不可撤销。
         </DialogDescription>
         <DialogFooter>
           <Button variant="ghost" disabled={removing} onClick={onClose}>
@@ -177,49 +258,22 @@ function DeleteAccountDialog({
 export function AccountsView() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
+  const error = useAccountsStore((s) => s.error);
+  const fetchingValid = useAccountsStore((s) => s.fetchingValid);
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
-  const relogin = useAccountsStore((s) => s.relogin);
-  const setStatus = useAccountsStore((s) => s.setStatus);
   const connected = useDaemonStore((s) => s.connected);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<OfficialAccount | null>(null);
 
   useEffect(() => {
     if (connected) void fetchAccounts();
   }, [connected, fetchAccounts]);
 
-  async function handleRelogin(a: Account): Promise<void> {
-    try {
-      const r = await relogin(a.id);
-      useToastStore.getState().show(
-        r.launch_warning ?? "已拉起该账号 Chrome，请完成扫码登录",
-        "info",
-      );
-    } catch (e) {
-      useToastStore.getState().show(
-        e instanceof Error ? e.message : String(e),
-        "err",
-      );
-    }
-  }
-
-  async function handleRestore(a: Account): Promise<void> {
-    try {
-      await setStatus(a.id, "active");
-      useToastStore.getState().show("账号已恢复可用", "ok");
-    } catch (e) {
-      useToastStore.getState().show(
-        e instanceof Error ? e.message : String(e),
-        "err",
-      );
-    }
-  }
-
   return (
     <div className="mx-auto max-w-[960px] animate-fade-in px-8 pb-12 pt-8">
       <div className="mb-6 flex items-baseline gap-3">
         <h2 className="text-page font-semibold tracking-[-0.015em]">账号</h2>
-        <span className="text-label text-muted">多平台账号与调试端口</span>
+        <span className="text-label text-muted">扫码登录 · 多平台账号管理</span>
         <div className="ml-auto">
           <Button
             variant="primary"
@@ -227,7 +281,7 @@ export function AccountsView() {
             onClick={() => setDialogOpen(true)}
           >
             <Plus className="size-4" />
-            添加账号
+            扫码登录
           </Button>
         </div>
       </div>
@@ -239,7 +293,7 @@ export function AccountsView() {
           <Empty
             icon={<UserPlus className="size-[34px] text-meta" strokeWidth={1.5} />}
             title="还没有账号"
-            description="添加平台账号后，PostHub 会拉起独立 Chrome 供扫码登录，登录态自动持久化"
+            description="通过官方后端扫码登录抖音 / 小红书 / 视频号 / 快手，登录态自动持久化到 cookie 文件"
           />
           <div className="flex justify-center pb-6">
             <Button
@@ -248,7 +302,7 @@ export function AccountsView() {
               onClick={() => setDialogOpen(true)}
             >
               <Plus className="size-4" />
-              添加第一个账号
+              扫码登录第一个账号
             </Button>
           </div>
         </div>
@@ -261,13 +315,10 @@ export function AccountsView() {
                   平台
                 </th>
                 <th className="px-4 py-2.5 text-left text-caption font-medium text-meta">
-                  名称
+                  账号名
                 </th>
                 <th className="px-4 py-2.5 text-left text-caption font-medium text-meta">
-                  调试端口
-                </th>
-                <th className="px-4 py-2.5 text-left text-caption font-medium text-meta">
-                  状态
+                  Cookie 有效性
                 </th>
                 <th className="px-4 py-2.5 text-right text-caption font-medium text-meta">
                   操作
@@ -276,46 +327,64 @@ export function AccountsView() {
             </thead>
             <tbody>
               {accounts.map((a) => (
-                <tr key={a.id} className="border-b border-border-soft last:border-b-0 hover:bg-surface-warm">
+                <tr
+                  key={a.id}
+                  className="border-b border-border-soft last:border-b-0 hover:bg-surface-warm"
+                >
                   <td className="px-4 py-3">
                     <PlatformMark platform={a.platform} />
                   </td>
                   <td className="px-4 py-3 font-medium text-fg">{a.name}</td>
-                  <td className="px-4 py-3 font-mono text-caption tabular-nums text-muted">
-                    {a.cdp_port}
-                  </td>
                   <td className="px-4 py-3">
-                    <Status meta={ACCOUNT_STATUS_META[a.status]} />
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1.5 text-label font-medium",
+                        a.cookieValid ? "text-success-deep" : "text-warn-deep",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "size-[7px] shrink-0 rounded-full",
+                          a.cookieValid ? "bg-success" : "bg-warn",
+                        )}
+                      />
+                      {a.cookieValid ? "Cookie 有效" : "Cookie 已失效"}
+                    </span>
                   </td>
-                  <td className={cn("px-4 py-3 text-right")}>
-                    {a.status === "needs_relogin" ? (
-                      <div className="flex justify-end gap-2">
-                        <Button variant="secondary" size="sm" onClick={() => void handleRelogin(a)}>
-                          重新扫码
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => void handleRestore(a)}>
-                          恢复可用
-                        </Button>
-                      </div>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-danger hover:bg-danger-tint"
-                        onClick={() => setDeleteTarget(a)}
-                      >
-                        删除
-                      </Button>
-                    )}
+                  <td className="px-4 py-3 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-danger hover:bg-danger-tint"
+                      onClick={() => setDeleteTarget(a)}
+                    >
+                      <Trash2 className="size-4" />
+                      删除
+                    </Button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <div className="flex items-center justify-end gap-2 border-t border-border-soft px-4 py-2 text-caption text-meta">
+            {fetchingValid ? "正在校验 Cookie…" : `共 ${accounts.length} 个账号 · Cookie 有效性由官方 getValidAccounts 校验`}
+          </div>
         </div>
       )}
 
-      <AddAccountDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      {error && !loading && (
+        <p className="mt-4 rounded-md bg-danger-tint px-3 py-2 text-label text-danger-deep">
+          加载失败：{error}
+        </p>
+      )}
+
+      <ScanLoginDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onLoginSuccess={() => {
+          useToastStore.getState().show("登录成功，账号已持久化", "ok");
+        }}
+      />
       <DeleteAccountDialog
         account={deleteTarget}
         onClose={() => setDeleteTarget(null)}

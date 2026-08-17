@@ -1,10 +1,11 @@
 /**
  * daemon REST 客户端 —— 统一 fetch + 错误约定（`body.error` 或 `HTTP {status}`）。
  * 每个端点显式接收 baseUrl（来自 daemon store），避免模块间循环依赖。
+ *
+ * 注意：账号相关端点已迁移至 `./official`（对接官方 /getAccounts、/login 等 seam），
+ * 本模块只保留与发布/文件/日志相关的 daemon 自研端点。
  */
 import type {
-  Account,
-  AccountStatus,
   CreateTaskPayload,
   DaemonHealth,
   ImportResult,
@@ -67,20 +68,6 @@ export const api = {
 
   platformConstraints: (base: string) =>
     request<{ constraints: PlatformConstraint[] }>(base, "/platform-constraints"),
-
-  accounts: (base: string) => request<{ accounts: Account[] }>(base, "/accounts"),
-  createAccount: (base: string, payload: { platform: Platform; name?: string }) =>
-    request<{ account: Account }>(base, "/accounts", jsonInit("POST", payload)),
-  deleteAccount: (base: string, id: number) =>
-    request<unknown>(base, `/accounts/${id}`, { method: "DELETE" }),
-  reloginAccount: (base: string, id: number) =>
-    request<{ ok: boolean; launch_warning?: string }>(
-      base,
-      `/accounts/${id}/relogin`,
-      jsonInit("POST"),
-    ),
-  setAccountStatus: (base: string, id: number, status: AccountStatus) =>
-    request<unknown>(base, `/accounts/${id}/status`, jsonInit("POST", { status })),
 
   tasks: (base: string, query: string) =>
     request<{ tasks: TaskItem[] }>(base, `/tasks${query}`),
