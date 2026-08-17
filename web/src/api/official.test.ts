@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { parseSseChunk, parseSseDataLine } from "../api/official";
+import { buildPostVideoBatchRequest, officialApi } from "../api/official";
 
 describe("SSE 解析（官方轮询式 /login）", () => {
   it("data 行解析", () => {
@@ -83,5 +84,100 @@ describe("officialApi 账号接口（mock fetch）", () => {
       }),
     );
     await expect(officialApi.getAccounts("http://x")).rejects.toThrow("获取账号列表失败: x");
+  });
+});
+
+describe("buildPostVideoBatchRequest（表单 → /postVideoBatch 契约）", () => {
+  it("请求体是数组，每选中平台一个 postVideo 形态项；多文件 × 各平台多账号", () => {
+    const body = buildPostVideoBatchRequest({
+      files: ["a.mp4", "b.mp4"],
+      title: "批量标题",
+      caption: "正文",
+      tags: ["批量", "发布"],
+      platforms: [
+        { platform: "douyin", accounts: ["d1.json", "d2.json"] },
+        { platform: "xiaohongshu", accounts: ["x1.json"] },
+      ],
+    });
+    expect(body).toHaveLength(2);
+    // 抖音项：type=3 + 多文件 + 该平台多账号
+    expect(body[0]).toMatchObject({
+      fileList: ["a.mp4", "b.mp4"],
+      accountList: ["d1.json", "d2.json"],
+      type: 3,
+      tags: ["批量", "发布"],
+      enableTimer: false,
+    });
+    // 小红书项：type=1 + 该平台账号
+    expect(body[1]).toMatchObject({
+      fileList: ["a.mp4", "b.mp4"],
+      accountList: ["x1.json"],
+      type: 1,
+    });
+    // 标题/描述折叠与单视频同规则
+    expect(body[0].title).toBe("批量标题\n正文");
+    expect(body[1].title).toBe("批量标题\n正文");
+  });
+
+  it("空 caption 时标题不折叠", () => {
+    const body = buildPostVideoBatchRequest({
+      files: ["a.mp4"],
+      title: "纯标题",
+      tags: [],
+      platforms: [{ platform: "douyin", accounts: ["d1.json"] }],
+    });
+    expect(body[0].title).toBe("纯标题");
+  });
+
+  it("平台整型映射：1 小红书 2 视频号 3 抖音 4 快手", () => {
+    const make = (platform: Parameters<typeof buildPostVideoBatchRequest>[0]["platforms"][0]["platform"]) =>
+      buildPostVideoBatchRequest({
+        files: ["a.mp4"],
+        title: "x",
+        tags: [],
+        platforms: [{ platform, accounts: ["a.json"] }],
+      })[0].type;
+    expect(make("xiaohongshu")).toBe(1);
+    expect(make("wechat")).toBe(2);
+    expect(make("douyin")).toBe(3);
+    expect(make("kuaishou")).toBe(4);
+  });
+});
+
+describe("officialApi.postVideoBatch（mock fetch）", () => {
+  it("POST /postVideoBatch 并携带数组合法请求体", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 200, msg: null, data: null }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await officialApi.postVideoBatch("http://127.0.0.1:5409", [
+      { fileList: ["a.mp4"], accountList: ["d.json"], type: 3, title: "t", tags: [] },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/postVideoBatch",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const sent = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(Array.isArray(sent)).toBe(true);
+    expect(sent[0].type).toBe(3);
+    expect(sent[0].fileList).toEqual(["a.mp4"]);
+  });
+
+  it("官方校验错误（code 400）透传 msg", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({ code: 400, msg: "Expected a JSON array", data: null }),
+      }),
+    );
+    await expect(
+      officialApi.postVideoBatch("http://127.0.0.1:5409", []),
+    ).rejects.toThrow("Expected a JSON array");
   });
 });

@@ -303,6 +303,13 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
+  postVideoBatch: (base: string, payload: PostVideoBatchRequest) =>
+    request<null>(base, "/postVideoBatch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   /** 上传并记录素材：走 /uploadSave，文件同时进入磁盘与官方 file_records。 */
   upload: (base: string, file: File, customName?: string) => {
     const form = new FormData();
@@ -406,4 +413,44 @@ export function buildPostVideoRequest(input: {
     body.startDays = input.timer.startDays;
   }
   return body;
+}
+
+/* ───────────────────────── 批量发布（/postVideoBatch 契约）───────────────────────── */
+
+/**
+ * 官方 /postVideoBatch 请求体（@see daemon/sau_backend.py:519 postVideoBatch）。
+ * 契约要点：请求体是 **JSON 数组**，每项即一个 /postVideo 形态对象（多文件 fileList ×
+ * 多账号 accountList），后端对每项做 `files × accounts` 笛卡尔发布。
+ * 响应统一 `{ code: 200, msg: null, data: null }`（异步 fire-and-forget，无逐子项状态）；
+ * 非数组或请求级错误时按 `{ code, msg }` 返回（400/500）——由前端中继展示。
+ */
+export type PostVideoBatchRequest = PostVideoRequest[];
+
+/**
+ * 前端批量表单（多文件 + 多账号，可按平台勾选）→ 官方 /postVideoBatch 请求体。
+ * 每选中一个平台生成一个数组项：fileList = 全部所选文件，accountList = 该平台所选账号
+ * 的 cookie 文件名，type = 官方平台整型。标题/描述折叠与单视频规则一致（caption 合入 title）。
+ */
+export function buildPostVideoBatchRequest(input: {
+  /** 多选素材 file_path（videoFile 磁盘名）。 */
+  files: string[];
+  title: string;
+  caption?: string;
+  tags: string[];
+  /** 按平台分组的账号：每项 platform + 该平台所选账号 cookie 文件名。 */
+  platforms: { platform: Platform; accounts: string[] }[];
+}): PostVideoBatchRequest {
+  let title = input.title;
+  const caption = input.caption?.trim();
+  if (caption) {
+    title = input.title ? `${input.title}\n${caption}` : caption;
+  }
+  return input.platforms.map(({ platform, accounts }) => ({
+    fileList: input.files,
+    accountList: accounts,
+    type: OFFICIAL_PLATFORM_TYPE[platform],
+    title,
+    tags: input.tags ?? [],
+    enableTimer: false,
+  }));
 }
