@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type View = "publish" | "tasks" | "accounts" | "logs";
+export type View = "publish" | "tasks" | "files" | "accounts" | "logs";
 
 interface ViewState {
   view: View;
