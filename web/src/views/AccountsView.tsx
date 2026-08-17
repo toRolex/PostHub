@@ -21,6 +21,7 @@ import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
 import { ACCOUNT_STATUS_META, Status } from "../components/ui/status";
+import { CookieManager } from "../components/CookieManager";
 
 const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat"];
 
@@ -319,6 +320,8 @@ export function AccountsView() {
         account={deleteTarget}
         onClose={() => setDeleteTarget(null)}
       />
+
+      <CookieManager />
     </div>
   );
 }
