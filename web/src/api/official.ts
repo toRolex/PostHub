@@ -338,6 +338,9 @@ export const officialApi = {
  * - `type`       平台整型：1 小红书 2 视频号 3 抖音 4 快手。
  * - `tags`       字符串数组（上线器逐项加 # 前缀）。
  * - `enableTimer` 为 false 时立即发布；true 才用到 videosPerDay/dailyTimes/startDays。
+ *   @see daemon/.venv/.../utils/files_times.py `generate_schedule_time_next_day`：
+ *   dailyTimes 为「整点小时」数组（0-23），videosPerDay 每日条数（<=0 或 > len(dailyTimes) 时官方抛错），
+ *   startDays 为起始天数（0 = 明天起）。
  * - `category=0` 官方会置为 None；typing 上沿用官方默认 LIFESTYLE。
  */
 export interface PostVideoRequest {
@@ -349,7 +352,7 @@ export interface PostVideoRequest {
   category?: number;
   enableTimer?: boolean;
   videosPerDay?: number;
-  dailyTimes?: string[] | null;
+  dailyTimes?: number[];
   startDays?: number;
   thumbnail?: string;
   isDraft?: boolean;
@@ -367,6 +370,16 @@ export function buildPostVideoRequest(input: {
   /** 正文/描述：官方 /postVideo 无独立 desc 字段，折叠进 title（title\ncaption）。 */
   caption?: string;
   thumbnail?: string;
+  /**
+   * 定时发布配置。启用时（enableTimer=true）随请求提交完整三字段；
+   * 缺省/未启用时保持 enableTimer: false（立即发布）。
+   */
+  timer?: {
+    enableTimer: boolean;
+    videosPerDay: number;
+    dailyTimes: number[];
+    startDays: number;
+  };
 }): PostVideoRequest {
   // 官方单个发布动作只针对单一平台（type 唯一）；多平台则由页面拆成多次提交。
   let title = input.title;
@@ -385,5 +398,12 @@ export function buildPostVideoRequest(input: {
     enableTimer: false,
   };
   if (input.thumbnail) body.thumbnail = input.thumbnail;
+  // 启用定时发布：随请求提交官方 enableTimer 完整三字段。
+  if (input.timer?.enableTimer) {
+    body.enableTimer = true;
+    body.videosPerDay = input.timer.videosPerDay;
+    body.dailyTimes = input.timer.dailyTimes;
+    body.startDays = input.timer.startDays;
+  }
   return body;
 }
