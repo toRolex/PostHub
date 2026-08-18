@@ -45,9 +45,9 @@ jobs:
           cd src-tauri/resources/daemon
           UV_BIN="$(ls ../bin/uv-* | head -1)"
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync
-          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python -m posthub 8756 &
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python run_backend.py &
           sleep 15
-          curl -fsS --retry 5 http://127.0.0.1:8756/health
+          curl -fsS --retry 5 http://127.0.0.1:5409/getFiles
           kill %1 2>/dev/null || true
 
       - name: Install Tauri CLI
