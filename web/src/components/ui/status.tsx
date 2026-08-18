@@ -1,5 +1,4 @@
 import { cn } from "../../lib/utils";
-import type { JobStatus, TaskStatus } from "../../api/types";
 
 export interface StatusMeta {
   /** 色点背景（浅档语义色） */
@@ -10,30 +9,12 @@ export interface StatusMeta {
   pulse?: boolean;
 }
 
-export const TASK_STATUS_META: Record<TaskStatus, StatusMeta> = {
-  pending: { dot: "bg-info", text: "text-muted", label: "待发布" },
-  publishing: {
-    dot: "bg-accent",
-    text: "text-accent-ink",
-    label: "发布中",
-    pulse: true,
-  },
-  success: { dot: "bg-success", text: "text-success-deep", label: "成功" },
-  failed: { dot: "bg-danger", text: "text-danger-deep", label: "失败" },
-  manual: { dot: "bg-warn", text: "text-warn-deep", label: "需人工" },
-  needs_relogin: { dot: "bg-warn", text: "text-warn-deep", label: "需重登" },
-  missed: { dot: "bg-meta", text: "text-muted", label: "错过" },
-  partial: { dot: "bg-warn", text: "text-warn-deep", label: "部分成功" },
-};
-
-export const JOB_STATUS_META = TASK_STATUS_META as Record<JobStatus, StatusMeta>;
-
 interface StatusProps {
   meta: StatusMeta;
   className?: string;
 }
 
-/** 签名组件：语义色点 + 标签；发布中带脉冲动效。 */
+/** 签名组件：语义色点 + 标签；可带脉冲动效。 */
 function Status({ meta, className }: StatusProps) {
   return (
     <span

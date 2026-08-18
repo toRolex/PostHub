@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileVideo, RefreshCw, Send, XCircle } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
@@ -120,6 +120,70 @@ function AssetSection({ errors }: { errors: string[] }) {
 
 /* ───────────────────────── 发布到 ───────────────────────── */
 
+/* ───────────────────────── 账号选择（按名称模糊搜索）───────────────────────── */
+
+interface AccountOption {
+  id: number;
+  name: string;
+}
+
+/** 平台账号下拉：下拉内可按账号名模糊搜索并过滤选项。 */
+function AccountSelect({
+  options,
+  value,
+  onValueChange,
+}: {
+  options: AccountOption[];
+  value: number;
+  onValueChange: (id: number) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.name.toLowerCase().includes(q));
+  }, [options, query]);
+
+  return (
+    <Select
+      value={String(value)}
+      onValueChange={(v) => onValueChange(Number(v))}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) setQuery("");
+      }}
+    >
+      <SelectTrigger className="h-7 w-[150px] text-label" aria-label="选择账号">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {open && (
+          <div className="border-b border-border-soft px-1 pb-1">
+            <Input
+              value={query}
+              placeholder="搜索账号名…"
+              className="h-7 text-label"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              autoFocus
+            />
+          </div>
+        )}
+        {filtered.length === 0 ? (
+          <div className="px-3 py-2 text-label text-meta">无匹配账号</div>
+        ) : (
+          filtered.map((a) => (
+            <SelectItem key={a.id} value={String(a.id)}>
+              {a.name}
+            </SelectItem>
+          ))
+        )}
+      </SelectContent>
+    </Select>
+  );
+}
+
 function TargetSection() {
   const accounts = useAccountsStore((s) => s.accounts);
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
@@ -185,25 +249,15 @@ function TargetSection() {
               {list.length > 1 ? `${list.length} 个账号` : list[0].name}
             </span>
             {checked && list.length > 1 && (
-              <Select
-                value={String(accountByPlatform[p] ?? list[0].id)}
-                onValueChange={(v) =>
+              <AccountSelect
+                options={list.map((a) => ({ id: a.id, name: a.name }))}
+                value={accountByPlatform[p] ?? list[0].id}
+                onValueChange={(id) =>
                   setForm({
-                    accountByPlatform: { ...accountByPlatform, [p]: Number(v) },
+                    accountByPlatform: { ...accountByPlatform, [p]: id },
                   })
                 }
-              >
-                <SelectTrigger className="h-7 w-[150px] text-label" aria-label="选择账号">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {list.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              />
             )}
           </div>
         );

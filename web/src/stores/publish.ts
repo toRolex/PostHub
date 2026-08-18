@@ -11,18 +11,69 @@ const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   kuaishou: null,
 };
 
-const initialForm = (): PublishFormValues => ({
-  title: "",
-  caption: "",
-  tags: "",
-  selectedPlatforms: [],
-  accountByPlatform: { ...EMPTY_ACCOUNTS },
-  selectedFile: null,
+/** localStorage 键：发布默认定时配置（「定时设置」页可编辑）。 */
+const TIMER_PREF_KEY = "posthub.timerPref";
+
+export interface TimerPref {
+  timerEnabled: boolean;
+  videosPerDay: number;
+  dailyTimes: number[];
+  startDays: number;
+}
+
+const DEFAULT_TIMER_PREF: TimerPref = {
   timerEnabled: false,
   videosPerDay: 1,
   dailyTimes: [10, 14, 20],
   startDays: 0,
-});
+};
+
+/** 读取持久化的默认定时配置；缺失/损坏时回退默认。 */
+function loadTimerPref(): TimerPref {
+  try {
+    const raw = localStorage.getItem(TIMER_PREF_KEY);
+    if (!raw) return DEFAULT_TIMER_PREF;
+    const parsed = JSON.parse(raw) as Partial<TimerPref>;
+    return {
+      timerEnabled: Boolean(parsed.timerEnabled) ?? DEFAULT_TIMER_PREF.timerEnabled,
+      videosPerDay:
+        typeof parsed.videosPerDay === "number"
+          ? parsed.videosPerDay
+          : DEFAULT_TIMER_PREF.videosPerDay,
+      dailyTimes: Array.isArray(parsed.dailyTimes)
+        ? parsed.dailyTimes
+        : DEFAULT_TIMER_PREF.dailyTimes,
+      startDays:
+        typeof parsed.startDays === "number" ? parsed.startDays : DEFAULT_TIMER_PREF.startDays,
+    };
+  } catch {
+    return DEFAULT_TIMER_PREF;
+  }
+}
+
+function saveTimerPref(pref: TimerPref): void {
+  try {
+    localStorage.setItem(TIMER_PREF_KEY, JSON.stringify(pref));
+  } catch {
+    // 持久化失败不阻断（localStorage 不可用等），仅当次内存态生效。
+  }
+}
+
+const initialForm = (): PublishFormValues => {
+  const pref = loadTimerPref();
+  return {
+    title: "",
+    caption: "",
+    tags: "",
+    selectedPlatforms: [],
+    accountByPlatform: { ...EMPTY_ACCOUNTS },
+    selectedFile: null,
+    timerEnabled: pref.timerEnabled,
+    videosPerDay: pref.videosPerDay,
+    dailyTimes: pref.dailyTimes,
+    startDays: pref.startDays,
+  };
+};
 
 /** 表单可写字段。 */
 type PublishPatch = Partial<
@@ -55,6 +106,8 @@ interface PublishState extends PublishFormValues {
   results: Partial<Record<Platform, { ok: boolean; msg: string }>>;
   setForm: (patch: PublishPatch) => void;
   setPlatforms: (platforms: Platform[], accounts: Account[]) => void;
+  /** 定时设置页：整体写入默认定时配置并持久化到 localStorage。 */
+  setTimerPref: (pref: TimerPref) => void;
   /** 前端校验：返回错误消息列表（空 = 通过）。可选传入表单快照（默认读当前 state）。 */
   validate: (form?: Partial<PublishFormValues>) => string[];
   /** 提交：对每个已选平台各调一次官方 /postVideo，收集结果。 */
@@ -64,7 +117,7 @@ interface PublishState extends PublishFormValues {
 
 type PublishStateFields = Omit<
   PublishState,
-  "setForm" | "setPlatforms" | "validate" | "submit" | "reset"
+  "setForm" | "setPlatforms" | "validate" | "submit" | "reset" | "setTimerPref"
 >;
 
 export const initialPublishState: PublishStateFields = {
@@ -84,7 +137,36 @@ export function parseTags(raw: string): string[] {
 export const usePublishStore = create<PublishState>()((set, get) => ({
   ...initialPublishState,
 
-  setForm: (patch) => set(patch),
+  setForm: (patch) => {
+    set(patch);
+    // 定时相关字段变动时同步持久化（「定时设置」页 / 发布页都走这里）。
+    const timerKeys: (keyof TimerPref)[] = [
+      "timerEnabled",
+      "videosPerDay",
+      "dailyTimes",
+      "startDays",
+    ];
+    if (timerKeys.some((k) => k in patch)) {
+      const s = get();
+      saveTimerPref({
+        timerEnabled: s.timerEnabled,
+        videosPerDay: s.videosPerDay,
+        dailyTimes: s.dailyTimes,
+        startDays: s.startDays,
+      });
+    }
+  },
+
+  /** 定时设置页：整体写入默认定时配置并持久化。 */
+  setTimerPref: (pref) => {
+    set({
+      timerEnabled: pref.timerEnabled,
+      videosPerDay: pref.videosPerDay,
+      dailyTimes: pref.dailyTimes,
+      startDays: pref.startDays,
+    });
+    saveTimerPref(pref);
+  },
 
   setPlatforms: (platforms, accounts) => {
     const accountByPlatform = { ...get().accountByPlatform };

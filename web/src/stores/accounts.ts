@@ -44,6 +44,11 @@ interface AccountsState {
   fetchAccounts: () => Promise<void>;
   refetchValidAccounts: () => Promise<void>;
   removeAccount: (id: number) => Promise<void>;
+  updateAccount: (payload: {
+    id: number;
+    type: OfficialAccount["typeNum"];
+    userName: string;
+  }) => Promise<void>;
 }
 
 export const initialAccountsState = {
@@ -95,6 +100,26 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
         accounts: s.accounts.filter((a) => a.id !== id),
         error: "",
       }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+
+  /** 更新账号的平台/名称：官方 /updateUserinfo，成功后刷新列表。 */
+  updateAccount: async (payload: {
+    id: number;
+    type: OfficialAccount["typeNum"];
+    userName: string;
+  }) => {
+    try {
+      const base = useDaemonStore.getState().url;
+      await officialApi.updateAccount(base, {
+        id: payload.id,
+        type: payload.type,
+        userName: payload.userName,
+      });
+      set({ error: "" });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
       throw e;

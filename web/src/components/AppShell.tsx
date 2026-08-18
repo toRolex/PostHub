@@ -1,10 +1,8 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FilePlus2, ListChecks, ScrollText, Send, User } from "lucide-react";
+import { FilePlus2, Send, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
-import { useInterventionsStore } from "../stores/interventions";
-import { usePlatformStore } from "../stores/platform";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -12,15 +10,14 @@ import { Status } from "./ui/status";
 import { ToastHost } from "./ui/toast";
 import { AccountsView } from "../views/AccountsView";
 import { FileView } from "../views/FileView";
-import { LogsView } from "../views/LogsView";
 import { PublishView } from "../views/PublishView";
-import { TasksView } from "../views/TasksView";
+import { ScheduleView } from "../views/ScheduleView";
 
 const NAV_ITEMS: { view: View; label: string; icon: typeof Send }[] = [
   { view: "publish", label: "发布", icon: Send },
-  { view: "tasks", label: "任务", icon: ListChecks },
   { view: "files", label: "文件", icon: FilePlus2 },
   { view: "accounts", label: "账号", icon: User },
+  { view: "schedule", label: "定时", icon: Timer },
 ];
 
 async function loadDaemonUrl(): Promise<void> {
@@ -75,14 +72,13 @@ function NavButton({
 
 const NAV_ICONS: Record<View, typeof Send> = {
   publish: Send,
-  tasks: ListChecks,
   files: FilePlus2,
   accounts: User,
-  logs: ScrollText,
+  schedule: Timer,
 };
 
 function viewLabel(view: View): string {
-  return { publish: "发布", tasks: "任务", files: "文件", accounts: "账号", logs: "日志" }[view];
+  return { publish: "发布", files: "文件", accounts: "账号", schedule: "定时" }[view];
 }
 
 function Sidebar() {
@@ -106,13 +102,6 @@ function Sidebar() {
           />
         ))}
       </nav>
-      <div className="mt-auto">
-        <NavButton
-          view="logs"
-          active={view === "logs"}
-          onClick={() => setView("logs")}
-        />
-      </div>
     </aside>
   );
 }
@@ -122,21 +111,18 @@ function ShellView() {
   switch (view) {
     case "publish":
       return <PublishView />;
-    case "tasks":
-      return <TasksView />;
     case "files":
       return <FileView />;
     case "accounts":
       return <AccountsView />;
-    case "logs":
-      return <LogsView />;
+    case "schedule":
+      return <ScheduleView />;
   }
 }
 
 export function AppShell() {
   useEffect(() => {
     void loadDaemonUrl();
-    void usePlatformStore.getState().fetchConstraints();
     void useAccountsStore.getState().fetchAccounts();
     void useDaemonStore.getState().checkHealth();
     const { pollIntervalMs } = useDaemonStore.getState();
@@ -144,13 +130,8 @@ export function AppShell() {
       () => void useDaemonStore.getState().checkHealth(),
       pollIntervalMs,
     );
-    const interventionTimer = window.setInterval(
-      () => void useInterventionsStore.getState().poll(),
-      pollIntervalMs,
-    );
     return () => {
       window.clearInterval(healthTimer);
-      window.clearInterval(interventionTimer);
     };
   }, []);
 

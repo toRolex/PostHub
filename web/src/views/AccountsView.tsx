@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Loader2,
+  PencilLine,
   Plus,
   ScanLine,
   Trash2,
@@ -255,6 +256,82 @@ function DeleteAccountDialog({
   );
 }
 
+/** 编辑账号名：调用官方 /updateUserinfo（seam 契约之一）持久化 userName，成功后刷新列表。 */
+function EditAccountDialog({
+  account,
+  onClose,
+}: {
+  account: OfficialAccount | null;
+  onClose: () => void;
+}) {
+  const updateAccount = useAccountsStore((s) => s.updateAccount);
+  const refetchValidAccounts = useAccountsStore((s) => s.refetchValidAccounts);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // 每次打开时同步为当前账号名。
+  useEffect(() => {
+    if (account) {
+      setName(account.name);
+      setError("");
+    }
+  }, [account]);
+
+  async function handleSave(): Promise<void> {
+    if (!account) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError("账号名不能为空");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateAccount({
+        id: account.id,
+        type: account.typeNum,
+        userName: trimmed,
+      });
+      useToastStore.getState().show("账号已更新", "ok");
+      await refetchValidAccounts();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={account !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[min(420px,92vw)]">
+        <DialogTitle>编辑账号</DialogTitle>
+        <DialogDescription className="text-label text-muted">
+          「{account?.name}」({account ? PLATFORM_NAMES[account.platform] : ""})
+        </DialogDescription>
+        <div className="mt-4 flex flex-col gap-1.5">
+          <Label htmlFor="edit-account-name">账号名</Label>
+          <Input
+            id="edit-account-name"
+            value={name}
+            placeholder="用于区分不同账号"
+            onChange={(e) => setName(e.target.value)}
+          />
+          {error && <p className="text-label text-danger-deep">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" disabled={saving} onClick={onClose}>
+            取消
+          </Button>
+          <Button variant="primary" disabled={saving} onClick={() => void handleSave()}>
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AccountsView() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
@@ -264,6 +341,7 @@ export function AccountsView() {
   const connected = useDaemonStore((s) => s.connected);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<OfficialAccount | null>(null);
+  const [editTarget, setEditTarget] = useState<OfficialAccount | null>(null);
 
   useEffect(() => {
     if (connected) void fetchAccounts();
@@ -355,6 +433,15 @@ export function AccountsView() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      className="text-fg-2 hover:bg-surface"
+                      onClick={() => setEditTarget(a)}
+                    >
+                      <PencilLine className="size-4" />
+                      编辑
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       className="text-danger hover:bg-danger-tint"
                       onClick={() => setDeleteTarget(a)}
                     >
@@ -388,6 +475,10 @@ export function AccountsView() {
       <DeleteAccountDialog
         account={deleteTarget}
         onClose={() => setDeleteTarget(null)}
+      />
+      <EditAccountDialog
+        account={editTarget}
+        onClose={() => setEditTarget(null)}
       />
 
       <CookieManager />

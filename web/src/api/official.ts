@@ -349,6 +349,16 @@ export const officialApi = {
   fileUrl: (base: string, filePath: string) =>
     `${base}/getFile?filename=${encodeURIComponent(filePath)}`,
 
+  /** 更新账号的平台归属与名称：POST /updateUserinfo（官方 user_info 表改 type + userName）。 */
+  updateAccount(base: string, payload: { id: number; type: OfficialPlatformType; userName: string }) {
+    const { id, type, userName } = payload;
+    return request<null>(base, "/updateUserinfo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, type, userName }),
+    });
+  },
+
   getAccounts,
   getValidAccounts,
   deleteAccount,
