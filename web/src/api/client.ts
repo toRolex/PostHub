@@ -7,7 +7,6 @@
  */
 import type {
   CreateTaskPayload,
-  DaemonHealth,
   ImportResult,
   Intervention,
   LogEntry,
@@ -64,8 +63,6 @@ function jsonInit(method: string, body?: unknown): RequestInit {
 }
 
 export const api = {
-  health: (base: string) => request<DaemonHealth>(base, "/health"),
-
   platformConstraints: (base: string) =>
     request<{ constraints: PlatformConstraint[] }>(base, "/platform-constraints"),
 

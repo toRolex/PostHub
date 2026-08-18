@@ -33,7 +33,7 @@ function DaemonSettings() {
     <section className="mt-8 rounded-lg border border-border-soft bg-bg p-4">
       <h3 className="text-title font-semibold tracking-[-0.01em]">后端运行状态</h3>
       <p className="mt-2 text-caption text-meta">
-        官方后端（<code className="font-mono">127.0.0.1:5409</code>）由桌面壳启动。
+        官方后端（<code className="font-mono">{url}</code>）由桌面壳启动。
         界面「守护进程 未连接」时，查看
         <code className="mx-1 rounded bg-surface-sunk px-1.5 py-0.5 font-mono">
           {"<app_data>/backend.log"}
@@ -41,8 +41,8 @@ function DaemonSettings() {
         中的启动与探活日志。
       </p>
       <p className="mt-3 text-caption text-meta">
-        健康接口{" "}
-        <code className="font-mono tabular-nums">{url}/health</code>
+        连通判定探活{" "}
+        <code className="font-mono tabular-nums">{url}/getAccounts</code>
         {connected ? "" : " · 未连接"}
       </p>
     </section>

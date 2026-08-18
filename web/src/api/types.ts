@@ -28,12 +28,6 @@ export type PublishMode = "platform_time" | "local_time";
 
 export const DEFAULT_DAEMON_URL = "http://127.0.0.1:5409";
 
-export interface DaemonHealth {
-  status: string;
-  version: string;
-  port?: number;
-}
-
 export interface PlatformConstraint {
   platform: Platform;
   label: string;
@@ -87,7 +81,6 @@ export const OFFICIAL_TYPE_PLATFORM: Record<OfficialPlatformType, Platform> = {
 
 /**
  * 官方账号展示模型：合并 user_info 与 cookie 校验结果，供 UI 使用。
- * 兼容旧 `Account` 核心字段（id/name/platform/status），发布页复用不受影响。
  */
 export interface OfficialAccount {
   id: number;
@@ -102,13 +95,6 @@ export interface OfficialAccount {
   cookieValid: boolean;
   /** 官方存储的校验状态：1 有效 / 0 无效。 */
   status: number;
-  profile_dir: string;
-  cdp_port: number;
-  chrome_path: string | null;
-  last_login_at: string | null;
-  last_publish_at: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 export type Account = OfficialAccount;

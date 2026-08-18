@@ -7,10 +7,6 @@ import { useToastStore } from "../stores/toast";
 
 import type { Intervention } from "../api/types";
 
-export function interventionTitle(iv: Intervention): string {
-  return iv.kind === "manual" ? "发布需要人工处理" : "账号需重新扫码";
-}
-
 export function interventionMessage(iv: Intervention): string {
   const platformLabel = iv.platform;
   const base =

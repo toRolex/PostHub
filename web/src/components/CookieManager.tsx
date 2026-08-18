@@ -15,7 +15,7 @@ import { Download, RefreshCw, Upload } from "lucide-react";
 import { useCookiesStore } from "../stores/cookies";
 import { useDaemonStore } from "../stores/daemon";
 import { useToastStore } from "../stores/toast";
-import { OFFICIAL_PLATFORM_NAMES } from "../api/platformNames";
+import { OFFICIAL_PLATFORM_NAMES } from "../api/types";
 import type { CookiedAccount, OfficialCookieStatus } from "../api/types";
 import { Button } from "./ui/button";
 import { Empty } from "./ui/empty";

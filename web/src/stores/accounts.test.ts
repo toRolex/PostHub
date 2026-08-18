@@ -9,6 +9,7 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
     ok,
     status,
     json: async () => body,
+    text: async () => JSON.stringify(body),
   };
 }
 
@@ -86,7 +87,6 @@ describe("accounts store（官方账号管理）", () => {
     expect(s.accounts[0].name).toBe("抖音一号");
     expect(s.accounts[0].cookieValid).toBe(true);
     expect(s.accounts[2].cookieValid).toBe(false);
-    expect(s.validAccountIds.has(2)).toBe(true);
     expect(s.error).toBe("");
     // 两家官方接口各请求一次
     const urls = fetchMock.mock.calls.map(([u]) => u as string);
@@ -109,7 +109,6 @@ describe("accounts store（官方账号管理）", () => {
   it("refetchValidAccounts 更新 cookie 有效态", async () => {
     useAccountsStore.setState({
       accounts: [mapDaoAccount(ROW_WECHAT)],
-      validAccountIds: new Set(),
     });
     vi.stubGlobal(
       "fetch",
@@ -121,13 +120,11 @@ describe("accounts store（官方账号管理）", () => {
     await useAccountsStore.getState().refetchValidAccounts();
 
     expect(useAccountsStore.getState().accounts[0].cookieValid).toBe(true);
-    expect(useAccountsStore.getState().validAccountIds.has(3)).toBe(true);
   });
 
   it("removeAccount 成功 -> 本地移除（官方 /deleteAccount）", async () => {
     useAccountsStore.setState({
       accounts: [mapDaoAccount(ROW_DOUYIN)],
-      validAccountIds: new Set([1]),
     });
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ code: 200, msg: "deleted", data: null }),
@@ -138,7 +135,6 @@ describe("accounts store（官方账号管理）", () => {
 
     expect((fetchMock.mock.calls[0][0] as string).endsWith("/deleteAccount?id=1")).toBe(true);
     expect(useAccountsStore.getState().accounts).toHaveLength(0);
-    expect(useAccountsStore.getState().validAccountIds.size).toBe(0);
   });
 
   it("removeAccount 失败 -> 抛出错误且保留列表", async () => {

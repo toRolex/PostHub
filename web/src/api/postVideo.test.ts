@@ -123,6 +123,7 @@ describe("officialApi.postVideo（mock fetch）", () => {
       ok: true,
       status: 200,
       json: async () => ({ code: 200, msg: "发布任务已提交", data: null }),
+      text: async () => JSON.stringify({ code: 200, msg: "发布任务已提交", data: null }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -155,6 +156,7 @@ describe("officialApi.postVideo（mock fetch）", () => {
         ok: false,
         status: 400,
         json: async () => ({ code: 400, msg: "账号列表不能为空", data: null }),
+        text: async () => JSON.stringify({ code: 400, msg: "账号列表不能为空", data: null }),
       }),
     );
     const payload = buildPostVideoRequest({

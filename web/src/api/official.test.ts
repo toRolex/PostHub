@@ -1,7 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseSseChunk, parseSseDataLine } from "../api/official";
+import {
+  openLoginSse,
+  parseSseChunk,
+  parseSseDataLine,
+} from "../api/official";
 import { buildPostVideoBatchRequest, officialApi } from "../api/official";
+
+/** 构造一个 body 为 SSE 流的 mock Response（jsdom 支持 ReadableStream）。 */
+function sseResponse(chunks: string[]): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) {
+        controller.enqueue(new TextEncoder().encode(c));
+      }
+      controller.close();
+    },
+  });
+  return { ok: true, status: 200, body: stream } as unknown as Response;
+}
 
 describe("SSE 解析（官方轮询式 /login）", () => {
   it("data 行解析", () => {
@@ -48,15 +65,93 @@ describe("SSE 解析（官方轮询式 /login）", () => {
   });
 });
 
+describe("openLoginSse（官方轮询式 /login 句柄）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("二维码 + 200 成功，readResult 为 true，流结束后主动断开", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        sseResponse(["data: https://qr.example/x.png\n\n", "data: 200\n\n"]),
+      ),
+    );
+
+    const handle = await openLoginSse({
+      url: "http://127.0.0.1:9999",
+      type: 3,
+      accountName: "抖音一号",
+    });
+
+    const qr = await handle.readQr;
+    expect(qr.src).toBe("https://qr.example/x.png");
+    await expect(handle.readResult).resolves.toBe(true);
+  });
+
+  it("500 失败 -> readResult 为 false", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(sseResponse(["data: 500\n\n"])),
+    );
+
+    const handle = await openLoginSse({
+      url: "http://127.0.0.1:9999",
+      type: 1,
+      accountName: "小红书",
+    });
+
+    await expect(handle.readResult).resolves.toBe(false);
+  });
+
+  it("abort 取消 -> 未完成的 promise 以「登录已取消」拒绝", async () => {
+    // 永不结束且不产数据的流（官方 sse_stream 死循环）：QR/result 均未决，只有 abort 能终止
+    const neverEnding = new ReadableStream<Uint8Array>({
+      start() {
+        /* 不推送任何数据，永不 close */
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, body: neverEnding }),
+    );
+
+    const handle = await openLoginSse({
+      url: "http://127.0.0.1:9999",
+      type: 3,
+      accountName: "x",
+    });
+
+    handle.abort();
+    await expect(handle.readQr).rejects.toThrow("登录已取消");
+    await expect(handle.readResult).rejects.toThrow("登录已取消");
+  });
+
+  it("HTTP 建立失败 -> 抛错误", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 503, body: null }),
+    );
+    await expect(
+      openLoginSse({ url: "http://127.0.0.1:9999", type: 3, accountName: "x" }),
+    ).rejects.toThrow("登录 SSE 建立失败");
+  });
+});
+
 describe("officialApi 账号接口（mock fetch）", () => {
+  const jsonResponse = (body: unknown, ok = true, status = 200) => ({
+    ok,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  });
+
   it("getAccounts 把行数组映射为 DaoUserInfo", async () => {
     const { officialApi } = await import("../api/official");
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({
+      vi.fn().mockResolvedValue(
+        jsonResponse({
           code: 200,
           msg: null,
           data: [
@@ -64,7 +159,7 @@ describe("officialApi 账号接口（mock fetch）", () => {
             [2, 1, "b.json", "小红书", 1],
           ],
         }),
-      }),
+      ),
     );
     const rows = await officialApi.getAccounts("http://127.0.0.1:9999");
     expect(rows).toEqual([
@@ -77,13 +172,64 @@ describe("officialApi 账号接口（mock fetch）", () => {
     const { officialApi } = await import("../api/official");
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({ code: 500, msg: "获取账号列表失败: x", data: null }),
-      }),
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 500, msg: "获取账号列表失败: x", data: null }),
+      ),
     );
     await expect(officialApi.getAccounts("http://x")).rejects.toThrow("获取账号列表失败: x");
+  });
+
+  it("getAccounts 响应非 JSON（如 500 错误页）-> 抛 HTTP 状态而非吞掉", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new Error("Unexpected token");
+        },
+        text: async () => "<html>Bad Gateway</html>",
+      }),
+    );
+    await expect(officialApi.getAccounts("http://x")).rejects.toThrow("HTTP 502");
+  });
+
+  it("getAccounts 未知平台类型 -> 抛校验错误", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          code: 200,
+          msg: null,
+          data: [[1, 9, "a.json", "未知", 1]],
+        }),
+      ),
+    );
+    await expect(officialApi.getAccounts("http://x")).rejects.toThrow("未知平台类型 9");
+  });
+
+  it("getValidAccounts 非 200 code 抛错", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 500, msg: "cookie 校验失败", data: null }),
+      ),
+    );
+    await expect(officialApi.getValidAccounts("http://x")).rejects.toThrow("cookie 校验失败");
+  });
+
+  it("deleteAccount 非 200 code 抛错", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 404, msg: "account not found", data: null }, false, 404),
+      ),
+    );
+    await expect(officialApi.deleteAccount("http://x", 1)).rejects.toThrow("account not found");
   });
 });
 
@@ -150,6 +296,7 @@ describe("officialApi.postVideoBatch（mock fetch）", () => {
       ok: true,
       status: 200,
       json: async () => ({ code: 200, msg: null, data: null }),
+      text: async () => JSON.stringify({ code: 200, msg: null, data: null }),
     });
     vi.stubGlobal("fetch", fetchMock);
     await officialApi.postVideoBatch("http://127.0.0.1:5409", [
@@ -174,6 +321,7 @@ describe("officialApi.postVideoBatch（mock fetch）", () => {
         ok: false,
         status: 400,
         json: async () => ({ code: 400, msg: "Expected a JSON array", data: null }),
+        text: async () => JSON.stringify({ code: 400, msg: "Expected a JSON array", data: null }),
       }),
     );
     await expect(

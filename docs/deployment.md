@@ -1,6 +1,6 @@
 # PostHub 部署与运维
 
-PostHub 是 Tauri 2 桌面应用（Windows 托盘 / macOS 菜单栏常驻）+ 常驻 Python 守护进程（`daemon/`）。
+PostHub 是 Tauri 2 桌面应用（Windows / macOS，无托盘）+ 常驻 Python 守护进程（`daemon/`）。
 安装包由 GitHub Actions 构建并发布到 Release，**不需要**在目标机预装 Python / uv / Chrome。
 
 ## 目标机器
@@ -36,7 +36,7 @@ Windows 安装包体积约 145MB（含 Chromium；见 ADR-0004 §修订 5）。
 - 双击 `PostHub_x64-setup.exe`。安装包未签名，Windows 会弹 SmartScreen，点「更多信息 → 仍要运行」。
 - 首次启动后台 `daemon` 需联网拉依赖（`uv sync`，1–3 分钟冷启动），之后复用 venv。
   Windows 首次启动会复制打包的 Chromium 到 app_data（离线，不连海外 CDN）。
-- 应用常驻托盘；关窗口不退出，「退出 PostHub」才真正退出。
+- 应用无托盘；关窗口即退出（同时结束后台 daemon 子进程）。
 
 ### 3. 升级
 
@@ -54,9 +54,9 @@ git tag v0.1.3 && git push origin v0.1.3
 gh release create v0.1.3 --title "PostHub v0.1.3" --generate-notes
 ```
 
-> **版本显示注意**：界面左下角版本号读取 daemon `/health` 返回的 `__version__`
-> （`daemon/posthub/__init__.py`），不是安装包版本。若两者没同步 bump，界面会显示旧值，
-> 让人误以为装的是旧包——实际安装包版本以 Release 为准。
+> **版本显示注意**：界面右上角连通指示与版本来自官方后端；官方后端无 `/health` 路由，
+> 连通判定用 `/getAccounts` 探活（无副作用，见「验证 daemon 状态」）。版本号以
+> 安装包 / Release 为准。
 
 ## 运行时目录
 
@@ -81,23 +81,26 @@ Tauri 的 `app_data_dir`，由桌面壳写入：
 
 | 路径 | 内容 |
 |------|------|
-| `<app_data>/daemon.log` | **daemon 子进程日志（stdout/stderr 全量重定向）**，daemon 失败原因看这 |
+| `<app_data>/backend.log` | **daemon 子进程日志（stdout/stderr 全量重定向）**，daemon 失败原因看这 |
 | `<app_data>/venv/` | daemon 的独立 venv（`UV_PROJECT_ENVIRONMENT`） |
 | `<app_data>/python/` | 隔离的 managed Python（Windows，绕开 `%APPDATA%\uv\python` junction 问题） |
 | `<app_data>/ms-playwright/` | 打包 Chromium 的运行时副本（`PLAYWRIGHT_BROWSERS_PATH`） |
 
 ## 验证 daemon 状态
 
-桌面壳拉起 daemon 后监听 `http://127.0.0.1:8756`。可在目标机直接探活：
+桌面壳拉起 daemon 后监听 `http://127.0.0.1:5409`。可在目标机直接探活：
 
 ```cmd
-curl http://127.0.0.1:8756/health
-:: {"status":"ok","version":"0.1.2","port":8756}
-curl http://127.0.0.1:8756/accounts
-curl http://127.0.0.1:8756/conf         :: daemon 的 6 个上游配置符号
+curl http://127.0.0.1:5409/getAccounts
+:: {"code":200,"msg":"ok","data":[...]}  账号列表（官方 JSON 契约）
+curl http://127.0.0.1:5409/getFiles
+:: {"code":200,"msg":"ok","data":[...]}  素材记录
 ```
 
-常规问题：`8756` 端口被占、daemon 起不来 → 前端显示「守护进程未连接」。
+连通判定：官方后端无 `/health` 路由，桌面壳与前端都用 `/getAccounts` 探活
+（2xx = 就绪；无副作用）。
+
+常规问题：`5409` 端口被占、daemon 起不来 → 前端显示「守护进程未连接」。
 
 ## 常见问题排查
 
@@ -118,11 +121,11 @@ dir C:\Users\zyt18\.posthub\cookies\
 :: 若 12.json 不存在 → 是版本问题（v0.1.2 之前没有导出逻辑）或导出失败
 
 :: 2. 确认账号 Chrome 是否在运行（导出依赖 CDP 连接）
-::    账号列表里平台/端口：查 posthub.db 或 /accounts 接口
+::    账号列表里平台/端口：查 posthub.db 或 /getAccounts 接口
 netstat -ano | findstr :<cdp_port>
 
 :: 3. 看 daemon 日志里上传时的报错
-notepad %APPDATA%\com.posthub.desktop\daemon.log
+notepad %APPDATA%\com.posthub.desktop\backend.log
 ```
 
 - **旧版本（< v0.1.2）**：代码根本没有导出逻辑 → 升级到 v0.1.2+（这是最可能的原因）。
@@ -135,7 +138,7 @@ notepad %APPDATA%\com.posthub.desktop\daemon.log
 
 ### 2. 守护进程未连接
 
-- 看 `daemon.log`：`uv run` 失败原因（首次冷启动联网失败、端口占用、Python 安装失败）。
+- 看 `backend.log`：`uv run` 失败原因（首次冷启动联网失败、端口占用、Python 安装失败）。
 - Windows 首次启动日志若能起来：常见 `os error 448`（junction 问题）已在 v0.1.1+ 修复，
   输出隔离到 app_data；仍出现则看完整 log。
 - 兜底逃生口：设 `POSTHUB_DAEMON_DIR` / `POSTHUB_DAEMON_CMD` 指向自备 daemon 目录 / uv。
@@ -145,7 +148,7 @@ notepad %APPDATA%\com.posthub.desktop\daemon.log
 先分类再深入，别一上来改代码：
 
 1. 打开 PostHub → 任务管理页看该 job 终态（failed / manual / needs_relogin）。
-2. `curl http://127.0.0.1:8756/logs` 或查 `~/.posthub/posthub.db` 的 `log` 表，看错误消息。
+2. `curl http://127.0.0.1:5409/getFiles` 或查 `~/.posthub/posthub.db` 的 `log` 表，看错误消息。
 3. 错误 → 终态映射见 `CONTEXT.md`：`network` → 重试；`auth` → `needs_relogin` 重登；
    `risk_control` / `unknown` → `manual` 人工介入。
 
@@ -169,8 +172,8 @@ ssh prod-jump cmd /c "chcp 65001 >nul && dir C:\Users\zyt18\.posthub\cookies"
 
 # 下拉 db / 日志到本机分析（路径用 /）
 scp prod-jump:"C:/Users/zyt18/.posthub/posthub.db" /tmp/
-scp prod-jump:"C:/Users/zyt18/AppData/Roaming/com.posthub.desktop/daemon.log" /tmp/
-iconv -f GBK -t UTF-8 /tmp/daemon.log > /tmp/daemon.utf8.log   # 中文日志转码
+scp prod-jump:"C:/Users/zyt18/AppData/Roaming/com.posthub.desktop/backend.log" /tmp/
+iconv -f GBK -t UTF-8 /tmp/backend.log > /tmp/backend.utf8.log   # 中文日志转码
 ```
 
 > 若既有中文路径/文件名又要管道拼接，参考 brandflow `docs/deployment.md` 的
@@ -178,7 +181,7 @@ iconv -f GBK -t UTF-8 /tmp/daemon.log > /tmp/daemon.utf8.log   # 中文日志转
 
 ## 运维纪律
 
-- 动手前先在目标机只读排查（`curl health`、看 `daemon.log`、查 cookies 目录）；
+- 动手前先在目标机只读排查（`curl /getAccounts` 探活、看 `backend.log`、查 cookies 目录）；
   不直接在目标机改 daemon 源码——安装包里的代码是构建期 staging 的，现场改无效且不可复现。
 - 真 bug 一律走开发机：改代码 → 写测试 → bump 版本 → tag → CI 构建 → 发 Release → 目标机升级。
 - Windows 安装包未签名：SmartScreen 提示属正常，不是安装包损坏（见「安装 & 首次启动」）。

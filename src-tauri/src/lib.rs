@@ -30,12 +30,6 @@ pub fn run() {
             spawn_daemon(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // 无托盘：点叉即真关闭（不 prevent_close / 仅隐藏）。
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let _ = window;
-            }
-        })
         .build(tauri::generate_context!())
         .expect("error while running PostHub")
         .run(|app, event| {
@@ -227,13 +221,16 @@ fn spawn_daemon(app: AppHandle) {
                 *g = Some(child);
             }
             eprintln!("[posthub] 官方后端已拉起: {}", daemon_dir.display());
-            poll_backend_ready(&app, &daemon_dir);
+            // 就绪轮询放后台线程，避免在 setup 主线程 sleep 阻塞 UI 首帧。
+            let poll_app = app.clone();
+            let poll_dir = daemon_dir.clone();
+            std::thread::spawn(move || poll_backend_ready(&poll_app, &poll_dir));
         }
         Err(e) => eprintln!("[posthub] 拉起官方后端失败: {e}"),
     }
 }
 
-/// 轮询 `127.0.0.1:5409` 直到就绪或超时；失败写 stderr 可见（配合 daemon.log 定位原因）。
+/// 轮询 `127.0.0.1:5409` 直到就绪或超时；失败写 stderr 可见（配合 backend.log 定位原因）。
 fn poll_backend_ready(app: &AppHandle, daemon_dir: &Path) {
     let deadline = Instant::now() + BACKEND_POLL_TOTAL;
     loop {

@@ -4,7 +4,7 @@ import type { DaoUserInfo, OfficialAccount } from "../api/types";
 import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { useDaemonStore } from "./daemon";
 
-/** 官方 user_info 行 -> 展示模型（复用旧 Account 核心字段，兼容发布页）。 */
+/** 官方 user_info 行 -> 展示模型。 */
 export function mapDaoAccount(row: DaoUserInfo): OfficialAccount {
   return {
     id: row.id,
@@ -14,42 +14,30 @@ export function mapDaoAccount(row: DaoUserInfo): OfficialAccount {
     cookieFile: row.filePath,
     cookieValid: row.status === 1,
     status: row.status,
-    // 以下兼容字段保留旧接口空值（官方无 Chrome/CDP 概念）。
-    profile_dir: "",
-    cdp_port: 0,
-    chrome_path: null,
-    last_login_at: null,
-    last_publish_at: null,
-    created_at: "",
-    updated_at: "",
   };
 }
 
-async function fetchValidInner(): Promise<DaoUserInfo[]> {
+/** 拉取 getValidAccounts 校验结果（官方：校验后逐行落库 status 0/1）。 */
+function loadValidAccounts(): Promise<DaoUserInfo[]> {
   return officialApi.getValidAccounts(useDaemonStore.getState().url);
 }
 
-/** 用 getValidAccounts 校验结果更新 cookie 有效性（官方：校验后逐行落库 status 0/1）。 */
+/** 用校验结果更新 cookie 有效性。 */
 function mergeCookieValidity(
   accounts: OfficialAccount[],
   valid: DaoUserInfo[],
-): { accounts: OfficialAccount[]; ids: Set<number> } {
+): OfficialAccount[] {
   const byId = new Map(valid.map((v) => [v.id, v]));
-  return {
-    accounts: accounts.map((a) => {
-      const v = byId.get(a.id);
-      const ok = v ? v.status === 1 : a.cookieValid;
-      return { ...a, status: ok ? 1 : 0, cookieValid: ok };
-    }),
-    ids: new Set(valid.filter((v) => v.status === 1).map((v) => v.id)),
-  };
+  return accounts.map((a) => {
+    const v = byId.get(a.id);
+    const ok = v ? v.status === 1 : a.cookieValid;
+    return { ...a, status: ok ? 1 : 0, cookieValid: ok };
+  });
 }
 
 interface AccountsState {
   /** 账号列表（getValidAccounts 校验后的真实有效态）。 */
   accounts: OfficialAccount[];
-  /** 最近一次校验状态（列表页展示 cookie 有效性）。 */
-  validAccountIds: Set<number>;
   loading: boolean;
   error: string;
   fetchingValid: boolean;
@@ -60,7 +48,6 @@ interface AccountsState {
 
 export const initialAccountsState = {
   accounts: [] as OfficialAccount[],
-  validAccountIds: new Set<number>(),
   loading: false,
   error: "",
   fetchingValid: false,
@@ -76,13 +63,9 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
       const base = useDaemonStore.getState().url;
       const [all, valid] = await Promise.all([
         officialApi.getAccounts(base),
-        fetchValidInner(),
+        loadValidAccounts(),
       ]);
-      const { accounts, ids } = mergeCookieValidity(
-        all.map(mapDaoAccount),
-        valid,
-      );
-      set({ accounts, validAccountIds: ids, error: "" });
+      set({ accounts: mergeCookieValidity(all.map(mapDaoAccount), valid), error: "" });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -94,9 +77,8 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
   refetchValidAccounts: async () => {
     set({ fetchingValid: true });
     try {
-      const valid = await fetchValidInner();
-      const { accounts, ids } = mergeCookieValidity(get().accounts, valid);
-      set({ accounts, validAccountIds: ids, error: "" });
+      const valid = await loadValidAccounts();
+      set({ accounts: mergeCookieValidity(get().accounts, valid), error: "" });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -111,7 +93,6 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
       await officialApi.deleteAccount(base, id);
       set((s) => ({
         accounts: s.accounts.filter((a) => a.id !== id),
-        validAccountIds: new Set([...s.validAccountIds].filter((x) => x !== id)),
         error: "",
       }));
     } catch (e) {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initialDaemonState, useDaemonStore } from "./daemon";
 
-describe("daemon store（守护进程健康检查）", () => {
+describe("daemon store（官方后端探活）", () => {
   beforeEach(() => {
     useDaemonStore.setState(initialDaemonState);
   });
@@ -11,21 +11,16 @@ describe("daemon store（守护进程健康检查）", () => {
     vi.unstubAllGlobals();
   });
 
-  it("健康响应 -> connected=true", async () => {
+  it("探活 /getAccounts 2xx -> connected=true", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ status: "ok", version: "0.1.0", port: 5409 }),
-      }),
+      vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     );
 
     await useDaemonStore.getState().checkHealth();
 
     const s = useDaemonStore.getState();
     expect(s.connected).toBe(true);
-    expect(s.health?.status).toBe("ok");
-    expect(s.health?.version).toBe("0.1.0");
     expect(s.error).toBe("");
   });
 

@@ -35,19 +35,12 @@ async function loadDaemonUrl(): Promise<void> {
 
 function Topbar() {
   const connected = useDaemonStore((s) => s.connected);
-  const health = useDaemonStore((s) => s.health);
   const meta = connected
     ? { dot: "bg-success", text: "text-success-deep", label: "守护进程 已连通" }
     : { dot: "bg-danger", text: "text-danger-deep", label: "守护进程 未连接" };
   return (
     <header className="flex h-11 shrink-0 items-center gap-4 border-b border-border-soft bg-bg px-4">
       <Status meta={meta} />
-      <div className="ml-auto flex items-center gap-4">
-        <span className="text-caption tabular-nums text-meta">
-          v{health?.version ?? "0.1.0"}
-          {health?.port ? ` · 端口 ${health.port}` : ""}
-        </span>
-      </div>
     </header>
   );
 }

@@ -20,7 +20,6 @@
  */
 import type {
   DaoUserInfo,
-  OfficialApiResponse,
   OfficialFileRecord,
   OfficialPlatformType,
   Platform,
@@ -62,16 +61,16 @@ export function parseSseDataLine(line: string): string | null {
 export function parseSseChunk(chunk: string): LoginSseEvent[] {
   const events: LoginSseEvent[] = [];
   let buffer = "";
-  let sawData = false;
+  let hasDataInMessage = false;
   for (const rawLine of chunk.split(/\r?\n/)) {
     if (rawLine === "") {
       // 消息结束（空行分隔）。官方服务端每条消息以一个 `\n\n` 结束。
-      if (sawData && buffer !== "") {
+      if (hasDataInMessage && buffer !== "") {
         const parsed = parseSsePayload(buffer);
         if (parsed) events.push(parsed);
       }
       buffer = "";
-      sawData = false;
+      hasDataInMessage = false;
       continue;
     }
     const line = rawLine.trimStart();
@@ -79,7 +78,7 @@ export function parseSseChunk(chunk: string): LoginSseEvent[] {
       const data = parseSseDataLine(line);
       if (data !== null) {
         buffer += (buffer === "" ? "" : "\n") + data;
-        sawData = true;
+        hasDataInMessage = true;
       }
       // 其它字段（event:/id:/retry:）忽略——官方只发 `data:`。
     }
@@ -134,6 +133,10 @@ export async function openLoginSse(options: {
     resolveResult = r;
     rejectResult = j;
   });
+  // 标记已处理，避免调用方只消费其中一条 promise 时触发 unhandled rejection；
+  // await 该 promise 的真实调用方仍能正常收到值或异常。
+  qrDone.catch(() => {});
+  resultDone.catch(() => {});
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -159,6 +162,12 @@ export async function openLoginSse(options: {
         }
         // 保留未闭合的尾部缓冲：一个消息可能跨多个网络分片到达。
         sseBuffer = takeTrailing(sseBuffer);
+        // 官方 /login 的 sse_stream 是死循环（不主动关流）；拿到结果后立刻断开，
+        // 避免连接与官方 active_queues 项残留到 dialog 关闭才释放。
+        if (resultResolved) {
+          ctrl.abort();
+          break;
+        }
       }
       // 流正常结束：登录流程完成前就断流 -> 视为失败（避免悬挂）。
       if (!resultResolved) {
@@ -208,37 +217,52 @@ interface RequestOptions {
 }
 
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
-  const body = (await res.json().catch(() => ({}))) as OfficialApiResponse<T>;
-  if (!res.ok || body.code !== 200) {
-    throw new Error(body.msg ?? `HTTP ${res.status}`);
+  // 先读文本再解析，避免 `res.json()` 直接抛在非 JSON 响应（如 500 错误页）上，
+  // 也避免 `.catch(() => ({}))` 静默吞掉 HTTP 状态——统一走 `body.msg ?? HTTP {status}`。
+  const text = await res.text().catch(() => "");
+  let body: { code?: number; msg?: string | null; data?: unknown } = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      // 非 JSON 响应按空处理：视为无错误体，靠 res.ok/status 判定
+    }
   }
-  return body.data;
+  if (!res.ok || (typeof body.code === "number" && body.code !== 200)) {
+    const label = body.msg ?? `HTTP ${res.status}`;
+    throw new Error(label);
+  }
+  return body.data as T;
+}
+
+/** 拉取官方账号列表并映射为 DaoUserInfo。path 为 /getAccounts 或 /getValidAccounts。 */
+async function fetchAccountRows(
+  baseUrl: string,
+  path: "/getAccounts" | "/getValidAccounts",
+  opts?: RequestOptions,
+): Promise<DaoUserInfo[]> {
+  const res = await fetch(
+    `${baseUrl}${path}`,
+    opts && opts.signal ? { signal: opts.signal } : undefined,
+  );
+  const data = await parseOfficialResponse<unknown[]>(res);
+  return mapRows(data, path);
 }
 
 /** 快速账号列表（不校验 cookie）。data: user_info 行数组。 */
-export async function getAccounts(
+export function getAccounts(
   baseUrl: string,
   opts?: RequestOptions,
 ): Promise<DaoUserInfo[]> {
-  const res = await fetch(
-    `${baseUrl}/getAccounts`,
-    opts && opts.signal ? { signal: opts.signal } : undefined,
-  );
-  const data = await parseOfficialResponse<unknown[]>(res);
-  return mapRows(data, "getAccounts");
+  return fetchAccountRows(baseUrl, "/getAccounts", opts);
 }
 
 /** 有效账号列表（逐个校验 cookie，失效则落库 status=0）。 */
-export async function getValidAccounts(
+export function getValidAccounts(
   baseUrl: string,
   opts?: RequestOptions,
 ): Promise<DaoUserInfo[]> {
-  const res = await fetch(
-    `${baseUrl}/getValidAccounts`,
-    opts && opts.signal ? { signal: opts.signal } : undefined,
-  );
-  const data = await parseOfficialResponse<unknown[]>(res);
-  return mapRows(data, "getValidAccounts");
+  return fetchAccountRows(baseUrl, "/getValidAccounts", opts);
 }
 
 /** 删除账号（仅 id），官方同时删除关联 cookie 文件。 */
@@ -260,16 +284,22 @@ function takeTrailing(sseBuffer: string): string {
   return lastBreak === -1 ? sseBuffer : sseBuffer.slice(lastBreak + 2);
 }
 
-/** 官方 getAccounts 返回：[id, type, filePath, userName, status] 行 -> DaoUserInfo。 */
+/** 官方 user_info 行 [id,type,filePath,userName,status] -> DaoUserInfo。type 须在 1-4 内，否则抛错。 */
+const OFFICIAL_TYPE_VALUES = new Set<number>([1, 2, 3, 4]);
+
 function mapRows(data: unknown[], from: string): DaoUserInfo[] {
   return data.map((row) => {
     if (!Array.isArray(row)) {
       throw new Error(`${from}: data 行应为数组，实际 ${typeof row}`);
     }
     const [id, type, filePath, userName, status] = row;
+    const typeNum = Number(type);
+    if (!OFFICIAL_TYPE_VALUES.has(typeNum)) {
+      throw new Error(`${from}: 未知平台类型 ${typeNum}（应为 1-4）`);
+    }
     return {
       id: Number(id),
-      type: type as DaoUserInfo["type"],
+      type: typeNum as DaoUserInfo["type"],
       filePath: String(filePath),
       userName: String(userName),
       status: Number(status),
@@ -277,19 +307,9 @@ function mapRows(data: unknown[], from: string): DaoUserInfo[] {
   });
 }
 
-interface OfficialResponse<T> {
-  code: number;
-  msg: string | null;
-  data: T;
-}
-
 async function request<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = init ? await fetch(`${base}${path}`, init) : await fetch(`${base}${path}`);
-  const body = (await res.json()) as OfficialResponse<T>;
-  if (!res.ok || body.code !== 200) {
-    throw new Error(body?.msg || `HTTP ${res.status}`);
-  }
-  return body.data;
+  return parseOfficialResponse<T>(res);
 }
 
 export const officialApi = {

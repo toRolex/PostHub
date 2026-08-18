@@ -9,7 +9,7 @@ import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
-  return { ok, status, json: async () => body };
+  return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
 /** 官方账号（含 cookieFile，供 accountList 构造用）。 */
