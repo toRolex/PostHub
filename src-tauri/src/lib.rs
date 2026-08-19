@@ -699,13 +699,6 @@ mod tests {
 
     #[test]
     fn filter_rejects_empty_exe_path() {
-        let exe = PathBuf::new();
-        let cmdline = "uv run --project /srv/daemon run_backend.py";
-        assert!(!matches_daemon_filter(&exe, cmdline, &linux_python_dir()));
-    }
-
-    #[test]
-    fn filter_rejects_when_exe_is_none_or_unavailable() {
         // exe 解析失败（空路径）：不命中
         assert!(!matches_daemon_filter(Path::new(""), "run_backend.py", &linux_python_dir()));
     }
