@@ -73,6 +73,7 @@ pub fn run() {
                     }
                     #[cfg(not(target_os = "windows"))]
                     let _ = child.kill();
+                    // 回收子进程句柄，避免 zombie；Windows taskkill 后同样需要 wait 释放 uv 句柄。
                     let _ = child.wait();
                 }
             }
