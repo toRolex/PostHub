@@ -8,14 +8,18 @@ PostHub 是 Tauri 2 桌面应用（Windows / macOS，无托盘）+ 常驻 Python
 | 角色 | SSH 别名 | 用户 | 说明 |
 |------|---------|------|------|
 | 生产机 | `prod-jump` | `zyt18` | 公司 Windows 机器，日常使用的主机（经跳板 `zyt` 连接） |
-| 测试/跳板机 | `zyt` | `zyt` | Tailscale 机器，兼作连生产机的跳板 |
+| 测试机 | `zyt` | `zyt` | 个人日常也在用的机器，兼作连生产机的跳板；PostHub 装包 / 升级 / 发布先在这台验证 |
 
 > 以上 SSH 别名与 `~/.ssh/config` 来自 brandflow 项目的 `docs/deployment.md`，两台机器为
 > PostHub 与 brandflow 共用。SSH 配置里的 `Host prod-jump`（`HostName 192.168.31.222`、
 > `User zyt18`、`ProxyJump zyt@100.121.152.103`）即 PostHub 生产机。
 >
-> 当前可达性（2026-08-17）：跳板机 `zyt2` 在 Tailscale 上为 `offline`，经它连生产机的
-> SSH 会超时；需先让跳板机 Tailscale 在线才能远程排查。
+> `zyt` 是个人日常也在用的测试机（勿当纯粹的空闲跳板），PostHub 装包 / 升级 / daemon 冷启动 /
+> CDP 接管账号 Chrome 也在这台验证。数据目录 `C:\Users\ziyua\.posthub\`，应用数据
+> `C:\Users\ziyua\AppData\Roaming\com.posthub.desktop\`。
+>
+> 当前可达性（2026-08-19 实测）：`ssh zyt` 与 `ssh prod-jump` 均通。跳板机走 Tailscale，
+> 若 `prod-jump` 超时，先确认 `zyt`（100.121.152.103）Tailscale 在线。
 
 ## 安装
 
@@ -70,7 +74,7 @@ gh release create v0.1.3 --title "PostHub v0.1.3" --generate-notes
 | `~/.posthub/profiles/` | 每账号独立 Chrome `user-data-dir`（登录态持久化在这） |
 | `~/.posthub/cookies/{账号id}.json` | 上传前从账号 Chrome 导出的 storage_state 快照（上游校验用） |
 
-生产机即 `C:\Users\zyt18\.posthub\`。可用环境变量 `POSTHUB_DATA_DIR` 覆盖（一般不用）。
+生产机即 `C:\Users\zyt18\.posthub\`；验证机 zyt 即 `C:\Users\ziyua\.posthub\`。可用环境变量 `POSTHUB_DATA_DIR` 覆盖（一般不用）。
 
 > 「账号 id」是 `account` 表主键（自增），不是平台名。例：`cookies/12.json` 是 id=12 的账号。
 > 登录态本体在 `profiles/<platform>-<port>/`；`cookies/*.json` 只是快照（见上表）。
@@ -167,12 +171,13 @@ sqlite3 C:\Users\zyt18\.posthub\posthub.db "select id,platform,cdp_port,status f
 目标机是 Windows，SSH 命令要用 `cmd /c` 包一层，且先切 UTF-8 避免中文乱码：
 
 ```bash
-# 生产机（经跳板）
+# 验证机 zyt / 生产机（经跳板）— 示例
+ssh zyt cmd /c "chcp 65001 >nul && dir C:\Users\ziyua\.posthub\cookies"
 ssh prod-jump cmd /c "chcp 65001 >nul && dir C:\Users\zyt18\.posthub\cookies"
 
 # 下拉 db / 日志到本机分析（路径用 /）
-scp prod-jump:"C:/Users/zyt18/.posthub/posthub.db" /tmp/
-scp prod-jump:"C:/Users/zyt18/AppData/Roaming/com.posthub.desktop/backend.log" /tmp/
+scp zyt:"C:/Users/ziyua/.posthub/posthub.db" /tmp/
+scp zyt:"C:/Users/ziyua/AppData/Roaming/com.posthub.desktop/backend.log" /tmp/
 iconv -f GBK -t UTF-8 /tmp/backend.log > /tmp/backend.utf8.log   # 中文日志转码
 ```
 
