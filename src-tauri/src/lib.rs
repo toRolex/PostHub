@@ -23,6 +23,13 @@ struct DaemonGuard(Mutex<Option<Child>>);
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例插件：双开 PostHub 时把请求转发到第一个实例并激活窗口，
+        // 避免重复拉起 daemon 抢占 5409。必须第一个注册。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(DaemonGuard(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
