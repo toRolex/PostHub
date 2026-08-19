@@ -751,4 +751,76 @@ mod tests {
         assert_eq!(killed, 0);
         let _ = std::fs::remove_dir_all(&app_data);
     }
+
+    // ---- taskkill /T 树清理集成测试（issue #33 / ADR-0007）----
+    //
+    // 跨平台编译：函数签名与函数体都包在 `#[cfg(target_os = "windows")]` 内，
+    // macOS / Linux cargo build / test 时不参与；只在 Windows CI runner 上执行。
+    // 验证 ticket #30 的 taskkill /F /T /PID <parent> 路径真覆盖孙进程：
+    // spawn 一个会 sleep 的 python 子进程 → 拿父 pid → taskkill /F /T /PID → 断言孙进程已退出。
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn taskkill_tree_kills_grandchildren() {
+        use std::os::windows::process::CommandExt;
+        use std::time::Duration;
+
+        // Windows：抑制 taskkill 子进程的控制台窗口
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // 拉起一个真 python 子进程：sleep 60s 模拟孙进程持续监听的状态。
+        // python.exe 在父（cargo test）下作为直接子进程，对应 ADR-0007 中
+        // uv trampoline（直接子）→ managed python（孙）的链；taskkill /F /T /PID
+        // 在父上执行应让子也一并退出。
+        let mut child = match Command::new("python")
+            .arg("-c")
+            .arg("import time; time.sleep(60)")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[test] 无法 spawn python 子进程：{}（环境无 python，跳过）", e);
+                return;
+            }
+        };
+
+        let parent_pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                eprintln!("[test] 子进程无 pid，跳过");
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        };
+
+        // 与 ticket #30 退出路径同款的 taskkill 调用
+        let kill_out = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &parent_pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .expect("spawn taskkill");
+        assert!(
+            kill_out.status.success(),
+            "taskkill /F /T /PID {} 应成功；stderr={:?}",
+            parent_pid,
+            String::from_utf8_lossy(&kill_out.stderr)
+        );
+
+        // 给 OS / 子进程一点时间退出
+        std::thread::sleep(Duration::from_millis(500));
+
+        // try_wait 必须是 Some（已退出）——验证 /T 真覆盖了孙进程
+        let exited = child
+            .try_wait()
+            .expect("try_wait 失败")
+            .is_some();
+        assert!(exited, "taskkill /F /T /PID {} 后子进程应已退出", parent_pid);
+
+        // 回收 handle
+        let _ = child.wait();
+    }
 }

@@ -166,6 +166,34 @@ notepad %APPDATA%\com.posthub.desktop\backend.log
 sqlite3 C:\Users\zyt18\.posthub\posthub.db "select id,platform,cdp_port,status from account;"
 ```
 
+### 5. 扫码登录异常自助排错（升级前 / 升级后均可用）
+
+对应 issue #29 User Story #12：v0.1.5 起桌面壳已在退出 + 启动两个时机清
+理进程树（taskkill /F /T 杀整条），5409 同名端口通常只剩一个 LISTEN。若升
+级后扫码登录仍异常，先**自助**确认端口状态（不直接改代码）：
+
+```cmd
+:: 1. 看 5409 上有几个 LISTEN。正常 = 1 个；多个 = 上轮关闭有孙进程未收掉。
+netstat -ano | findstr :5409 | findstr LISTENING
+```
+
+- 若只有 1 个 LISTEN → 与进程残留无关；改查 `backend.log` / `cookies/`（见 §1、§2）。
+- 若有多个 LISTEN → 应急清理（一次性的 taskkill，不替代桌面壳自动清扫）：
+
+```cmd
+:: 2. 把 5409 上所有 LISTEN 进程的 pid 逐个 taskkill /F /PID。
+::    注意：不带 /T（不像桌面壳的清扫），只杀 LISTEN 那一层；孙进程会在父死后被 uv 回收。
+for /f "tokens=5" %a in ('netstat -ano ^| findstr :5409 ^| findstr LISTENING') do taskkill /F /PID %a
+```
+
+```cmd
+:: 3. 确认只剩 0 个 LISTEN（PostHub 关掉的状态下），再重新打开 PostHub。
+netstat -ano | findstr :5409 | findstr LISTENING
+```
+
+重开后扫码登录应能正常出码；若仍异常，按 §1 排查 cookie 文件或 §2 排查
+`backend.log`，不再走本节。
+
 ## 远程连接（Windows 机器）
 
 目标机是 Windows，SSH 命令要用 `cmd /c` 包一层，且先切 UTF-8 避免中文乱码：
