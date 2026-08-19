@@ -27,6 +27,15 @@ export async function pickFolderPath(): Promise<string | null> {
   return pickFile({ title: "选择批次文件夹", directory: true });
 }
 
+/**
+ * 选择本地 Chrome 可执行文件路径（登录/上传用，作为 `LOCAL_CHROME_PATH`）。
+ * 跨平台：Windows 选 `chrome.exe`，macOS 选 `Google Chrome.app` 内的二进制。
+ * 不限定扩展名，让用户定位到具体可执行文件。
+ */
+export async function pickChromePath(): Promise<string | null> {
+  return pickFile({ title: "选择 Chrome 可执行文件（chrome.exe / Chrome 二进制）" });
+}
+
 async function pickFile(opts: OpenDialogOptions): Promise<string | null> {
   if (!isTauri()) {
     throw new Error("仅桌面应用环境支持路径选择");

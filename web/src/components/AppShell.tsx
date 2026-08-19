@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FilePlus2, Send, Timer, User } from "lucide-react";
+import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useViewStore, type View } from "../stores/view";
@@ -12,12 +12,14 @@ import { AccountsView } from "../views/AccountsView";
 import { FileView } from "../views/FileView";
 import { PublishView } from "../views/PublishView";
 import { ScheduleView } from "../views/ScheduleView";
+import { SettingsView } from "../views/SettingsView";
 
 const NAV_ITEMS: { view: View; label: string; icon: typeof Send }[] = [
   { view: "publish", label: "发布", icon: Send },
   { view: "files", label: "文件", icon: FilePlus2 },
   { view: "accounts", label: "账号", icon: User },
   { view: "schedule", label: "定时", icon: Timer },
+  { view: "settings", label: "设置", icon: Settings },
 ];
 
 async function loadDaemonUrl(): Promise<void> {
@@ -75,10 +77,11 @@ const NAV_ICONS: Record<View, typeof Send> = {
   files: FilePlus2,
   accounts: User,
   schedule: Timer,
+  settings: Settings,
 };
 
 function viewLabel(view: View): string {
-  return { publish: "发布", files: "文件", accounts: "账号", schedule: "定时" }[view];
+  return { publish: "发布", files: "文件", accounts: "账号", schedule: "定时", settings: "设置" }[view];
 }
 
 function Sidebar() {
@@ -117,6 +120,8 @@ function ShellView() {
       return <AccountsView />;
     case "schedule":
       return <ScheduleView />;
+    case "settings":
+      return <SettingsView />;
   }
 }
 

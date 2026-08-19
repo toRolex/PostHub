@@ -25,7 +25,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(DaemonGuard(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![get_daemon_url])
+        .invoke_handler(tauri::generate_handler![
+            get_daemon_url,
+            get_chrome_path,
+            set_chrome_path
+        ])
         .setup(|app| {
             spawn_daemon(app.handle().clone());
             Ok(())
@@ -193,6 +197,13 @@ fn spawn_daemon(app: AppHandle) {
     if let Some(browsers_path) = prepare_windows_runtime(&app) {
         cmd.env("PLAYWRIGHT_BROWSERS_PATH", browsers_path);
     }
+    // 用户配置的本地 Chrome 路径（设置页 → app_data/settings.json）注入环境变量，
+    // daemon conf.py 的 `LOCAL_CHROME_PATH = get("POSTHUB_LOCAL_CHROME_PATH", "")` 读取。
+    // 为空不注入，daemon 回落走自带 Chromium。
+    let chrome_path = read_chrome_path(&app);
+    if let Some(path) = chrome_path.filter(|p| !p.is_empty()) {
+        cmd.env("POSTHUB_LOCAL_CHROME_PATH", path);
+    }
     // 子进程 stdio 全量重定向：Windows GUI 进程（posthub.exe）spawn 的子进程若继承
     // stdout/stderr，Windows 会新建控制台窗口承载它们（每次打开弹终端）。重定向到日志文件
     // 同时补上后端失败原因不可见的缺陷。
@@ -328,6 +339,56 @@ fn get_daemon_url() -> String {
     DAEMON_URL.to_string()
 }
 
+/// settings.json 里承载用户本地 Chrome 路径的键。值语义 = `LOCAL_CHROME_PATH`
+/// （chrome.exe 可执行文件路径），daemon 以 `POSTHUB_LOCAL_CHROME_PATH` 环境变量读取。
+const SETTINGS_FILE: &str = "settings.json";
+const CHROME_PATH_KEY: &str = "chrome_path";
+
+/// 设置文件路径：`<app_data>/settings.json`。
+fn settings_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(SETTINGS_FILE))
+}
+
+/// 从 settings.json 读取配置的本地 Chrome 路径（空串 = 未配置 / 文件不存在）。
+fn read_chrome_path_from(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get(CHROME_PATH_KEY)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 写用户配置的本地 Chrome 路径到 settings.json。空串 = 清除配置。
+fn write_chrome_path_to(path: &Path, chrome_path: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let value = serde_json::json!({ CHROME_PATH_KEY: chrome_path });
+    std::fs::write(path, serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// 读用户配置的本地 Chrome 路径（空串 = 未配置）。
+fn read_chrome_path(app: &AppHandle) -> Option<String> {
+    let path = settings_path(app)?;
+    read_chrome_path_from(&path)
+}
+
+/// IPC：读当前配置的本地 Chrome 路径（未配置返回空串）。
+#[tauri::command]
+fn get_chrome_path(app: tauri::AppHandle) -> String {
+    read_chrome_path(&app).unwrap_or_default()
+}
+
+/// IPC：写入本地 Chrome 路径，供下次 daemon 启动注入 `POSTHUB_LOCAL_CHROME_PATH`。
+/// 空串表示清除配置。返回写入后的路径（含清除时返回空串）。
+#[tauri::command]
+fn set_chrome_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let settings = settings_path(&app).ok_or_else(|| "app_data 不可用".to_string())?;
+    write_chrome_path_to(&settings, path.trim())?;
+    Ok(read_chrome_path_from(&settings).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +426,35 @@ mod tests {
     fn returns_none_when_missing() {
         let resolved = resolve_daemon_dir("/nonexistent/src-tauri", Some("/nonexistent/daemon"));
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn settings_write_then_read_roundtrip() {
+        let dir = std::env::temp_dir().join("posthub-settings-roundtrip");
+        let file = dir.join("settings.json");
+        write_chrome_path_to(&file, "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").unwrap();
+        assert_eq!(
+            read_chrome_path_from(&file).as_deref(),
+            Some("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_clear_writes_empty() {
+        let dir = std::env::temp_dir().join("posthub-settings-clear");
+        let file = dir.join("settings.json");
+        write_chrome_path_to(&file, "C:\\chrome.exe").unwrap();
+        write_chrome_path_to(&file, "").unwrap();
+        assert_eq!(read_chrome_path_from(&file).as_deref(), Some(""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_missing_file_reads_none() {
+        let dir = std::env::temp_dir().join("posthub-settings-missing");
+        let file = dir.join("missing.json");
+        assert!(read_chrome_path_from(&file).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

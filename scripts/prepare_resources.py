@@ -170,24 +170,34 @@ def build_upstream_wheel(uv_bin: Path) -> Path:
 
 
 def fetch_chromium(uv_bin: Path) -> None:
-    """用 patchright CLI 预下载 Chromium（revision 与依赖版本匹配）到 resources/browser。
+    """用 patchright + playwright CLI 预下载 Chromium（revision 与依赖版本匹配）到 resources/browser。
 
     必须在目标 OS 的 runner 上执行：浏览器二进制平台相关，CI windows-latest 得到 win64 版。
     通过 PLAYWRIGHT_BROWSERS_PATH 把输出收敛到临时目录，再复制 chromium-*/ 到 resources/browser。
+
+    两个浏览器缺一不可——上传链路用 patchright（chromium-1208），登录链路
+    `myUtils/login.py` 用 playwright（chromium-1169）；只打包一个会让另一条链的
+    `launch()` 找不到浏览器而崩（#xx：登录二维码出不来的根因之一）。
     """
+    # (库版本, CLI 名)：CLI 名即 `uv tool run --from <spec> <cli> install chromium`。
+    # 版本必须与 daemon 依赖锁定一致（uv.lock），否则下载的 revision 对不上代码。
+    specs = [
+        ("patchright==1.58.2", "patchright"),
+        ("playwright==1.52.0", "playwright"),
+    ]
     if any((RESOURCES / "browser").glob("chromium-*")):
         print("[resources] chromium 已存在，跳过")
         return
     with tempfile.TemporaryDirectory() as tmpd:
         env = dict(os.environ)
         env["PLAYWRIGHT_BROWSERS_PATH"] = tmpd
-        r = subprocess.run(
-            [str(uv_bin), "tool", "run", "--from", "patchright==1.58.2",
-             "patchright", "install", "chromium"],
-            capture_output=True, text=True, env=env, timeout=900,
-        )
-        if r.returncode != 0:
-            raise RuntimeError(f"patchright install chromium 失败: {r.stderr[-500:]}")
+        for spec, cli in specs:
+            r = subprocess.run(
+                [str(uv_bin), "tool", "run", "--from", spec, cli, "install", "chromium"],
+                capture_output=True, text=True, env=env, timeout=900,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(f"{cli} install chromium 失败: {r.stderr[-500:]}")
         for d in Path(tmpd).glob("chromium-*"):
             shutil.copytree(d, RESOURCES / "browser" / d.name, dirs_exist_ok=True)
     print(f"[resources] chromium -> {RESOURCES / 'browser'}")
