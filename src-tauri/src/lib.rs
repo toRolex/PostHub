@@ -43,6 +43,35 @@ pub fn run() {
                     child_to_kill = g.take();
                 }
                 if let Some(mut child) = child_to_kill {
+                    // Windows：uv trampoline（直接子进程）→ managed python（孙进程跑 run_backend.py）
+                    // 只 kill 直接子进程会让孙进程成孤儿继续监听 5409。taskkill /T 杀整条进程树
+                    // （含孙进程的子代如 chromium.exe），CREATE_NO_WINDOW 抑制控制台窗口弹出。
+                    // 其他平台无进程树概念，沿用裸 kill 兜底。
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+                        if let Some(pid) = child.id() {
+                            match Command::new("taskkill")
+                                .args(["/F", "/T", "/PID", &pid.to_string()])
+                                .creation_flags(CREATE_NO_WINDOW)
+                                .output()
+                            {
+                                Ok(out) => {
+                                    if !out.status.success() {
+                                        eprintln!(
+                                            "[posthub] taskkill 退出码 {:?}：stdout={:?} stderr={:?}",
+                                            out.status.code(),
+                                            String::from_utf8_lossy(&out.stdout),
+                                            String::from_utf8_lossy(&out.stderr)
+                                        );
+                                    }
+                                }
+                                Err(e) => eprintln!("[posthub] taskkill 调用失败：{e}"),
+                            }
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
                     let _ = child.kill();
                     let _ = child.wait();
                 }
