@@ -33,6 +33,7 @@ EXCLUDE = {
     "__pycache__",
     "cookies",
     "logs",
+    "db",
     ".ruff_cache",
     ".pytest_cache",
     ".mypy_cache",
