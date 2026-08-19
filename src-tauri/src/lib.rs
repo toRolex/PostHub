@@ -107,13 +107,16 @@ fn resolve_bundled_uv(app: &AppHandle) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
-/// Windows 首次启动修复：把打包的 Chromium 首次复制到可写 app_data，返回 PLAYWRIGHT_BROWSERS_PATH 值。
+/// Windows 首次启动修复：把打包的 Chromium 复制到可写 app_data，返回 PLAYWRIGHT_BROWSERS_PATH 值。
 ///
-/// patchright wheel 不含浏览器本体，首次 launch 从海外 CDN 下载，经不可靠代理会失败
-/// （测试机实测 server closed abruptly）。构建期已用 `patchright install chromium` 把
-/// chromium-*/ 打进 resources/browser（prepare_resources.py），这里首次复制到
-/// `app_data/ms-playwright` 后通过 PLAYWRIGHT_BROWSERS_PATH 指过去，后端不再联网下浏览器。
-/// 资源目录（Program Files）只读，故复制到 app_data；已有则跳过。
+/// patchright/playwright wheel 不含浏览器本体，首次 launch 从海外 CDN 下载，经不可靠代理会失败
+/// （测试机实测 server closed abruptly）。构建期已把 chromium-* 打进 resources/browser
+/// （prepare_resources.py），这里复制到 `app_data/ms-playwright` 后通过 PLAYWRIGHT_BROWSERS_PATH
+/// 指过去，后端不再联网下浏览器。
+/// 资源目录（Program Files）只读，故复制到 app_data。**逐 chromium-* 增量补缺**：
+/// 旧版本只带 chromium-1208，升级到带 1169+1208 的新包时，若 app_data 已存在旧目录
+/// 会整体跳过复制，导致 playwright 要的 1169 永远缺（登录二维码出不来的升级场景根因）。
+/// 因此对每个源子目录，目标缺失才复制，目标已有同名则跳过（保留既有、只补新版本）。
 #[cfg(target_os = "windows")]
 fn prepare_windows_runtime(app: &AppHandle) -> Option<PathBuf> {
     let app_data = app.path().app_data_dir().ok()?;
@@ -129,6 +132,17 @@ fn prepare_windows_runtime(app: &AppHandle) -> Option<PathBuf> {
     let dst_browser = app_data.join("ms-playwright");
     if !dst_browser.exists() {
         let _ = copy_dir_all(&src_browser, &dst_browser);
+    } else {
+        // 增量补缺：升级场景下旧 app_data 可能缺新版带来的 chromium-*。
+        if let Ok(entries) = std::fs::read_dir(&src_browser) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let to = dst_browser.join(&name);
+                if !to.exists() {
+                    let _ = copy_dir_all(&entry.path(), &to);
+                }
+            }
+        }
     }
     dst_browser.is_dir().then_some(dst_browser)
 }

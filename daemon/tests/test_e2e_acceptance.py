@@ -66,15 +66,17 @@ def _post_json(url: str, payload: object) -> tuple[int, dict]:
         return e.code, json.loads(e.read())
 
 
-def _multipart_upload(
-    url: str, filename: str, content: bytes
-) -> tuple[int, dict]:
+def _multipart_upload(url: str, filename: str, content: bytes) -> tuple[int, dict]:
     boundary = uuid.uuid4().hex
     body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: video/mp4\r\n\r\n"
-    ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: video/mp4\r\n\r\n"
+        ).encode()
+        + content
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
     req = urllib.request.Request(
         url,
         data=body,
@@ -106,8 +108,7 @@ def _wait_ready(timeout: float = 25.0) -> bool:
 def backend(tmp_path_factory) -> Iterator[tuple[str, Path]]:
     """在隔离 BASE_DIR 启动官方后端，返回 (base url, BASE_DIR)；拆除时停进程。"""
     base = tmp_path_factory.mktemp("e2e")
-    # /uploadSave 会把文件写进 BASE_DIR/videoFile/，官方不自动建该目录 → 预建。
-    (base / "videoFile").mkdir(parents=True, exist_ok=True)
+    # 不预建 videoFile/：验证后端启动时补齐官方不自动建的数据目录（regression：上传 Errno 2）。
     env = {**os.environ, "POSTHUB_BASE_DIR": str(base)}
     assert not _tcp_ready(), "端口 5409 被占用，请先释放残留后端进程"
 
@@ -138,11 +139,19 @@ def test_backend_reachable_and_db_auto_initialized(backend: tuple[str, Path]) ->
     with sqlite3.connect(db_path) as conn:
         tables = {
             r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
     assert {"user_info", "file_records"} <= tables
+
+
+def test_video_file_dir_auto_created(backend: tuple[str, Path]) -> None:
+    """regression：后端启动即补齐官方不自动建的 videoFile/，否则 /uploadSave 首传抛 Errno 2。
+
+    fixture 不再预建该目录（见 backend fixture），此断言失败即复现生产机
+    「upload failed: [Errno 2] No such file or directory: .../videoFile/...」。
+    """
+    _, base = backend
+    assert (base / "videoFile").is_dir(), "后端应自动创建 videoFile/ 数据目录"
 
 
 def test_get_accounts_200_official_format(backend: tuple[str, Path]) -> None:
@@ -215,7 +224,9 @@ def test_upload_cookie_missing_file_error_relayed(backend: tuple[str, Path]) -> 
     assert body["msg"], "官方应返回非空错误信息"
 
 
-def test_download_cookie_missing_filepath_error_relayed(backend: tuple[str, Path]) -> None:
+def test_download_cookie_missing_filepath_error_relayed(
+    backend: tuple[str, Path],
+) -> None:
     """契约 smoke：/downloadCookie 缺 filePath → 官方 400 校验错误被中继。
 
     官方实现此处 HTTP 400 但 body `code:500`（sau_backend.py 内部写法不一致），
@@ -249,6 +260,4 @@ def test_upload_getfiles_delete_chain(backend: tuple[str, Path]) -> None:
 
     _, files_after_body = _get(f"{url}/getFiles")
     files_after = files_after_body["data"]
-    assert all(
-        r["file_path"] != stored for r in files_after
-    ), "删除后记录应消失"
+    assert all(r["file_path"] != stored for r in files_after), "删除后记录应消失"
