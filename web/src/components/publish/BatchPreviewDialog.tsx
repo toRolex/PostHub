@@ -23,7 +23,9 @@ import {
 } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
+import { PlatformLimitHint } from "./PlatformLimitHint";
 import { cn } from "../../lib/utils";
+import { selectWechatScheduledCount } from "../../stores/batchPublish";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
 export interface PreviewRow {
@@ -130,9 +132,8 @@ export function BatchPreviewDialog({
                           {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
                         </span>
                         {r.platform === "wechat" && (
-                          <div
-                            data-slot={`platform-limit-hint-dialog-${r.itemKey}`}
-                            aria-hidden="true"
+                          <PlatformLimitHint
+                            count={selectWechatScheduledCount(items, r.accountCookie)}
                           />
                         )}
                       </div>

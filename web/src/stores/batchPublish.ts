@@ -11,6 +11,23 @@ import { useDaemonStore } from "./daemon";
  * 整批共用 dailyTimes 池；result 按 (filePath, cookieFile) 稳定组合反馈。
  */
 
+/**
+ * 视频号单账号累计定时任务计数（issue #40）。
+ *
+ * 统计 `mode='timer'` 且 `accountIdsByPlatform.wechat` 包含该 cookieFile 的 item 数。
+ * 每个 item 只计一次（不重复——同一 item 多账号展开不被累加）。本批次内累计；跨批次
+ * 历史由官方兜底。
+ */
+export function selectWechatScheduledCount(items: BatchItem[], accountId: string): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.mode !== "timer") continue;
+    const wechatCookies = item.accountIdsByPlatform.wechat ?? [];
+    if (wechatCookies.includes(accountId)) count += 1;
+  }
+  return count;
+}
+
 interface BatchPublishState {
   items: BatchItem[];
   /** 整批共用时刻池，'HH:MM' 字符串数组。 */

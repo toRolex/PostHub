@@ -25,7 +25,9 @@ import { Switch } from "../ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { BatchPreviewDialog } from "./BatchPreviewDialog";
+import { PlatformLimitHint } from "./PlatformLimitHint";
 import type { BatchItem } from "../../types/batch";
+import { selectWechatScheduledCount } from "../../stores/batchPublish";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
@@ -464,9 +466,8 @@ export function BatchPublishSection() {
                                       />
                                       {a.name}
                                       {p === "wechat" && (
-                                        <div
-                                          data-slot={`platform-limit-hint-wechat-${a.cookieFile}`}
-                                          aria-hidden="true"
+                                        <PlatformLimitHint
+                                          count={selectWechatScheduledCount(items, a.cookieFile)}
                                         />
                                       )}
                                     </label>

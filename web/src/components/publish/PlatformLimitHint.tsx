@@ -6,22 +6,19 @@
  * - `count > limit`：深黄（warn deep）徽标「N/5」+ 文案「超出仅提示，提交由官方兜底」。
  *
  * 不抛错、不阻止提交；超阈值只展示，不拦截。
+ * DOM 测试可直接用 happy-dom 渲染；纯逻辑分支覆盖断言见 PlatformLimitHint.test.tsx。
  */
 
 import { cn } from "../../lib/utils";
-import { WECHAT_DAILY_LIMIT } from "../../types/batch";
 
 interface PlatformLimitHintProps {
-  /** 本批次该视频号账号累计定时任务数（由 selectWechatScheduledCountsByAccount 派生）。 */
+  /** 本批次该视频号账号累计定时任务数（由 selectWechatScheduledCount 派生）。 */
   count: number;
-  /** 视频号单日上限（默认 WECHAT_DAILY_LIMIT，与官方工作值对齐；待实测）。 */
+  /** 视频号单日上限（默认 5，与官方工作值对齐；待实测）。 */
   limit?: number;
 }
 
-export function PlatformLimitHint({
-  count,
-  limit = WECHAT_DAILY_LIMIT,
-}: PlatformLimitHintProps) {
+export function PlatformLimitHint({ count, limit = 5 }: PlatformLimitHintProps) {
   const exceeded = count > limit;
   return (
     <span
@@ -41,7 +38,7 @@ export function PlatformLimitHint({
         {count}/{limit}
       </span>
       <span className="text-caption">
-        {exceeded ? "超出仅提示，提交由官方兜底" : `本批次累计 ${count} 条定时任务`}
+        {exceeded ? "超出仅提示，提交由官方兜底" : "本批次累计 N 条定时任务".replace("N", String(count))}
       </span>
     </span>
   );
