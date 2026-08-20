@@ -4,8 +4,8 @@
  * 受控哑组件：props 由父组件（BatchPublishSection）传入；不读 store。
  * - 列项：视频名 / 目标平台与账号 / 模式 / 时刻 / 起始日。
  * - 「取消」调 onCancel；「确认发布」调 onConfirm（即 store.submit）。
- * - 视频号条目旁预留 `<div data-slot="platform-limit-hint-dialog-{itemKey}" />` 空挂点，
- *   待 #40 PlatformLimitHint 填充。
+ * - 视频号条目旁挂 PlatformLimitHint（issue #40），由 selectWechatScheduledCount
+ *   派生该账号本批次累计定时任务数；仅展示不拦截提交。
  *
  * 边界规则（issue #39）：不挂 store；只通过 props 渲染。
  */
