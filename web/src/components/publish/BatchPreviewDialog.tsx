@@ -25,7 +25,6 @@ import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
 import { PlatformLimitHint } from "./PlatformLimitHint";
 import { cn } from "../../lib/utils";
-import { selectWechatScheduledCount } from "../../stores/batchPublish";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
 export interface PreviewRow {
@@ -91,6 +90,18 @@ export function BatchPreviewDialog({
   const resultsByKey = new Map<string, BatchItemResult>();
   if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
+  // 视频号单账号累计定时任务数（避免每行重复遍历 items）
+  const wechatScheduledCounts = (() => {
+    const map = new Map<string, number>();
+    for (const item of items) {
+      if (item.mode !== "timer") continue;
+      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
+        map.set(cookie, (map.get(cookie) ?? 0) + 1);
+      }
+    }
+    return map;
+  })();
+
   return (
     <Dialog
       open={open}
@@ -133,7 +144,7 @@ export function BatchPreviewDialog({
                         </span>
                         {r.platform === "wechat" && (
                           <PlatformLimitHint
-                            count={selectWechatScheduledCount(items, r.accountCookie)}
+                            count={wechatScheduledCounts.get(r.accountCookie) ?? 0}
                           />
                         )}
                       </div>

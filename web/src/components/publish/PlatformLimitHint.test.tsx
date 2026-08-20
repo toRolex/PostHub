@@ -65,15 +65,18 @@ describe("PlatformLimitHint（视频号软提示徽标）", () => {
     expect(html).toContain("超出仅提示，提交由官方兜底");
   });
 
-  it("自定义 limit=10 → count=10 仍阈值内、count=11 超阈值", () => {
-    const html10 = renderHint({ count: 10, limit: 10 });
-    expect(html10).toContain('data-exceeded="false"');
-    expect(html10).toContain("10/10");
-    expect(html10).toContain("本批次累计 10 条定时任务");
-    const html11 = renderHint({ count: 11, limit: 10 });
-    expect(html11).toContain('data-exceeded="true"');
-    expect(html11).toContain("11/10");
-    expect(html11).toContain("超出仅提示，提交由官方兜底");
+  it("自定义 limit=10 + count=10 → 阈值内", () => {
+    const html = renderHint({ count: 10, limit: 10 });
+    expect(html).toContain('data-exceeded="false"');
+    expect(html).toContain("10/10");
+    expect(html).toContain("本批次累计 10 条定时任务");
+  });
+
+  it("自定义 limit=10 + count=11 → 超阈值", () => {
+    const html = renderHint({ count: 11, limit: 10 });
+    expect(html).toContain('data-exceeded="true"');
+    expect(html).toContain("11/10");
+    expect(html).toContain("超出仅提示，提交由官方兜底");
   });
 
   it("aria-label 含阈值描述，便于无障碍读屏", () => {
