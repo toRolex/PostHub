@@ -25,10 +25,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
 
 describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("无账号勾选 → accountSummary = '未选账号'", () => {
-    const s = summarizeItem(
-      mkItem({ accountIdsByPlatform: {} }),
-      new Set(),
-    );
+    const s = summarizeItem(mkItem({ accountIdsByPlatform: {} }));
     expect(s.accountSummary).toBe("未选账号");
     expect(s.totalAccounts).toBe(0);
   });
@@ -41,7 +38,6 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
           xiaohongshu: ["x1.json"],
         },
       }),
-      new Set(),
     );
     expect(s.totalAccounts).toBe(3);
     expect(s.platformCount).toBe(2);
@@ -49,7 +45,7 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   });
 
   it("mode='immediate' → modeSummary = '立即'", () => {
-    const s = summarizeItem(mkItem({ mode: "immediate" }), new Set());
+    const s = summarizeItem(mkItem({ mode: "immediate" }));
     expect(s.modeSummary).toBe("立即");
     expect(s.timeOfDayLabel).toBeNull();
     expect(s.startDaysLabel).toBeNull();
@@ -58,7 +54,6 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("mode='timer' + timeOfDay='10:00' + startDays=0 → 显示 '定时 10:00 · 起始 +0 天'", () => {
     const s = summarizeItem(
       mkItem({ mode: "timer", timeOfDay: "10:00", startDays: 0 }),
-      new Set(["10:00"]),
     );
     expect(s.modeSummary).toBe("定时");
     expect(s.timeOfDayLabel).toBe("10:00");
@@ -68,21 +63,19 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("mode='timer' 但 timeOfDay 未选 → modeSummary='定时 (待选时刻)' 标记未配置", () => {
     const s = summarizeItem(
       mkItem({ mode: "timer", timeOfDay: undefined, startDays: 0 }),
-      new Set(),
     );
     expect(s.modeSummary).toBe("定时 (待选时刻)");
     expect(s.timeOfDayLabel).toBeNull();
     expect(s.startDaysLabel).toBe("+0 天");
   });
 
-  it("accountSummary 在 dailyTimesSet 内影响显示与否无关", () => {
+  it("有账号 + timer 全配置 → accountSummary / timeOfDayLabel 都填充", () => {
     const s = summarizeItem(
       mkItem({
         accountIdsByPlatform: { douyin: ["d.json"] },
         mode: "timer",
         timeOfDay: "10:00",
       }),
-      new Set(["10:00"]),
     );
     expect(s.accountSummary).toBe("1 账号 / 1 平台");
     expect(s.timeOfDayLabel).toBe("10:00");

@@ -33,15 +33,15 @@ const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
-  /** 整型：所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
+  /** 所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
   totalAccounts: number;
-  /** 整型：所选平台数。 */
+  /** 所选平台数。 */
   platformCount: number;
   /** 例：'3 账号 / 2 平台' 或 '未选账号'。 */
   accountSummary: string;
   /** '立即' / '定时' / '定时 (待选时刻)'。 */
   modeSummary: string;
-  /** mode=timer 时 'HH:MM'；否则 null。 */
+  /** mode=timer 时 'HH:MM'；否则 null（用于徽标内拼接到 modeSummary 之后）。 */
   timeOfDayLabel: string | null;
   /** mode=timer 时 '+N 天'；否则 null。 */
   startDaysLabel: string | null;
@@ -50,29 +50,36 @@ export interface ItemSummary {
 /**
  * 计算单视频条目折叠态摘要。纯函数，便于不挂 DOM 单测。
  */
-export function summarizeItem(item: BatchItem, _dailyTimesSet: Set<string>): ItemSummary {
+export function summarizeItem(item: BatchItem): ItemSummary {
   const entries = Object.entries(item.accountIdsByPlatform) as [Platform, string[]][];
   const totalAccounts = entries.reduce(
     (acc, [, cookies]) => acc + (cookies ? cookies.length : 0),
     0,
   );
-  const platformCount = entries.filter(([, cookies]) => cookies && cookies.length > 0).length;
+  const platformCount = entries.filter(
+    ([, cookies]) => cookies && cookies.length > 0,
+  ).length;
   const accountSummary =
     totalAccounts === 0 ? "未选账号" : `${totalAccounts} 账号 / ${platformCount} 平台`;
 
-  let modeSummary: string;
-  let timeOfDayLabel: string | null;
-  let startDaysLabel: string | null;
   if (item.mode === "immediate") {
-    modeSummary = "立即";
-    timeOfDayLabel = null;
-    startDaysLabel = null;
-  } else {
-    modeSummary = item.timeOfDay ? "定时" : "定时 (待选时刻)";
-    timeOfDayLabel = item.timeOfDay ?? null;
-    startDaysLabel = item.startDays !== undefined ? `+${item.startDays} 天` : null;
+    return {
+      totalAccounts,
+      platformCount,
+      accountSummary,
+      modeSummary: "立即",
+      timeOfDayLabel: null,
+      startDaysLabel: null,
+    };
   }
-  return { totalAccounts, platformCount, accountSummary, modeSummary, timeOfDayLabel, startDaysLabel };
+  return {
+    totalAccounts,
+    platformCount,
+    accountSummary,
+    modeSummary: item.timeOfDay ? "定时" : "定时 (待选时刻)",
+    timeOfDayLabel: item.timeOfDay ?? null,
+    startDaysLabel: item.startDays !== undefined ? `+${item.startDays} 天` : null,
+  };
 }
 
 /**
@@ -98,7 +105,6 @@ export function BatchPublishSection() {
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const connected = useDaemonStore((s) => s.connected);
 
-  // 新模型 state
   const items = useBatchPublishStore((s) => s.items);
   const dailyTimes = useBatchPublishStore((s) => s.dailyTimes);
   const submitting = useBatchPublishStore((s) => s.submitting);
@@ -134,22 +140,23 @@ export function BatchPublishSection() {
   const allErrors = useBatchPublishStore.getState().validate();
   const errorsByFilePath = useMemo(() => {
     const map = new Map<string, string[]>();
-    items.forEach((item, idx) => {
+    const dailyTimesSet = new Set(dailyTimes);
+    items.forEach((item) => {
       const local: string[] = [];
       if (!item.title.trim()) local.push("标题不能为空");
-      const hasAccount =
-        (Object.values(item.accountIdsByPlatform) as string[][]).some(
-          (a) => a && a.length > 0,
-        );
+      const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
+        (a) => a && a.length > 0,
+      );
       if (!hasAccount) local.push("至少选一个账号");
       if (item.mode === "timer") {
-        const set = new Set(dailyTimes);
-        if (!item.timeOfDay || !set.has(item.timeOfDay)) local.push("定时未选时刻");
-        if (item.startDays === undefined || item.startDays < 0)
+        if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
+          local.push("定时未选时刻");
+        }
+        if (item.startDays === undefined || item.startDays < 0) {
           local.push("起始日非法");
+        }
       }
       if (local.length > 0) map.set(item.filePath, local);
-      void idx;
     });
     return map;
   }, [items, dailyTimes]);
@@ -187,8 +194,9 @@ export function BatchPublishSection() {
     }
   }
 
-  const dailyTimesSet = useMemo(() => new Set(dailyTimes), [dailyTimes]);
   const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
+  const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
+    useBatchPublishStore.getState();
 
   return (
     <section className="border-t border-border-soft py-6">
@@ -304,12 +312,8 @@ export function BatchPublishSection() {
         <ul className="flex flex-col gap-2">
           {items.map((item) => {
             const isExpanded = !!expandedMap[item.filePath];
-            const summary = summarizeItem(item, dailyTimesSet);
+            const summary = summarizeItem(item);
             const localErrors = errorsByFilePath.get(item.filePath) ?? [];
-            const itemRemove = useBatchPublishStore.getState().removeItem;
-            const itemUpdate = useBatchPublishStore.getState().updateItem;
-            const setItemMode = useBatchPublishStore.getState().setItemMode;
-            const setItemTimeOfDay = useBatchPublishStore.getState().setItemTimeOfDay;
             return (
               <li
                 key={item.filePath}
@@ -367,7 +371,7 @@ export function BatchPublishSection() {
                     className="ml-auto rounded-md p-1 text-meta transition-colors hover:bg-surface hover:text-danger"
                     onClick={(e) => {
                       e.stopPropagation();
-                      itemRemove(item.filePath);
+                      removeItem(item.filePath);
                     }}
                     aria-label={`从批量移除 ${item.filePath}`}
                   >
@@ -386,7 +390,7 @@ export function BatchPublishSection() {
                           value={item.title}
                           maxLength={60}
                           placeholder="视频标题"
-                          onChange={(e) => itemUpdate(item.filePath, { title: e.target.value })}
+                          onChange={(e) => updateItem(item.filePath, { title: e.target.value })}
                           aria-label={`${item.filePath} 标题`}
                         />
                       </div>
@@ -395,7 +399,7 @@ export function BatchPublishSection() {
                         <Input
                           value={item.tags}
                           placeholder="如 #批量 发布"
-                          onChange={(e) => itemUpdate(item.filePath, { tags: e.target.value })}
+                          onChange={(e) => updateItem(item.filePath, { tags: e.target.value })}
                           aria-label={`${item.filePath} 标签`}
                         />
                       </div>
@@ -405,7 +409,7 @@ export function BatchPublishSection() {
                       <Textarea
                         value={item.caption}
                         placeholder="正文 / 描述（折叠进 title 一起发到官方）"
-                        onChange={(e) => itemUpdate(item.filePath, { caption: e.target.value })}
+                        onChange={(e) => updateItem(item.filePath, { caption: e.target.value })}
                         aria-label={`${item.filePath} 描述`}
                       />
                     </div>
@@ -449,7 +453,7 @@ export function BatchPublishSection() {
                                           const next = checked
                                             ? cur.filter((c) => c !== a.cookieFile)
                                             : [...cur, a.cookieFile];
-                                          itemUpdate(item.filePath, {
+                                          updateItem(item.filePath, {
                                             accountIdsByPlatform: {
                                               ...item.accountIdsByPlatform,
                                               [p]: next,
@@ -525,7 +529,7 @@ export function BatchPublishSection() {
                               value={item.startDays ?? 0}
                               onChange={(e) => {
                                 const n = Number(e.target.value);
-                                itemUpdate(item.filePath, {
+                                updateItem(item.filePath, {
                                   startDays: Number.isInteger(n) && n >= 0 ? n : 0,
                                 });
                               }}
