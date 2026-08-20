@@ -11,9 +11,6 @@
 
 import type { Platform } from "../api/types";
 
-/** 视频号单账号单日定时任务软提示上限（与官方工作值对齐；仅 UI 展示，不拦截，issue #40）。 */
-export const WECHAT_DAILY_LIMIT = 5 as const;
-
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;
 
@@ -26,9 +23,6 @@ export type BatchMode = "immediate" | "timer";
  * 对应 issue #37 prototype 内联片段。shape 与内联一致，仅做 TS 化：
  * - filePath 必填（videoFile/ 下的磁盘文件名，即 file_records.file_path）。
  * - mode='timer' 时 startDays + timeOfDay 必填；timeOfDay 必须来自 dailyTimes 池。
- * - accountIdsByPlatform 字段名为「ids」语义沿用 PRD，但实际承载 cookie 文件名
- *   字符串数组 —— 命名沿用以最小化 PRD 改动；store 层做 number id ↔ string 映射。
- *   该选择让 buildBatchItemsFromMatrix 成为不依赖 accounts store 的纯函数。
  * - videosPerDay 不暴露（硬写 1），不在 type 上表达。
  */
 export interface BatchItem {
@@ -37,11 +31,8 @@ export interface BatchItem {
   caption: string;
   /** 标签输入态字符串（提交时 parseTags 拆分成数组）。 */
   tags: string;
-  /**
-   * 按平台选中的账号 cookie 文件名数组（cookiesFile/ 下的磁盘文件名）。
-   * 命名沿用 PRD 内联片段的 accountIdsByPlatform，但语义是 cookie 文件名。
-   */
-  accountIdsByPlatform: Partial<Record<Platform, string[]>>;
+  /** 按平台选中的账号 id（未选为空数组/缺省）。 */
+  accountIdsByPlatform: Partial<Record<Platform, number[]>>;
   mode: BatchMode;
   /** mode='timer' 必填；mode='immediate' 忽略。 */
   startDays?: number;
@@ -53,14 +44,12 @@ export interface BatchItem {
  * 单视频条目提交结果（按 item 维度反馈，不再按平台聚合）。
  *
  * 矩阵模式下同一平台可能有多个账号 → 展开为多个 PostVideoRequest 项，
- * 每项独立反馈；itemKey 用来稳定去重（filePath + cookieFile 组合）。
+ * 每项独立反馈；itemKey 用来稳定去重（filePath + accountId 组合）。
  */
 export interface BatchItemResult {
-  /** 稳定 key：filePath + "|" + cookieFile。便于 UI 按 key 渲染行反馈。 */
+  /** 稳定 key：filePath + "|" + accountId。便于 UI 按 key 渲染行反馈。 */
   itemKey: string;
   fileName: string;
-  /** 该展开项的账号 cookie 文件名（= itemKey 的后半段，免 split）。 */
-  cookieFile: string;
   platform: Platform;
   mode: BatchMode;
   /** mode='timer' 时透传。 */
