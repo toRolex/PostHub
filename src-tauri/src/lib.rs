@@ -69,24 +69,25 @@ pub fn run() {
                     {
                         use std::os::windows::process::CommandExt;
                         const CREATE_NO_WINDOW: u32 = 0x08000000;
-                        if let Some(pid) = child.id() {
-                            match Command::new("taskkill")
-                                .args(["/F", "/T", "/PID", &pid.to_string()])
-                                .creation_flags(CREATE_NO_WINDOW)
-                                .output()
-                            {
-                                Ok(out) => {
-                                    if !out.status.success() {
-                                        eprintln!(
-                                            "[posthub] taskkill 退出码 {:?}：stdout={:?} stderr={:?}",
-                                            out.status.code(),
-                                            String::from_utf8_lossy(&out.stdout),
-                                            String::from_utf8_lossy(&out.stderr)
-                                        );
-                                    }
+                        // std::process::Child::id() 在所有平台都返回 u32（不是 Option<u32>），
+                        // 之前的 if let Some(pid) 写法只在 Windows 编译才会报错。
+                        let pid = child.id();
+                        match Command::new("taskkill")
+                            .args(["/F", "/T", "/PID", &pid.to_string()])
+                            .creation_flags(CREATE_NO_WINDOW)
+                            .output()
+                        {
+                            Ok(out) => {
+                                if !out.status.success() {
+                                    eprintln!(
+                                        "[posthub] taskkill 退出码 {:?}：stdout={:?} stderr={:?}",
+                                        out.status.code(),
+                                        String::from_utf8_lossy(&out.stdout),
+                                        String::from_utf8_lossy(&out.stderr)
+                                    );
                                 }
-                                Err(e) => eprintln!("[posthub] taskkill 调用失败：{e}"),
                             }
+                            Err(e) => eprintln!("[posthub] taskkill 调用失败：{e}"),
                         }
                     }
                     #[cfg(not(target_os = "windows"))]

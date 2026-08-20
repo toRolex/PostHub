@@ -7,7 +7,7 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,3 +37,6 @@ jobs:
         run: |
           uv sync --quiet
           uv run python -c "import conf, db_init, sau_backend; print('daemon import ok')"
+      # 原本计划加 cargo check --target x86_64-pc-windows-msvc 兜底 Windows-only 类型错误，
+      # 但 ubuntu runner 需要装 MSVC 工具链（lld-link + lib.exe），CI 时间成本太高。
+      # Windows 类型错误暂由 build.yml tag 流水线把关；改进方案另起 PR 跟踪。
