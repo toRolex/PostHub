@@ -5,14 +5,13 @@ import type { BatchItem, BatchItemResult } from "../types/batch";
 import { useDaemonStore } from "./daemon";
 
 /**
- * 矩阵批量发布 store（issue #37 / #38 重写后形态；issue #39 接入新 UI 后清理旧适配层）。
+ * 矩阵批量发布 store。
  *
  * 模型：每视频一条 BatchItem，独立 title/caption/tags/accountIdsByPlatform/mode；
  * 整批共用 dailyTimes 池；result 按 (filePath, cookieFile) 稳定组合反馈。
  */
 
 interface BatchPublishState {
-  /* ── 新模型 ── */
   items: BatchItem[];
   /** 整批共用时刻池，'HH:MM' 字符串数组。 */
   dailyTimes: string[];
@@ -22,7 +21,6 @@ interface BatchPublishState {
   /** 预览 Dialog 开关。 */
   previewOpen: boolean;
 
-  /* ── 新 actions ── */
   addItem: (item: BatchItem) => void;
   removeItem: (filePath: string) => void;
   updateItem: (filePath: string, patch: Partial<BatchItem>) => void;
@@ -211,11 +209,5 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
     }
   },
 
-  reset: () =>
-    set({
-      ...initialBatchPublishState,
-      // 保留 action 引用（zustand 在 spread initial 时会丢失 actions）
-      // 实际上 zustand 的 create 返回的 store 在 reset 调用时，函数引用依然挂在 store 实例上
-      // —— 这里只需要重置状态字段
-    }),
+  reset: () => set({ ...initialBatchPublishState }),
 }));
