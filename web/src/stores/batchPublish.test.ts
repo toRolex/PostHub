@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   initialBatchPublishState,
+  selectWechatScheduledCount,
   useBatchPublishStore,
 } from "./batchPublish";
 import { useDaemonStore } from "./daemon";
@@ -355,5 +356,71 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect((s as unknown as Record<string, unknown>).selectedFiles).toBeUndefined();
     expect((s as unknown as Record<string, unknown>).accountIdsByPlatform).toBeUndefined();
     expect((s as unknown as Record<string, unknown>).batchResult).toBeUndefined();
+  });
+});
+
+/* ──────────── #40 selectWechatScheduledCount（视频号累计定时任务数） ──────────── */
+
+function mkWechatItem(over: Partial<{
+  filePath: string;
+  mode: "immediate" | "timer";
+  wechat: string[];
+}>): import("../types/batch").BatchItem {
+  return {
+    filePath: over.filePath ?? "a.mp4",
+    title: "t",
+    caption: "",
+    tags: "",
+    accountIdsByPlatform: { wechat: over.wechat ?? [] },
+    mode: over.mode ?? "immediate",
+  };
+}
+
+describe("selectWechatScheduledCount（视频号累计定时任务计数）", () => {
+  it("items 为空 → 返回 0", () => {
+    expect(selectWechatScheduledCount([], "w.json")).toBe(0);
+  });
+
+  it("单 item 单账号 + timer → 返回 1", () => {
+    const items = [mkWechatItem({ mode: "timer", wechat: ["w.json"] })];
+    expect(selectWechatScheduledCount(items, "w.json")).toBe(1);
+  });
+
+  it("单 item 多账号 + timer（账号 A） → 仅计 1（A 一次；不重复累加同 item 多账号）", () => {
+    const items = [mkWechatItem({ mode: "timer", wechat: ["w_a.json", "w_b.json"] })];
+    expect(selectWechatScheduledCount(items, "w_a.json")).toBe(1);
+    expect(selectWechatScheduledCount(items, "w_b.json")).toBe(1);
+  });
+
+  it("多 item 同账号 + timer → 累算 N 条", () => {
+    const items = [
+      mkWechatItem({ filePath: "a.mp4", mode: "timer", wechat: ["w.json"] }),
+      mkWechatItem({ filePath: "b.mp4", mode: "timer", wechat: ["w.json"] }),
+      mkWechatItem({ filePath: "c.mp4", mode: "timer", wechat: ["w.json"] }),
+    ];
+    expect(selectWechatScheduledCount(items, "w.json")).toBe(3);
+  });
+
+  it("mode='immediate' → 不计入（即便勾了该视频号账号）", () => {
+    const items = [mkWechatItem({ mode: "immediate", wechat: ["w.json"] })];
+    expect(selectWechatScheduledCount(items, "w.json")).toBe(0);
+  });
+
+  it("mode='timer' 但未勾视频号 → 不计入", () => {
+    const items = [
+      mkWechatItem({ mode: "timer", wechat: [] }),
+      mkWechatItem({ mode: "timer", wechat: ["w_other.json"] }),
+    ];
+    expect(selectWechatScheduledCount(items, "w.json")).toBe(0);
+  });
+
+  it("混合模式 + 跨账号 → 仅统计该账号的 timer 项", () => {
+    const items = [
+      mkWechatItem({ filePath: "a.mp4", mode: "timer", wechat: ["w_a.json"] }),
+      mkWechatItem({ filePath: "b.mp4", mode: "immediate", wechat: ["w_a.json"] }),
+      mkWechatItem({ filePath: "c.mp4", mode: "timer", wechat: ["w_b.json"] }),
+    ];
+    expect(selectWechatScheduledCount(items, "w_a.json")).toBe(1);
+    expect(selectWechatScheduledCount(items, "w_b.json")).toBe(1);
   });
 });
