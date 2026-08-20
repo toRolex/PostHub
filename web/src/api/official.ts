@@ -420,18 +420,11 @@ export function buildPostVideoRequest(input: {
   };
 }): PostVideoRequest {
   // 官方单个发布动作只针对单一平台（type 唯一）；多平台则由页面拆成多次提交。
-  let title = input.title;
-  const caption = input.caption?.trim();
-  if (caption) {
-    // 官方契约仅 title/tags 两处承载文本；正文（小红书/抖音以 title 作为正文，视频号作标题）
-    // 与标题拆分无官方字段承接，故合入 title 一并下发，避免信息丢失。
-    title = input.title ? `${input.title}\n${caption}` : caption;
-  }
   const body: PostVideoRequest = {
     fileList: input.files,
     accountList: input.accounts,
     type: OFFICIAL_PLATFORM_TYPE[input.platform],
-    title,
+    title: mergeTitleWithCaption(input.title, input.caption),
     tags: input.tags ?? [],
     enableTimer: false,
   };
@@ -444,6 +437,27 @@ export function buildPostVideoRequest(input: {
     body.startDays = input.timer.startDays;
   }
   return body;
+}
+
+/**
+ * 标题 + 描述折叠：官方契约仅 title/tags 两处承载文本；正文（小红书/抖音以 title 作正文，
+ * 视频号作标题）与标题拆分无官方字段承接，故合入 title 一并下发，避免信息丢失。
+ */
+export function mergeTitleWithCaption(title: string, caption?: string): string {
+  const trimmed = caption?.trim();
+  if (!trimmed) return title;
+  return title ? `${title}\n${trimmed}` : trimmed;
+}
+
+/**
+ * 前端 tags 输入态字符串 → 官方 tags 数组。按空白/逗号（中英文）拆，去前缀 `#`，去空白，去空串。
+ */
+export function parseTagsInput(tags: string): string[] {
+  if (!tags) return [];
+  return tags
+    .split(/[\s,，]+/)
+    .map((t) => t.replace(/^#+/, "").trim())
+    .filter(Boolean);
 }
 
 /* ───────────────────────── 批量发布（/postVideoBatch 契约）───────────────────────── */
@@ -498,12 +512,11 @@ export function parseHHMMToHour(hm: string): number {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
   if (!m) throw new Error(`dailyTimes 格式非法：${hm}（应为 HH:MM）`);
   const hour = Number(m[1]);
-  const minute = Number(m[2]);
   if (!Number.isInteger(hour) || hour < 0 || hour >= 24) {
     throw new Error(`dailyTimes 越界：${hm}（小时应在 0–23）`);
   }
   // 分钟字段语义保留（用于将来支持半点等）；当前版本按整点取整，丢弃 minute。
-  void minute;
+  void m[2];
   return Math.floor(hour);
 }
 
@@ -555,21 +568,15 @@ function buildOneMatrixItem(
   accountCookie: string,
   dailyTimesSet: Set<string>,
 ): PostVideoRequest {
-  // 标题/描述折叠与单视频发布规则一致（caption 合入 title）。
-  const trimmedCaption = item.caption?.trim() ?? "";
-  const title = trimmedCaption
-    ? item.title
-      ? `${item.title}\n${trimmedCaption}`
-      : trimmedCaption
-    : item.title;
+  const tags = parseTagsInput(item.tags);
 
   if (item.mode === "immediate") {
     return {
       fileList: [item.filePath],
       accountList: [accountCookie],
       type: OFFICIAL_PLATFORM_TYPE[platform],
-      title,
-      tags: item.tags ? item.tags.split(/[\s,，]+/).map((t) => t.replace(/^#+/, "").trim()).filter(Boolean) : [],
+      title: mergeTitleWithCaption(item.title, item.caption),
+      tags,
       enableTimer: false,
     };
   }
@@ -590,8 +597,8 @@ function buildOneMatrixItem(
     fileList: [item.filePath],
     accountList: [accountCookie],
     type: OFFICIAL_PLATFORM_TYPE[platform],
-    title,
-    tags: item.tags ? item.tags.split(/[\s,，]+/).map((t) => t.replace(/^#+/, "").trim()).filter(Boolean) : [],
+    title: mergeTitleWithCaption(item.title, item.caption),
+    tags,
     enableTimer: true,
     videosPerDay: 1,
     dailyTimes: [hour],
