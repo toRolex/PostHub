@@ -4,9 +4,8 @@
  * 受控哑组件：props 由父组件（BatchPublishSection）传入；不读 store。
  * - 列项：视频名 / 目标平台与账号 / 模式 / 时刻 / 起始日。
  * - 「取消」调 onCancel；「确认发布」调 onConfirm（即 store.submit）。
- * - 视频号条目旁挂 PlatformLimitHint（issue #40），count 从父组件传入的
- *   wechatCountsByAccount（selectWechatScheduledCountsByAccount 派生）按 cookieFile
- *   O(1) 读取；仅展示不拦截提交。
+ * - 视频号条目旁预留 `<div data-slot="platform-limit-hint-dialog-{itemKey}" />` 空挂点，
+ *   待 #40 PlatformLimitHint 填充。
  *
  * 边界规则（issue #39）：不挂 store；只通过 props 渲染。
  */
@@ -24,7 +23,6 @@ import {
 } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
-import { PlatformLimitHint } from "./PlatformLimitHint";
 import { cn } from "../../lib/utils";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
@@ -34,7 +32,7 @@ export interface PreviewRow {
   fileName: string;
   platform: Platform;
   /** 该平台下被勾选的账号 cookie 文件名。 */
-  cookieFile: string;
+  accountCookie: string;
   mode: BatchItem["mode"];
   timeOfDay?: string;
   startDays?: number;
@@ -57,7 +55,7 @@ export function buildPreviewRows(items: BatchItem[]): PreviewRow[] {
           itemKey: `${item.filePath}|${cookie}`,
           fileName: item.filePath,
           platform,
-          cookieFile: cookie,
+          accountCookie: cookie,
           mode: item.mode,
           timeOfDay: item.timeOfDay,
           startDays: item.startDays,
@@ -73,8 +71,6 @@ interface BatchPreviewDialogProps {
   items: BatchItem[];
   /** 提交反馈（用于在 Dialog 内展示）；可缺省。 */
   results?: BatchItemResult[] | null;
-  /** 视频号各账号本批次累计定时任务数（cookieFile → count）。 */
-  wechatCountsByAccount: Map<string, number>;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -86,11 +82,11 @@ export function BatchPreviewDialog({
   open,
   items,
   results,
-  wechatCountsByAccount,
   onConfirm,
   onCancel,
 }: BatchPreviewDialogProps) {
   const rows = buildPreviewRows(items);
+  const submitting = false; // 父组件持 submitting 状态时通过 open=false 关闭 Dialog 后再触发 submit；Dialog 期间不阻塞
   const resultsByKey = new Map<string, BatchItemResult>();
   if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
@@ -132,11 +128,12 @@ export function BatchPreviewDialog({
                       <div className="flex items-center gap-2">
                         <PlatformMark platform={r.platform} />
                         <span className="text-caption text-meta">
-                          {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.cookieFile}
+                          {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
                         </span>
                         {r.platform === "wechat" && (
-                          <PlatformLimitHint
-                            count={wechatCountsByAccount.get(r.cookieFile) ?? 0}
+                          <div
+                            data-slot={`platform-limit-hint-dialog-${r.itemKey}`}
+                            aria-hidden="true"
                           />
                         )}
                       </div>
@@ -181,10 +178,10 @@ export function BatchPreviewDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onCancel}>
+          <Button variant="ghost" onClick={onCancel} disabled={submitting}>
             取消
           </Button>
-          <Button variant="primary" onClick={onConfirm}>
+          <Button variant="primary" onClick={onConfirm} disabled={submitting}>
             确认发布
           </Button>
         </DialogFooter>
