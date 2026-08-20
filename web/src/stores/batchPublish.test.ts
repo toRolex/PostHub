@@ -2,18 +2,53 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   initialBatchPublishState,
-  selectWechatScheduledCount,
   useBatchPublishStore,
 } from "./batchPublish";
 import { useDaemonStore } from "./daemon";
+import { useAccountsStore, initialAccountsState } from "./accounts";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
+/** 官方账号（含 cookieFile，供 accountList 构造用）。 */
+const ACCOUNTS = [
+  {
+    id: 1,
+    platform: "douyin",
+    name: "抖音一号",
+    status: 1,
+    cookieFile: "douyin_a.json",
+    typeNum: 3,
+    cookieValid: true,
+  },
+  {
+    id: 2,
+    platform: "douyin",
+    name: "抖音二号",
+    status: 1,
+    cookieFile: "douyin_b.json",
+    typeNum: 3,
+    cookieValid: true,
+  },
+  {
+    id: 3,
+    platform: "xiaohongshu",
+    name: "小红书A",
+    status: 1,
+    cookieFile: "xhs_a.json",
+    typeNum: 1,
+    cookieValid: true,
+  },
+];
+
 describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () => {
   beforeEach(() => {
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
+    useAccountsStore.setState({
+      ...initialAccountsState,
+      accounts: ACCOUNTS as never,
+    });
     useBatchPublishStore.setState(initialBatchPublishState);
   });
 
@@ -348,79 +383,78 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(s.submitting).toBe(false);
   });
 
-  it("旧接口字段（title/tags/selectedFiles/accountIdsByPlatform/batchResult）已从 state 移除", () => {
-    // #39 清理后，新 store 不再暴露旧字段（适配层删除）。
+  /* ──────────── 旧接口适配层（#02 切换时统一删除） ──────────── */
+
+  it("适配层：setForm(title/tags) 写入共享字段", () => {
+    const { setForm } = useBatchPublishStore.getState();
+    setForm({ title: "旧组件标题", tags: "tag1 tag2" });
+    expect(useBatchPublishStore.getState().title).toBe("旧组件标题");
+    expect(useBatchPublishStore.getState().tags).toBe("tag1 tag2");
+  });
+
+  it("适配层：setSelectedFiles -> 同步 push items（每文件一个 item）", () => {
+    const { setSelectedFiles } = useBatchPublishStore.getState();
+    setSelectedFiles(["a.mp4", "b.mp4"]);
     const s = useBatchPublishStore.getState();
-    expect((s as unknown as Record<string, unknown>).title).toBeUndefined();
-    expect((s as unknown as Record<string, unknown>).tags).toBeUndefined();
-    expect((s as unknown as Record<string, unknown>).selectedFiles).toBeUndefined();
-    expect((s as unknown as Record<string, unknown>).accountIdsByPlatform).toBeUndefined();
-    expect((s as unknown as Record<string, unknown>).batchResult).toBeUndefined();
-  });
-});
-
-/* ──────────── #40 selectWechatScheduledCount（视频号累计定时任务数） ──────────── */
-
-function mkWechatItem(over: Partial<{
-  filePath: string;
-  mode: "immediate" | "timer";
-  wechat: string[];
-}>): import("../types/batch").BatchItem {
-  return {
-    filePath: over.filePath ?? "a.mp4",
-    title: "t",
-    caption: "",
-    tags: "",
-    accountIdsByPlatform: { wechat: over.wechat ?? [] },
-    mode: over.mode ?? "immediate",
-  };
-}
-
-describe("selectWechatScheduledCount（视频号累计定时任务计数）", () => {
-  it("items 为空 → 返回 0", () => {
-    expect(selectWechatScheduledCount([], "w.json")).toBe(0);
+    expect(s.selectedFiles).toEqual(["a.mp4", "b.mp4"]);
+    // 适配层把 selectedFiles 同步到 items（每个 file 一个 item）
+    expect(s.items.map((i) => i.filePath)).toEqual(["a.mp4", "b.mp4"]);
   });
 
-  it("单 item 单账号 + timer → 返回 1", () => {
-    const items = [mkWechatItem({ mode: "timer", wechat: ["w.json"] })];
-    expect(selectWechatScheduledCount(items, "w.json")).toBe(1);
+  it("适配层：setPlatformAccountIds(平台, ids) -> 把 id 映射为 cookie 文件名写入对应 item", () => {
+    const { setSelectedFiles, setPlatformAccountIds } =
+      useBatchPublishStore.getState();
+    setSelectedFiles(["a.mp4"]);
+    setPlatformAccountIds("douyin", [1, 2]);
+    const item = useBatchPublishStore.getState().items[0];
+    expect(item.accountIdsByPlatform.douyin).toEqual([
+      "douyin_a.json",
+      "douyin_b.json",
+    ]);
   });
 
-  it("单 item 多账号 + timer（账号 A） → 仅计 1（A 一次；不重复累加同 item 多账号）", () => {
-    const items = [mkWechatItem({ mode: "timer", wechat: ["w_a.json", "w_b.json"] })];
-    expect(selectWechatScheduledCount(items, "w_a.json")).toBe(1);
-    expect(selectWechatScheduledCount(items, "w_b.json")).toBe(1);
+  it("适配层：validate(submit) 校验通过后走 buildBatchItemsFromMatrix（旧组件调用链）", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ code: 200, msg: null, data: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { setForm, setSelectedFiles, setPlatformAccountIds } =
+      useBatchPublishStore.getState();
+    setForm({ title: "旧标题", tags: "tag" });
+    setSelectedFiles(["a.mp4"]);
+    setPlatformAccountIds("douyin", [1]);
+
+    await useBatchPublishStore.getState().submit();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    // 旧组件一条 selectedFiles × 一个平台 = 1 项
+    expect(body).toHaveLength(1);
+    expect(body[0].fileList).toEqual(["a.mp4"]);
+    expect(body[0].accountList).toEqual(["douyin_a.json"]);
+    expect(body[0].title).toBe("旧标题");
+    expect(body[0].tags).toEqual(["tag"]);
   });
 
-  it("多 item 同账号 + timer → 累算 N 条", () => {
-    const items = [
-      mkWechatItem({ filePath: "a.mp4", mode: "timer", wechat: ["w.json"] }),
-      mkWechatItem({ filePath: "b.mp4", mode: "timer", wechat: ["w.json"] }),
-      mkWechatItem({ filePath: "c.mp4", mode: "timer", wechat: ["w.json"] }),
-    ];
-    expect(selectWechatScheduledCount(items, "w.json")).toBe(3);
-  });
-
-  it("mode='immediate' → 不计入（即便勾了该视频号账号）", () => {
-    const items = [mkWechatItem({ mode: "immediate", wechat: ["w.json"] })];
-    expect(selectWechatScheduledCount(items, "w.json")).toBe(0);
-  });
-
-  it("mode='timer' 但未勾视频号 → 不计入", () => {
-    const items = [
-      mkWechatItem({ mode: "timer", wechat: [] }),
-      mkWechatItem({ mode: "timer", wechat: ["w_other.json"] }),
-    ];
-    expect(selectWechatScheduledCount(items, "w.json")).toBe(0);
-  });
-
-  it("混合模式 + 跨账号 → 仅统计该账号的 timer 项", () => {
-    const items = [
-      mkWechatItem({ filePath: "a.mp4", mode: "timer", wechat: ["w_a.json"] }),
-      mkWechatItem({ filePath: "b.mp4", mode: "immediate", wechat: ["w_a.json"] }),
-      mkWechatItem({ filePath: "c.mp4", mode: "timer", wechat: ["w_b.json"] }),
-    ];
-    expect(selectWechatScheduledCount(items, "w_a.json")).toBe(1);
-    expect(selectWechatScheduledCount(items, "w_b.json")).toBe(1);
+  it("适配层：reset 同时清空新旧两套状态", () => {
+    const { setForm, setSelectedFiles, setPlatformAccountIds, reset } =
+      useBatchPublishStore.getState();
+    setForm({ title: "t", tags: "tag" });
+    setSelectedFiles(["a.mp4"]);
+    setPlatformAccountIds("douyin", [1]);
+    reset();
+    const s = useBatchPublishStore.getState();
+    expect(s.title).toBe("");
+    expect(s.tags).toBe("");
+    expect(s.selectedFiles).toEqual([]);
+    expect(s.accountIdsByPlatform).toEqual({
+      douyin: [],
+      xiaohongshu: [],
+      wechat: [],
+      kuaishou: [],
+    });
+    expect(s.items).toEqual([]);
   });
 });
