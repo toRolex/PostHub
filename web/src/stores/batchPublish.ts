@@ -115,7 +115,6 @@ function aggregateByPlatform(results: BatchItemResult[]): NonNullable<
   const byPlatform: Partial<
     Record<Platform, { ok: boolean; msg: string }>
   > = {};
-  let okCount = 0;
   for (const r of results) {
     const cur = byPlatform[r.platform];
     if (!cur) {
@@ -125,10 +124,43 @@ function aggregateByPlatform(results: BatchItemResult[]): NonNullable<
       byPlatform[r.platform] = { ok: false, msg: r.msg };
     }
   }
+  let okCount = 0;
   for (const v of Object.values(byPlatform)) {
-    if (v?.ok) okCount += 1;
+    if (v.ok) okCount += 1;
   }
   return { total: Object.keys(byPlatform).length, okCount, items: byPlatform };
+}
+
+/**
+ * 把 items × 平台 × 账号展开为 itemResults（每 (item, platform, account) 一条）。
+ * 用于 submit 的成功 / 失败两个分支。
+ */
+function expandItemResults(
+  items: BatchItem[],
+  ok: boolean,
+  msg: string,
+): BatchItemResult[] {
+  const out: BatchItemResult[] = [];
+  for (const item of items) {
+    for (const [platform, cookies] of Object.entries(item.accountIdsByPlatform) as [
+      Platform,
+      string[],
+    ][]) {
+      for (const cookie of cookies) {
+        out.push({
+          itemKey: `${item.filePath}|${cookie}`,
+          fileName: item.filePath,
+          platform,
+          mode: item.mode,
+          timeOfDay: item.timeOfDay,
+          startDays: item.startDays,
+          ok,
+          msg,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -299,60 +331,22 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
     });
 
     const request = buildBatchItemsFromMatrix(itemsWithCookies, s.dailyTimes);
-    const submittingResults: BatchItemResult[] = [];
 
     set({ submitting: true });
     try {
       await officialApi.postVideoBatch(base, request);
-      // 成功：每请求项生成一条反馈
-      for (const item of itemsWithCookies) {
-        for (const [platform, cookies] of Object.entries(item.accountIdsByPlatform) as [
-          Platform,
-          string[],
-        ][]) {
-          for (const cookie of cookies) {
-            submittingResults.push({
-              itemKey: `${item.filePath}|${cookie}`,
-              fileName: item.filePath,
-              platform,
-              mode: item.mode,
-              timeOfDay: item.timeOfDay,
-              startDays: item.startDays,
-              ok: true,
-              msg: "批量发布任务已提交",
-            });
-          }
-        }
-      }
+      const itemResults = expandItemResults(itemsWithCookies, true, "批量发布任务已提交");
       set({
-        itemResults: submittingResults,
-        batchResult: aggregateByPlatform(submittingResults),
+        itemResults,
+        batchResult: aggregateByPlatform(itemResults),
       });
     } catch (e) {
       // 请求级错误：每项独立标识失败 + 透传 msg
       const msg = e instanceof Error ? e.message : String(e);
-      for (const item of itemsWithCookies) {
-        for (const [platform, cookies] of Object.entries(item.accountIdsByPlatform) as [
-          Platform,
-          string[],
-        ][]) {
-          for (const cookie of cookies) {
-            submittingResults.push({
-              itemKey: `${item.filePath}|${cookie}`,
-              fileName: item.filePath,
-              platform,
-              mode: item.mode,
-              timeOfDay: item.timeOfDay,
-              startDays: item.startDays,
-              ok: false,
-              msg,
-            });
-          }
-        }
-      }
+      const itemResults = expandItemResults(itemsWithCookies, false, msg);
       set({
-        itemResults: submittingResults,
-        batchResult: aggregateByPlatform(submittingResults),
+        itemResults,
+        batchResult: aggregateByPlatform(itemResults),
       });
       throw e;
     } finally {
