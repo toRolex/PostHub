@@ -28,6 +28,9 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **桌面壳进程树** | 桌面壳 spawn 官方后端时的进程链：直接子进程 = `uv` trampoline（v0.1.4 起 `AppData\Roaming\com.posthub.desktop\venv\Scripts\python.exe`）；孙进程 = managed python（`AppData\Roaming\com.posthub.desktop\python\cpython-3.11...\python.exe`）；孙进程跑 `run_backend.py`。治理见 ADR-0007。 |
 | **进程树清理** | 桌面壳在退出 / 启动两个时机的治理（ADR-0007）：退出用 `taskkill /F /T /PID <child.id()>` + `child.wait()`；启动前 `sweep_stale_daemons` 用 `sysinfo::System::new_all()` 枚举进程，过滤「`app_data_dir()/python` 路径前缀」+「cmdline 含 `run_backend.py`」双重条件后逐个 `taskkill /T` 杀树。 |
 | **孤儿 daemon** | 桌面壳关窗口 / 崩溃 / 被强杀时，孙进程 managed python 因未被 spawn_daemon 的直接 `child.kill()` 覆盖而残留，**继续监听 5409**。每次重新打开 PostHub 都会刷一对新链路，**多次开关导致 N 对链路并存**，新链路因端口被占而抢不到连接——表现为扫码登录 SSE 一直 0 字节。 |
+| **矩阵批量** | 「批量发布」区段的产品形态（issue #37/#38/#39）：每视频一条 BatchItem（独立标题 / 描述 / 标签 / 账号 / 定时模式），不再笛卡尔展开成「标题 × 账号」共享一份内容。提交时一行 BatchItem 展开为多条 PostVideoRequest（每账号一条），一次 POST `/postVideoBatch`。 |
+| **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上、提交时由 `buildBatchItemsFromMatrix` 按整点取整映射回 0–23 整型数组下发。 |
+| **无 CLI** | PostHub 不发布命令行工具（`posthub` CLI / `ph` 子命令等）；所有交互走桌面壳 GUI。官方 `sau_backend.py` 仍由桌面壳作为子进程拉起（不在用户 shell 暴露）。PostHub 用户面对的「官方后端」只通过桌面壳的 HTTP/SSE seam 触达。 |
 
 ## 平台约束注册表（已实测/调研）
 
@@ -35,7 +38,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 |---|---|---|---|---|---|
 | 抖音 | `douyin` | 2h | 2h ~ 14 天 | — | 强制（自动选推荐封面） |
 | 小红书 | `xiaohongshu` | **1h** | 2h ~ 7 天 | — | 缺封面自动取首帧 |
-| 微信视频号 | `wechat` | 2h | 2h ~ 1 个月 | 5 条/日（工作值，待实测） | 缺封面自动取首帧 |
+| 微信视频号 | `wechat` | 2h | 2h ~ 1 个月 | 本批次该账号累计定时任务数（UI 仅展示本批次，跨批次历史由官方兜底） | 缺封面自动取首帧 |
 
 > 注：以上注册表来自历史调研，官方后端的实际定时约束以官方实现为准；自研前端不重复实现这些约束的校验，违规由官方返回错误。
 
@@ -53,7 +56,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 
 ## 待验证项（真实账号实测后回填）
 
-- 平台边界值（A 组遗留，未实测，保留为已知未确认值）：`max_scheduled_per_day=5`（视频号单日上限）；抖音时长/视频号大小/小红书缺封面取首帧等官方实际约束。
+- 平台边界值（A 组遗留，未实测，保留为已知未确认值）：视频号单日上限（UI 侧以本批次累计 5 条为软提示阈值 `warn`/`warn-deep`，仅展示不拦截；跨批次历史由官方兜底校验）；抖音时长/视频号大小/小红书缺封面取首帧等官方实际约束。
 - 官方后端线程模型在桌面壳内的稳定性：`sse_stream` 轮询式 SSE、`run_async_function` 每路事件循环、`MAX_CONTENT_LENGTH=160MB`、默认 `host=0.0.0.0:5409` 的暴露面是否需要改为仅本机。
 - 官方 `database.db` 初始化时机与首次运行引导（官方要求手工建库/删建，封装时做成首次启动自动建库）。
 
