@@ -36,4 +36,4 @@ jobs:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/posthub-smoke-venv
         run: |
           uv sync --quiet
-          uv run python -c "import run_backend; print('daemon import ok')"
+          uv run python -c "import conf, db_init, sau_backend; print('daemon import ok')"
