@@ -31,7 +31,7 @@ jobs:
         run: pnpm lint || true
 
       - name: Daemon import smoke
-        working-directory: src-tauri/resources/daemon
+        working-directory: daemon
         env:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/posthub-smoke-venv
         run: |
