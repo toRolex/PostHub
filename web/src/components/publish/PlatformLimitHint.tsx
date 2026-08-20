@@ -6,7 +6,6 @@
  * - `count > limit`：深黄（warn deep）徽标「N/5」+ 文案「超出仅提示，提交由官方兜底」。
  *
  * 不抛错、不阻止提交；超阈值只展示，不拦截。
- * DOM 测试可直接用 happy-dom 渲染；纯逻辑分支覆盖断言见 PlatformLimitHint.test.tsx。
  */
 
 import { cn } from "../../lib/utils";
@@ -38,7 +37,7 @@ export function PlatformLimitHint({ count, limit = 5 }: PlatformLimitHintProps) 
         {count}/{limit}
       </span>
       <span className="text-caption">
-        {exceeded ? "超出仅提示，提交由官方兜底" : "本批次累计 N 条定时任务".replace("N", String(count))}
+        {exceeded ? "超出仅提示，提交由官方兜底" : `本批次累计 ${count} 条定时任务`}
       </span>
     </span>
   );
