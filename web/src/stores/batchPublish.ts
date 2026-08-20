@@ -275,9 +275,11 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
   removeDailyTime: (hm) =>
     set((s) => ({
       dailyTimes: s.dailyTimes.filter((t) => t !== hm),
-      // 顺手清理被引用 item 的 timeOfDay（这些 item 引用了 dailyTimes 池中已删除项）
+      // 顺手清理被引用 item 的 timeOfDay（这些 item 引用了 dailyTimes 池中已删除项）；
+      // 设为 undefined 让 validateBatch 与 buildBatchItemsFromMatrix 的 timer 校验拒绝通过，
+      // 避免非法提交。
       items: s.items.map((i) =>
-        i.timeOfDay === hm ? { ...i, timeOfDay: "" } : i,
+        i.timeOfDay === hm ? { ...i, timeOfDay: undefined } : i,
       ),
     })),
 
