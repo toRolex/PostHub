@@ -19,6 +19,10 @@ jobs:
         with:
           version: 10
 
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
       - name: Install frontend deps
         run: pnpm --dir web install --frozen-lockfile
 
@@ -26,15 +30,10 @@ jobs:
         working-directory: web
         run: pnpm lint || true
 
-      - name: Stage daemon resources + platform uv
-        run: python3 scripts/prepare_resources.py
-
       - name: Daemon import smoke
-        shell: bash
+        working-directory: src-tauri/resources/daemon
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/posthub-smoke-venv
         run: |
-          cd src-tauri/resources/daemon
-          UV_BIN="$(ls ../bin/uv-* | head -1)"
-          export POSTHUB_BASE_DIR="$RUNNER_TEMP/posthub-smoke-base"
-          mkdir -p "$POSTHUB_BASE_DIR"
-          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync --quiet
-          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python -c "import run_backend; print('daemon import ok')"
+          uv sync --quiet
+          uv run python -c "import run_backend; print('daemon import ok')"
