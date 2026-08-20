@@ -7,7 +7,7 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,3 +37,9 @@ jobs:
         run: |
           uv sync --quiet
           uv run python -c "import conf, db_init, sau_backend; print('daemon import ok')"
+
+      - name: Cross-check Windows target (catches #[cfg(windows)] type errors)
+        working-directory: src-tauri
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --target x86_64-pc-windows-msvc
