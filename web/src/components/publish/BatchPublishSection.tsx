@@ -10,11 +10,7 @@ import {
 } from "lucide-react";
 import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
-import {
-  selectWechatScheduledCountsByAccount,
-  useBatchPublishStore,
-  validateByFilePath,
-} from "../../stores/batchPublish";
+import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
 import type { Platform } from "../../api/types";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
@@ -29,7 +25,6 @@ import { Switch } from "../ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { BatchPreviewDialog } from "./BatchPreviewDialog";
-import { PlatformLimitHint } from "./PlatformLimitHint";
 import type { BatchItem } from "../../types/batch";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
@@ -38,34 +33,53 @@ const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
+  /** 整型：所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
+  totalAccounts: number;
+  /** 整型：所选平台数。 */
+  platformCount: number;
   /** 例：'3 账号 / 2 平台' 或 '未选账号'。 */
   accountSummary: string;
-  /** '立即' / '定时 · HH:MM' / '定时 (待选时刻)'。 */
-  modeChip: string;
+  /** '立即' / '定时' / '定时 (待选时刻)'。 */
+  modeSummary: string;
+  /** mode=timer 时 'HH:MM'；否则 null。 */
+  timeOfDayLabel: string | null;
+  /** mode=timer 时 '+N 天'；否则 null。 */
+  startDaysLabel: string | null;
 }
 
 /**
  * 计算单视频条目折叠态摘要。纯函数，便于不挂 DOM 单测。
  */
-export function summarizeItem(item: BatchItem): ItemSummary {
+export function summarizeItem(item: BatchItem, _dailyTimesSet: Set<string>): ItemSummary {
   const entries = Object.entries(item.accountIdsByPlatform) as [Platform, string[]][];
   const totalAccounts = entries.reduce(
     (acc, [, cookies]) => acc + (cookies ? cookies.length : 0),
     0,
   );
-  const platformCount = entries.filter(
-    ([, cookies]) => cookies && cookies.length > 0,
-  ).length;
+  const platformCount = entries.filter(([, cookies]) => cookies && cookies.length > 0).length;
   const accountSummary =
     totalAccounts === 0 ? "未选账号" : `${totalAccounts} 账号 / ${platformCount} 平台`;
 
+  let modeSummary: string;
+  let timeOfDayLabel: string | null;
+  let startDaysLabel: string | null;
   if (item.mode === "immediate") {
-    return { accountSummary, modeChip: "立即" };
+    modeSummary = "立即";
+    timeOfDayLabel = null;
+    startDaysLabel = null;
+  } else {
+    modeSummary = item.timeOfDay ? "定时" : "定时 (待选时刻)";
+    timeOfDayLabel = item.timeOfDay ?? null;
+    startDaysLabel = item.startDays !== undefined ? `+${item.startDays} 天` : null;
   }
-  return {
-    accountSummary,
-    modeChip: item.timeOfDay ? `定时 · ${item.timeOfDay}` : "定时 (待选时刻)",
-  };
+  return { totalAccounts, platformCount, accountSummary, modeSummary, timeOfDayLabel, startDaysLabel };
+}
+
+/**
+ * 顶部 chip 池展示顺序：去重 + HH:MM 字典序排序（'09:00' < '10:00' < '14:30'）。
+ */
+export function summarizeDailyTimes(dailyTimes: string[]): string[] {
+  return Array.from(new Set(dailyTimes)).sort();
 }
 
 /* ─────────────────────── 组件 ─────────────────────── */
@@ -84,6 +98,7 @@ export function BatchPublishSection() {
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const connected = useDaemonStore((s) => s.connected);
 
+  // 新模型 state
   const items = useBatchPublishStore((s) => s.items);
   const dailyTimes = useBatchPublishStore((s) => s.dailyTimes);
   const submitting = useBatchPublishStore((s) => s.submitting);
@@ -94,6 +109,7 @@ export function BatchPublishSection() {
   const addDailyTime = useBatchPublishStore((s) => s.addDailyTime);
   const removeDailyTime = useBatchPublishStore((s) => s.removeDailyTime);
   const submit = useBatchPublishStore((s) => s.submit);
+  const reset = useBatchPublishStore((s) => s.reset);
 
   useEffect(() => {
     void fetchFiles();
@@ -114,29 +130,52 @@ export function BatchPublishSection() {
   const itemsByPath = useMemo(() => new Set(items.map((i) => i.filePath)), [items]);
   const availableToAdd = videos.filter((v) => !itemsByPath.has(v.file_path));
 
-  // 每 item 错误（filePath → 错误列表）；提交按钮 disabled 也读这份 Map，避免与 validate() 双算
-  const errorsByFilePath = useMemo(
-    () => validateByFilePath(items, dailyTimes),
-    [items, dailyTimes],
-  );
+  // 整批错误聚合 + 每 item 错误
+  const allErrors = useBatchPublishStore.getState().validate();
+  const errorsByFilePath = useMemo(() => {
+    const map = new Map<string, string[]>();
+    items.forEach((item, idx) => {
+      const local: string[] = [];
+      if (!item.title.trim()) local.push("标题不能为空");
+      const hasAccount =
+        (Object.values(item.accountIdsByPlatform) as string[][]).some(
+          (a) => a && a.length > 0,
+        );
+      if (!hasAccount) local.push("至少选一个账号");
+      if (item.mode === "timer") {
+        const set = new Set(dailyTimes);
+        if (!item.timeOfDay || !set.has(item.timeOfDay)) local.push("定时未选时刻");
+        if (item.startDays === undefined || item.startDays < 0)
+          local.push("起始日非法");
+      }
+      if (local.length > 0) map.set(item.filePath, local);
+      void idx;
+    });
+    return map;
+  }, [items, dailyTimes]);
 
   // 每行折叠/展开状态（key = filePath）
-  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
-  const expandedAll = items.length > 0 && expandedSet.size === items.length;
-  const collapsedAll = expandedSet.size === 0;
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const expandedAll =
+    items.length > 0 && items.every((i) => expandedMap[i.filePath]);
+  const collapsedAll =
+    items.length > 0 && items.every((i) => !expandedMap[i.filePath]);
   function toggleRow(filePath: string): void {
-    setExpandedSet((prev) => {
-      const next = new Set(prev);
-      if (next.has(filePath)) next.delete(filePath);
-      else next.add(filePath);
-      return next;
-    });
+    setExpandedMap((m) => ({ ...m, [filePath]: !m[filePath] }));
   }
   function expandAll(): void {
-    setExpandedSet(new Set(items.map((i) => i.filePath)));
+    const next: Record<string, boolean> = {};
+    items.forEach((i) => {
+      next[i.filePath] = true;
+    });
+    setExpandedMap(next);
   }
   function collapseAll(): void {
-    setExpandedSet(new Set());
+    const next: Record<string, boolean> = {};
+    items.forEach((i) => {
+      next[i.filePath] = false;
+    });
+    setExpandedMap(next);
   }
 
   async function handleConfirmPreview(): Promise<void> {
@@ -148,19 +187,8 @@ export function BatchPublishSection() {
     }
   }
 
-  // wechatCountsByAccount: cookieFile -> 本账号 timer 项数；用于视频号 chip 软提示（含预览 Dialog）
-  const wechatCountsByAccount = useMemo(
-    () => selectWechatScheduledCountsByAccount(items),
-    [items],
-  );
-
-  // 顶部 chip 池展示顺序：去重 + HH:MM 字典序排序（'09:00' < '10:00' < '14:30'）
-  const sortedDailyTimes = useMemo(
-    () => Array.from(new Set(dailyTimes)).sort(),
-    [dailyTimes],
-  );
-  const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
-    useBatchPublishStore.getState();
+  const dailyTimesSet = useMemo(() => new Set(dailyTimes), [dailyTimes]);
+  const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
 
   return (
     <section className="border-t border-border-soft py-6">
@@ -275,9 +303,13 @@ export function BatchPublishSection() {
       ) : (
         <ul className="flex flex-col gap-2">
           {items.map((item) => {
-            const isExpanded = expandedSet.has(item.filePath);
-            const summary = summarizeItem(item);
+            const isExpanded = !!expandedMap[item.filePath];
+            const summary = summarizeItem(item, dailyTimesSet);
             const localErrors = errorsByFilePath.get(item.filePath) ?? [];
+            const itemRemove = useBatchPublishStore.getState().removeItem;
+            const itemUpdate = useBatchPublishStore.getState().updateItem;
+            const setItemMode = useBatchPublishStore.getState().setItemMode;
+            const setItemTimeOfDay = useBatchPublishStore.getState().setItemTimeOfDay;
             return (
               <li
                 key={item.filePath}
@@ -306,9 +338,9 @@ export function BatchPublishSection() {
                     <span
                       className={cn(
                         "rounded-sm px-1.5 py-0.5",
-                        summary.accountSummary === "未选账号"
-                          ? "bg-danger-tint text-danger-deep"
-                          : "bg-accent-tint text-accent-ink",
+                        summary.totalAccounts > 0
+                          ? "bg-accent-tint text-accent-ink"
+                          : "bg-danger-tint text-danger-deep",
                       )}
                     >
                       {summary.accountSummary}
@@ -316,16 +348,17 @@ export function BatchPublishSection() {
                     <span
                       className={cn(
                         "rounded-sm px-1.5 py-0.5",
-                        item.mode === "immediate" || item.timeOfDay
+                        item.mode === "immediate" || summary.timeOfDayLabel
                           ? "bg-surface-warm text-fg-2"
                           : "bg-danger-tint text-danger-deep",
                       )}
                     >
-                      {summary.modeChip}
+                      {summary.modeSummary}
+                      {summary.timeOfDayLabel ? ` · ${summary.timeOfDayLabel}` : ""}
                     </span>
-                    {item.mode === "timer" && item.startDays !== undefined && (
+                    {summary.startDaysLabel && (
                       <span className="rounded-sm bg-surface-warm px-1.5 py-0.5 text-fg-2">
-                        起始 +{item.startDays} 天
+                        起始 {summary.startDaysLabel}
                       </span>
                     )}
                   </span>
@@ -334,7 +367,7 @@ export function BatchPublishSection() {
                     className="ml-auto rounded-md p-1 text-meta transition-colors hover:bg-surface hover:text-danger"
                     onClick={(e) => {
                       e.stopPropagation();
-                      removeItem(item.filePath);
+                      itemRemove(item.filePath);
                     }}
                     aria-label={`从批量移除 ${item.filePath}`}
                   >
@@ -353,7 +386,7 @@ export function BatchPublishSection() {
                           value={item.title}
                           maxLength={60}
                           placeholder="视频标题"
-                          onChange={(e) => updateItem(item.filePath, { title: e.target.value })}
+                          onChange={(e) => itemUpdate(item.filePath, { title: e.target.value })}
                           aria-label={`${item.filePath} 标题`}
                         />
                       </div>
@@ -362,7 +395,7 @@ export function BatchPublishSection() {
                         <Input
                           value={item.tags}
                           placeholder="如 #批量 发布"
-                          onChange={(e) => updateItem(item.filePath, { tags: e.target.value })}
+                          onChange={(e) => itemUpdate(item.filePath, { tags: e.target.value })}
                           aria-label={`${item.filePath} 标签`}
                         />
                       </div>
@@ -372,7 +405,7 @@ export function BatchPublishSection() {
                       <Textarea
                         value={item.caption}
                         placeholder="正文 / 描述（折叠进 title 一起发到官方）"
-                        onChange={(e) => updateItem(item.filePath, { caption: e.target.value })}
+                        onChange={(e) => itemUpdate(item.filePath, { caption: e.target.value })}
                         aria-label={`${item.filePath} 描述`}
                       />
                     </div>
@@ -416,7 +449,7 @@ export function BatchPublishSection() {
                                           const next = checked
                                             ? cur.filter((c) => c !== a.cookieFile)
                                             : [...cur, a.cookieFile];
-                                          updateItem(item.filePath, {
+                                          itemUpdate(item.filePath, {
                                             accountIdsByPlatform: {
                                               ...item.accountIdsByPlatform,
                                               [p]: next,
@@ -427,8 +460,9 @@ export function BatchPublishSection() {
                                       />
                                       {a.name}
                                       {p === "wechat" && (
-                                        <PlatformLimitHint
-                                          count={wechatCountsByAccount.get(a.cookieFile) ?? 0}
+                                        <div
+                                          data-slot={`platform-limit-hint-wechat-${a.cookieFile}`}
+                                          aria-hidden="true"
                                         />
                                       )}
                                     </label>
@@ -489,12 +523,12 @@ export function BatchPublishSection() {
                               min={0}
                               className="h-8 w-[80px]"
                               value={item.startDays ?? 0}
-                              onChange={(e) =>
-                                // startDays clamp 唯一入口在 store.updateItem
-                                updateItem(item.filePath, {
-                                  startDays: Number(e.target.value),
-                                })
-                              }
+                              onChange={(e) => {
+                                const n = Number(e.target.value);
+                                itemUpdate(item.filePath, {
+                                  startDays: Number.isInteger(n) && n >= 0 ? n : 0,
+                                });
+                              }}
                               aria-label={`${item.filePath} 起始日`}
                             />
                           </div>
@@ -522,9 +556,7 @@ export function BatchPublishSection() {
       <div className="mt-4 flex items-center gap-3">
         <Button
           variant="primary"
-          disabled={
-            !connected || submitting || items.length === 0 || errorsByFilePath.size > 0
-          }
+          disabled={!connected || submitting || items.length === 0 || allErrors.length > 0}
           onClick={openPreview}
         >
           <Send className="size-4" />
@@ -533,6 +565,9 @@ export function BatchPublishSection() {
         {!connected && (
           <span className="text-caption text-meta">守护进程未连接，无法发布</span>
         )}
+        <Button variant="ghost" size="sm" onClick={reset}>
+          重置
+        </Button>
       </div>
 
       {/* 整体反馈（按 item 维度） */}
@@ -557,7 +592,7 @@ export function BatchPublishSection() {
                 <p className="font-semibold">
                   <span className="tabular-nums">{r.fileName}</span>
                   <span className="ml-2 text-caption text-muted">
-                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.cookieFile}
+                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.itemKey.split("|")[1]}
                   </span>
                 </p>
                 {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
@@ -572,7 +607,6 @@ export function BatchPublishSection() {
         open={previewOpen}
         items={items}
         results={itemResults}
-        wechatCountsByAccount={wechatCountsByAccount}
         onConfirm={() => void handleConfirmPreview()}
         onCancel={closePreview}
       />
