@@ -25,6 +25,7 @@ import type {
   Platform,
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
+import type { BatchItem } from "../types/batch";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -483,4 +484,117 @@ export function buildPostVideoBatchRequest(input: {
     tags: input.tags ?? [],
     enableTimer: false,
   }));
+}
+
+/* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
+
+/**
+ * 把 "HH:MM" 字符串解析为官方整型小时（0-23）。非整点按 Math.floor 取整；
+ * 越界（>= 24 或负数 / 非数字）抛错。不静默丢弃（验收硬要求）。
+ *
+ * 例：parseHHMMToHour("10:00") -> 10；"14:30" -> 14；"24:00" -> 抛错。
+ */
+export function parseHHMMToHour(hm: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
+  if (!m) throw new Error(`dailyTimes 格式非法：${hm}（应为 HH:MM）`);
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isInteger(hour) || hour < 0 || hour >= 24) {
+    throw new Error(`dailyTimes 越界：${hm}（小时应在 0–23）`);
+  }
+  // 分钟字段语义保留（用于将来支持半点等）；当前版本按整点取整，丢弃 minute。
+  void minute;
+  return Math.floor(hour);
+}
+
+/**
+ * 矩阵批量表单 → 官方 /postVideoBatch 请求体（issue #38）。
+ *
+ * 与旧 buildPostVideoBatchRequest 的语义差异：
+ * - 旧：按平台笛卡尔展开（一个平台一项，fileList = 全部所选文件，accountList = 该平台账号）。
+ * - 新：按「每视频×每账号」展开（一个 (item, platform, accountId) 一个 postVideo 项）；
+ *       同一平台多账号展开为多个 postVideo 项（result 维度变化的原因）。
+ *
+ * 模式：
+ * - mode='immediate'：enableTimer: false；严格不带 timer 四字段
+ *   （enableTimer/videosPerDay/dailyTimes/startDays 都不在请求体键集合里）。
+ * - mode='timer'：enableTimer: true；videosPerDay 硬写 1（不暴露）；dailyTimes
+ *   从 item.timeOfDay 解析（按整点取整回官方 0–23 整数）；startDays 透传。
+ *
+ * 校验：
+ * - item.timeOfDay 必须命中 dailyTimes 池（防止 UI 与提交语义漂移）。
+ * - dailyTimes 越界（HH:MM 解析后 hour >= 24）抛错。
+ *
+ * 命名约定：函数名 buildBatchItemsFromMatrix 沿用 issue #37 PRD 命名。
+ */
+export function buildBatchItemsFromMatrix(
+  items: BatchItem[],
+  dailyTimes: string[],
+): PostVideoRequest[] {
+  const dailyTimesSet = new Set(dailyTimes);
+  const result: PostVideoRequest[] = [];
+  for (const item of items) {
+    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
+      Platform,
+      string[],
+    ][]) {
+      if (!accounts || accounts.length === 0) continue;
+      // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
+      for (const accountCookie of accounts) {
+        result.push(buildOneMatrixItem(item, platform, accountCookie, dailyTimesSet));
+      }
+    }
+  }
+  return result;
+}
+
+/** 单个 (item, platform, account) → PostVideoRequest。 */
+function buildOneMatrixItem(
+  item: BatchItem,
+  platform: Platform,
+  accountCookie: string,
+  dailyTimesSet: Set<string>,
+): PostVideoRequest {
+  // 标题/描述折叠与单视频发布规则一致（caption 合入 title）。
+  const trimmedCaption = item.caption?.trim() ?? "";
+  const title = trimmedCaption
+    ? item.title
+      ? `${item.title}\n${trimmedCaption}`
+      : trimmedCaption
+    : item.title;
+
+  if (item.mode === "immediate") {
+    return {
+      fileList: [item.filePath],
+      accountList: [accountCookie],
+      type: OFFICIAL_PLATFORM_TYPE[platform],
+      title,
+      tags: item.tags ? item.tags.split(/[\s,，]+/).map((t) => t.replace(/^#+/, "").trim()).filter(Boolean) : [],
+      enableTimer: false,
+    };
+  }
+
+  // mode='timer'
+  if (item.timeOfDay === undefined || item.startDays === undefined) {
+    throw new Error(
+      `mode='timer' 必须提供 startDays 与 timeOfDay（item=${item.filePath}）`,
+    );
+  }
+  if (!dailyTimesSet.has(item.timeOfDay)) {
+    throw new Error(
+      `item.timeOfDay="${item.timeOfDay}" 不在 dailyTimes 池中（${Array.from(dailyTimesSet).join(", ")}）`,
+    );
+  }
+  const hour = parseHHMMToHour(item.timeOfDay);
+  return {
+    fileList: [item.filePath],
+    accountList: [accountCookie],
+    type: OFFICIAL_PLATFORM_TYPE[platform],
+    title,
+    tags: item.tags ? item.tags.split(/[\s,，]+/).map((t) => t.replace(/^#+/, "").trim()).filter(Boolean) : [],
+    enableTimer: true,
+    videosPerDay: 1,
+    dailyTimes: [hour],
+    startDays: item.startDays,
+  };
 }
