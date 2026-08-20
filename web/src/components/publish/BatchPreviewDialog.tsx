@@ -86,7 +86,6 @@ export function BatchPreviewDialog({
   onCancel,
 }: BatchPreviewDialogProps) {
   const rows = buildPreviewRows(items);
-  const submitting = false; // 父组件持 submitting 状态时通过 open=false 关闭 Dialog 后再触发 submit；Dialog 期间不阻塞
   const resultsByKey = new Map<string, BatchItemResult>();
   if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
@@ -178,10 +177,10 @@ export function BatchPreviewDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onCancel} disabled={submitting}>
+          <Button variant="ghost" onClick={onCancel}>
             取消
           </Button>
-          <Button variant="primary" onClick={onConfirm} disabled={submitting}>
+          <Button variant="primary" onClick={onConfirm}>
             确认发布
           </Button>
         </DialogFooter>
