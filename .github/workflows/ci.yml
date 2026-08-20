@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install frontend deps
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Frontend lint
+        working-directory: web
+        run: pnpm lint || true
+
+      - name: Stage daemon resources + platform uv
+        run: python3 scripts/prepare_resources.py
+
+      - name: Daemon import smoke
+        shell: bash
+        run: |
+          cd src-tauri/resources/daemon
+          UV_BIN="$(ls ../bin/uv-* | head -1)"
+          export POSTHUB_BASE_DIR="$RUNNER_TEMP/posthub-smoke-base"
+          mkdir -p "$POSTHUB_BASE_DIR"
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync --quiet
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python -c "import run_backend; print('daemon import ok')"
