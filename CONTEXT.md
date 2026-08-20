@@ -1,7 +1,7 @@
 # CONTEXT.md — PostHub（发布中枢）
 
 > single-context 领域文档。术语与决策的唯一事实来源；改术语先改这里，再改代码。
-> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`、`docs/adr/0004-desktop-packaging.md`、`docs/adr/0005-scheduler-rules-single-source.md`、`docs/adr/0006-official-backend-thin-wrapper.md`。
+> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`、`docs/adr/0004-desktop-packaging.md`、`docs/adr/0005-scheduler-rules-single-source.md`、`docs/adr/0006-official-backend-thin-wrapper.md`、`docs/adr/0007-daemon-process-lifecycle-cleanup.md`。
 
 ## 领域
 
@@ -25,6 +25,9 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **定时发布** | 官方后端 `/postVideo` 的 `enableTimer` 语义：`videos_per_day` / `daily_times` / `start_days`。 |
 | **seam** | 前端 ↔ 官方后端的 **HTTP / SSE 接口契约**（`/upload`、`/login`、`/postVideo` 等）。一切自研前端功能必须落在该 seam 之上。 |
 | **平台** | 抖音 `douyin` / 小红书 `xiaohongshu` / 视频号 `wechat`。官方后端用整型标识：1=小红书 2=视频号 3=抖音 4=快手。 |
+| **桌面壳进程树** | 桌面壳 spawn 官方后端时的进程链：直接子进程 = `uv` trampoline（v0.1.4 起 `AppData\Roaming\com.posthub.desktop\venv\Scripts\python.exe`）；孙进程 = managed python（`AppData\Roaming\com.posthub.desktop\python\cpython-3.11...\python.exe`）；孙进程跑 `run_backend.py`。治理见 ADR-0007。 |
+| **进程树清理** | 桌面壳在退出 / 启动两个时机的治理（ADR-0007）：退出用 `taskkill /F /T /PID <child.id()>` + `child.wait()`；启动前 `sweep_stale_daemons` 用 `sysinfo::System::new_all()` 枚举进程，过滤「`app_data_dir()/python` 路径前缀」+「cmdline 含 `run_backend.py`」双重条件后逐个 `taskkill /T` 杀树。 |
+| **孤儿 daemon** | 桌面壳关窗口 / 崩溃 / 被强杀时，孙进程 managed python 因未被 spawn_daemon 的直接 `child.kill()` 覆盖而残留，**继续监听 5409**。每次重新打开 PostHub 都会刷一对新链路，**多次开关导致 N 对链路并存**，新链路因端口被占而抢不到连接——表现为扫码登录 SSE 一直 0 字节。 |
 
 ## 平台约束注册表（已实测/调研）
 

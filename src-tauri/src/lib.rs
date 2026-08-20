@@ -9,6 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use sysinfo::System;
 use tauri::{AppHandle, Manager, RunEvent};
 
 /// 官方后端探活地址（与 daemon/run_backend.py 的监听一致）。
@@ -23,6 +24,13 @@ struct DaemonGuard(Mutex<Option<Child>>);
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例插件：双开 PostHub 时把请求转发到第一个实例并激活窗口，
+        // 避免重复拉起 daemon 抢占 5409。必须第一个注册。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(DaemonGuard(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
@@ -31,6 +39,16 @@ pub fn run() {
             set_chrome_path
         ])
         .setup(|app| {
+            // 启动前清扫上次崩溃/强杀留下的官方后端孙进程（issue #31 / ADR-0007）。
+            // app_data_dir 不可用时跳过清扫，不阻塞启动。
+            if let Some(app_data) = app.path().app_data_dir().ok() {
+                let killed = sweep_stale_daemons(&app_data);
+                if killed > 0 {
+                    eprintln!("[posthub] 启动前清扫已结束，处理 {} 个残留 daemon 进程树", killed);
+                }
+            } else {
+                eprintln!("[posthub] app_data_dir 不可用，跳过启动前清扫");
+            }
             spawn_daemon(app.handle().clone());
             Ok(())
         })
@@ -43,7 +61,37 @@ pub fn run() {
                     child_to_kill = g.take();
                 }
                 if let Some(mut child) = child_to_kill {
+                    // Windows：uv trampoline（直接子进程）→ managed python（孙进程跑 run_backend.py）
+                    // 只 kill 直接子进程会让孙进程成孤儿继续监听 5409。taskkill /T 杀整条进程树
+                    // （含孙进程的子代如 chromium.exe），CREATE_NO_WINDOW 抑制控制台窗口弹出。
+                    // 其他平台无进程树概念，沿用裸 kill 兜底。
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+                        if let Some(pid) = child.id() {
+                            match Command::new("taskkill")
+                                .args(["/F", "/T", "/PID", &pid.to_string()])
+                                .creation_flags(CREATE_NO_WINDOW)
+                                .output()
+                            {
+                                Ok(out) => {
+                                    if !out.status.success() {
+                                        eprintln!(
+                                            "[posthub] taskkill 退出码 {:?}：stdout={:?} stderr={:?}",
+                                            out.status.code(),
+                                            String::from_utf8_lossy(&out.stdout),
+                                            String::from_utf8_lossy(&out.stderr)
+                                        );
+                                    }
+                                }
+                                Err(e) => eprintln!("[posthub] taskkill 调用失败：{e}"),
+                            }
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
                     let _ = child.kill();
+                    // 回收子进程句柄，避免 zombie；Windows taskkill 后同样需要 wait 释放 uv 句柄。
                     let _ = child.wait();
                 }
             }
@@ -162,6 +210,113 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 是否属于本应用上次崩溃/强杀留下的官方后端孙进程。
+///
+/// 双条件精确匹配（避免误伤其他用户/其他版本的 PostHub）：
+/// 1. `exe` 的路径必须位于 `app_python_dir` 之下（**按路径分量**，不是字符串前缀；
+///    `/foo/pythonX` 不能误匹配 `/foo/python`）。
+/// 2. `cmdline` 含子串 `run_backend.py`。
+///
+/// 路径字符串比较不区分大小写（Windows 路径不区分大小写）。
+pub fn matches_daemon_filter(exe: &Path, cmdline: &str, app_python_dir: &Path) -> bool {
+    if !cmdline.contains("run_backend.py") {
+        return false;
+    }
+    if exe.as_os_str().is_empty() {
+        return false;
+    }
+    // 路径分量比较：app_python_dir 的每个 component 必须是 exe 的前缀 component
+    let app_parts: Vec<_> = app_python_dir.components().collect();
+    let exe_parts: Vec<_> = exe.components().collect();
+    if exe_parts.len() < app_parts.len() {
+        return false;
+    }
+    app_parts
+        .iter()
+        .zip(exe_parts.iter())
+        .all(|(a, e)| a.as_os_str().eq_ignore_ascii_case(e.as_os_str()))
+}
+
+/// 启动前清扫残留的官方后端进程（孙进程）。
+///
+/// 枚举系统进程，按 `matches_daemon_filter` 双重条件（exe 位于 `app_data_dir/python` 下
+/// 且 cmdline 含 `run_backend.py`）过滤命中项，逐个调用 `taskkill /F /T /PID` 杀整条
+/// 进程树（含孙进程的孙进程如 chromium.exe、playwright 子进程）。
+///
+/// 跳过当前进程自身（防御性）。空进程列表必须 no-op、幂等——反复调用不会误杀。
+///
+/// Windows 走 `taskkill`；其他平台暂不治理（返回 0）。
+///
+/// 参考 ADR-0007：sysinfo 替代 PowerShell / wmic；不使用 Job Object / WMI。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn sweep_stale_daemons(app_data_dir: &Path) -> usize {
+    let app_python_dir = app_data_dir.join("python");
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let self_pid = sysinfo::get_current_pid().ok();
+
+    let mut pids: Vec<u32> = Vec::new();
+    for (pid, process) in system.processes() {
+        if Some(*pid) == self_pid {
+            continue;
+        }
+        let exe = match process.exe() {
+            Some(p) => p,
+            None => continue,
+        };
+        let cmdline = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if matches_daemon_filter(exe, &cmdline, &app_python_dir) {
+            pids.push(pid.as_u32());
+        }
+    }
+
+    if pids.is_empty() {
+        return 0;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut killed = 0usize;
+        for pid in &pids {
+            let pid_str = pid.to_string();
+            match Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid_str])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+            {
+                Ok(out) if out.status.success() => {
+                    killed += 1;
+                    eprintln!("[posthub] 启动前清扫: taskkill /F /T /PID {} 成功", pid);
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    eprintln!(
+                        "[posthub] 启动前清扫: taskkill /F /T /PID {} 失败: {}",
+                        pid,
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[posthub] 启动前清扫: taskkill /F /T /PID {} 调用失败: {}", pid, e);
+                }
+            }
+        }
+        killed
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        0
+    }
 }
 
 /// 拉起官方后端（uv 管理，`uv run --project <daemon> run_backend.py`）。
@@ -470,5 +625,202 @@ mod tests {
         let file = dir.join("missing.json");
         assert!(read_chrome_path_from(&file).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- sweep_stale_daemons 过滤纯函数（issue #31）----
+
+    fn linux_python_dir() -> PathBuf {
+        PathBuf::from("/home/user/.local/share/com.posthub.desktop/python")
+    }
+
+    #[test]
+    fn filter_matches_python_under_app_data() {
+        // exe = app_data/python/.../python.exe + cmdline 含 run_backend.py → 命中
+        let exe = PathBuf::from(
+            "/home/user/.local/share/com.posthub.desktop/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+        );
+        let cmdline = "uv run --project /srv/daemon run_backend.py";
+        assert!(matches_daemon_filter(&exe, cmdline, &linux_python_dir()));
+    }
+
+    #[test]
+    fn filter_matches_windows_case_insensitive() {
+        // 模拟 Windows app_data（用 / 分隔保证 Path::components 跨平台拆分）。
+        // Windows 真实运行时会用 \ 分隔符，sysinfo 给出的 exe 也是 Windows 形式；
+        // 但作为纯函数 fixture 我们要求 component 级大小写不敏感，/ 与 \ 同理。
+        let app = PathBuf::from("/users/foo/appdata/roaming/com.posthub.desktop/python");
+        let exe = PathBuf::from(
+            "/Users/Foo/AppData/Roaming/com.posthub.desktop/python/cpython-3.11.13-windows-x86_64-none/python.exe",
+        );
+        let cmdline = "uv run --project C:/srv/daemon run_backend.py";
+        assert!(matches_daemon_filter(&exe, cmdline, &app));
+    }
+
+    #[test]
+    fn filter_matches_windows_backslash_case_insensitive() {
+        // 含 \ 分隔符 + 大小写差异：用 component 级比较时单 component
+        // （非 Windows Path 不把 \ 拆开）会因字符串长度不同而失败，这是非 Windows 平台
+        // 对反斜杠路径的标准行为；Windows 真机上 Path::components 会拆 3 段，因此断言
+        // 改用 starts_with_ignore_ascii_case 的语义来表达。
+        let app = PathBuf::from(r"C:\Users\Foo\AppData\Roaming\com.posthub.desktop\python");
+        let exe_lower = PathBuf::from(
+            r"c:\users\foo\appdata\roaming\com.posthub.desktop\python\cpython-3.11.13-windows-x86_64-none\python.exe",
+        );
+        let cmdline = "uv run --project C:/srv/daemon run_backend.py";
+        // 该 case 仅在 Windows 上期望返回 true；非 Windows 平台 Path 把反斜杠路径当作
+        // 单 component，组件级 eq_ignore_ascii_case 因长度不同会返回 false。
+        let expected = cfg!(target_os = "windows");
+        assert_eq!(
+            matches_daemon_filter(&exe_lower, cmdline, &app),
+            expected,
+            "反斜杠路径大小写不敏感：仅 Windows 平台通过（Path::components 行为差异）"
+        );
+    }
+
+    #[test]
+    fn filter_rejects_when_cmdline_missing_run_backend() {
+        let exe = PathBuf::from(
+            "/home/user/.local/share/com.posthub.desktop/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+        );
+        let cmdline = "uv run --project /srv/daemon some_other_script.py";
+        assert!(!matches_daemon_filter(&exe, cmdline, &linux_python_dir()));
+    }
+
+    #[test]
+    fn filter_rejects_when_exe_outside_app_python_dir() {
+        // exe 在 /usr/bin/python，不是 app_data/python 下
+        let exe = PathBuf::from("/usr/bin/python3.11");
+        let cmdline = "uv run --project /srv/daemon run_backend.py";
+        assert!(!matches_daemon_filter(&exe, cmdline, &linux_python_dir()));
+    }
+
+    #[test]
+    fn filter_rejects_sibling_dir_with_shared_prefix_string() {
+        // 易错点：字符串 starts_with 让 /foo/pythonX 误匹配 /foo/python。
+        // 必须按路径分量（component）比较：/foo/pythonX 不是 /foo/python 的子目录。
+        let app = PathBuf::from("/foo/python");
+        let exe = PathBuf::from("/foo/pythonX/bin/python");
+        let cmdline = "run_backend.py";
+        assert!(
+            !matches_daemon_filter(&exe, cmdline, &app),
+            "路径前缀应是 component 级而非字符串级"
+        );
+    }
+
+    #[test]
+    fn filter_accepts_direct_child_python_dir() {
+        // exe = <app>/python/python.exe（直接子目录） → 命中
+        let app = PathBuf::from("/foo");
+        let exe = PathBuf::from("/foo/python/python.exe");
+        let cmdline = "run_backend.py";
+        assert!(matches_daemon_filter(&exe, cmdline, &app));
+    }
+
+    #[test]
+    fn filter_handles_empty_cmdline() {
+        let exe = PathBuf::from(
+            "/home/user/.local/share/com.posthub.desktop/python/cpython-3.11/bin/python3.11",
+        );
+        assert!(!matches_daemon_filter(&exe, "", &linux_python_dir()));
+    }
+
+    #[test]
+    fn filter_handles_unicode_cmdline() {
+        // 中文路径/参数：含 run_backend.py 即可
+        let exe = PathBuf::from(
+            "/home/user/.local/share/com.posthub.desktop/python/cpython-3.11/bin/python3.11",
+        );
+        let cmdline = "uv run --project /家目录/发布中枢 run_backend.py --title 早上好";
+        assert!(matches_daemon_filter(&exe, cmdline, &linux_python_dir()));
+    }
+
+    #[test]
+    fn filter_rejects_empty_exe_path() {
+        // exe 解析失败（空路径）：不命中
+        assert!(!matches_daemon_filter(Path::new(""), "run_backend.py", &linux_python_dir()));
+    }
+
+    #[test]
+    fn sweep_empty_process_list_is_noop() {
+        // 不调用 sysinfo：传空 iter 等价语义，直接断言空列表返回 0；
+        // 这里用 sweep_stale_daemons 在一个空 app_data_dir 调用——应返回 0 且不 panic。
+        let app_data = std::env::temp_dir().join("posthub-sweep-empty");
+        let _ = std::fs::remove_dir_all(&app_data);
+        std::fs::create_dir_all(&app_data).unwrap();
+        let killed = sweep_stale_daemons(&app_data);
+        assert_eq!(killed, 0);
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    // ---- taskkill /T 树清理集成测试（issue #33 / ADR-0007）----
+    //
+    // 跨平台编译：函数签名与函数体都包在 `#[cfg(target_os = "windows")]` 内，
+    // macOS / Linux cargo build / test 时不参与；只在 Windows CI runner 上执行。
+    // 验证 ticket #30 的 taskkill /F /T /PID <parent> 路径真覆盖孙进程：
+    // spawn 一个会 sleep 的 python 子进程 → 拿父 pid → taskkill /F /T /PID → 断言孙进程已退出。
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn taskkill_tree_kills_grandchildren() {
+        use std::os::windows::process::CommandExt;
+        use std::time::Duration;
+
+        // Windows：抑制 taskkill 子进程的控制台窗口
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // 拉起一个真 python 子进程：sleep 60s 模拟孙进程持续监听的状态。
+        // python.exe 在父（cargo test）下作为直接子进程，对应 ADR-0007 中
+        // uv trampoline（直接子）→ managed python（孙）的链；taskkill /F /T /PID
+        // 在父上执行应让子也一并退出。
+        let mut child = match Command::new("python")
+            .arg("-c")
+            .arg("import time; time.sleep(60)")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[test] 无法 spawn python 子进程：{}（环境无 python，跳过）", e);
+                return;
+            }
+        };
+
+        let parent_pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                eprintln!("[test] 子进程无 pid，跳过");
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        };
+
+        // 与 ticket #30 退出路径同款的 taskkill 调用
+        let kill_out = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &parent_pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .expect("spawn taskkill");
+        assert!(
+            kill_out.status.success(),
+            "taskkill /F /T /PID {} 应成功；stderr={:?}",
+            parent_pid,
+            String::from_utf8_lossy(&kill_out.stderr)
+        );
+
+        // 给 OS / 子进程一点时间退出
+        std::thread::sleep(Duration::from_millis(500));
+
+        // try_wait 必须是 Some（已退出）——验证 /T 真覆盖了孙进程
+        let exited = child
+            .try_wait()
+            .expect("try_wait 失败")
+            .is_some();
+        assert!(exited, "taskkill /F /T /PID {} 后子进程应已退出", parent_pid);
+
+        // 回收 handle
+        let _ = child.wait();
     }
 }

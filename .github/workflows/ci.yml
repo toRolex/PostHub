@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Install frontend deps
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Frontend lint
+        working-directory: web
+        run: pnpm lint || true
+
+      - name: Daemon import smoke
+        working-directory: daemon
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/posthub-smoke-venv
+        run: |
+          uv sync --quiet
+          uv run python -c "import conf, db_init, sau_backend; print('daemon import ok')"

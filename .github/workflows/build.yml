@@ -45,10 +45,17 @@ jobs:
           cd src-tauri/resources/daemon
           UV_BIN="$(ls ../bin/uv-* | head -1)"
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" sync
+          # 数据目录隔离到临时区：后端会在 BASE_DIR 下生成 db/logs/cookies，
+          # 若不隔离就写进 staged resources/daemon，被 tauri build 打进安装包
+          # （v0.1.4 实证：包里出现 db/database.db，覆盖安装时被运行中进程锁住而报错）。
+          export POSTHUB_BASE_DIR="$RUNNER_TEMP/posthub-smoke-base"
+          mkdir -p "$POSTHUB_BASE_DIR"
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/posthub-smoke-venv" "$UV_BIN" run --project . python run_backend.py &
           sleep 15
           curl -fsS --retry 5 http://127.0.0.1:5409/getFiles
           kill %1 2>/dev/null || true
+          # import 编译的 __pycache__ 同样会进包，顺手清掉
+          rm -rf src-tauri/resources/daemon/__pycache__
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@v2
