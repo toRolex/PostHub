@@ -236,6 +236,90 @@ describe("officialApi 账号接口（mock fetch）", () => {
   });
 });
 
+describe("officialApi.uploadCookie / downloadCookie（mock fetch）", () => {
+  const jsonResponse = (body: unknown, ok = true, status = 200) => ({
+    ok,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  });
+
+  it("uploadCookie 构造 multipart：file/id/platform 三字段，POST /uploadCookie", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ code: 200, msg: "Cookie文件上传成功", data: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(['{"cookies":[]}'], "cookie.json", { type: "application/json" });
+    await officialApi.uploadCookie("http://127.0.0.1:5409", file, 3, 3);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:5409/uploadCookie");
+    expect(init.method).toBe("POST");
+    const fd = init.body as FormData;
+    expect(fd.get("file")).toStrictEqual(file);
+    expect(fd.get("id")).toBe("3");
+    expect(fd.get("platform")).toBe("3");
+  });
+
+  it("uploadCookie 缺参 400 -> 透传官方 msg", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 400, msg: "缺少参数", data: null }, false, 400),
+      ),
+    );
+    const file = new File(["{}"], "cookie.json");
+    await expect(
+      officialApi.uploadCookie("http://127.0.0.1:5409", file, 3, 3),
+    ).rejects.toThrow("缺少参数");
+  });
+
+  it("downloadCookie ok -> 返回 blob", async () => {
+    const blob = new Blob(['{"cookies":[]}'], { type: "application/json" });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: async () => blob,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await officialApi.downloadCookie("http://127.0.0.1:5409", "abc.json");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/downloadCookie?filePath=abc.json",
+    );
+    expect(out).toBe(blob);
+  });
+
+  it("downloadCookie 失败 -> 错误解析在 adapter 层，透传官方 msg", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 500, msg: "Cookie文件不存在", data: null }, false, 404),
+      ),
+    );
+    await expect(
+      officialApi.downloadCookie("http://127.0.0.1:5409", "missing.json"),
+    ).rejects.toThrow("Cookie文件不存在");
+  });
+
+  it("downloadCookie filePath 经 encodeURIComponent 编码", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await officialApi.downloadCookie("http://127.0.0.1:5409", "带空格 名.json");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/downloadCookie?filePath=%E5%B8%A6%E7%A9%BA%E6%A0%BC%20%E5%90%8D.json",
+    );
+  });
+});
+
 describe("officialApi.postVideoBatch（mock fetch）", () => {
   it("POST /postVideoBatch 并携带数组合法请求体", async () => {
     const fetchMock = vi.fn().mockResolvedValue({

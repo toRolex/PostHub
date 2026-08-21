@@ -14,9 +14,11 @@
  * - GET  /deleteFile?id=N   删磁盘文件 + 删数据库记录；
  * - GET  /getFile?filename= 返回文件内容（预览/下载）。
  *
- * 与旧 daemon REST 客户端 `api/client.ts` 并存；本模块只承载官方 seam 相关端点。
+ * 前端到官方后端的唯一 HTTP seam：所有官方端点（含 cookie 导入/导出）都经
+ * `officialApi`；统一响应 `{ code, msg, data }`：code=200 成功；否则视为错误并抛 msg
+ * （错误解析约定单点在 `request<T>`，downloadCookie 的文件流除外）。
  * 设计：SSE 相关纯函数（parseSseDataLine/parseSseChunk）可单测；`openLoginSse`
- * 返回可中止句柄。统一响应 `{ code, msg, data }`：code=200 成功；否则视为错误并抛 msg。
+ * 返回可中止句柄。
  */
 import type {
   DaoUserInfo,
@@ -305,7 +307,7 @@ function mapRows(data: unknown[], from: string): DaoUserInfo[] {
       type: typeNum as DaoUserInfo["type"],
       filePath: String(filePath),
       userName: String(userName),
-      status: Number(status),
+      status: Number(status) as DaoUserInfo["status"],
     };
   });
 }
@@ -316,6 +318,41 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
 }
 
 export const officialApi = {
+  /**
+   * 官方 `/uploadCookie`：把所选 cookie 文件写入该账号的 filePath。
+   * multipart：file（.json 文件）+ id（user_info.id）+ platform（官方 type）。
+   */
+  uploadCookie: (base: string, file: File, id: number, platform: number) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("id", String(id));
+    form.append("platform", String(platform));
+    return request<null>(base, "/uploadCookie", { method: "POST", body: form });
+  },
+
+  /**
+   * 官方 `/downloadCookie`：按 filePath 下载 cookie 文件附件（备份/迁移），返回 blob。
+   * 不走 JSON 包装：成功是文件附件流，失败才是 {code,msg}；错误解析（!res.ok →
+   * 官方 msg → throw）收敛在本函数内，调用方只管 blob 落盘。
+   */
+  downloadCookie: async (base: string, filePath: string): Promise<Blob> => {
+    const res = await fetch(
+      `${base}/downloadCookie?filePath=${encodeURIComponent(filePath)}`,
+    );
+    if (!res.ok) {
+      // 官方 /downloadCookie 出错返回 {code, msg}（如「Cookie文件不存在」），优先透传官方 msg。
+      const text = await res.text().catch(() => "");
+      let msg = "";
+      try {
+        msg = (JSON.parse(text) as { msg?: string }).msg ?? "";
+      } catch {
+        // 非 JSON 错误体按空处理
+      }
+      throw new Error(msg || `下载失败（HTTP ${res.status}）`);
+    }
+    return res.blob();
+  },
+
   getFiles: (base: string): Promise<OfficialFileRecord[]> =>
     request<OfficialFileRecord[]>(base, "/getFiles"),
 
