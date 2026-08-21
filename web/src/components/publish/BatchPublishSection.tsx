@@ -30,8 +30,10 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
-import type { BatchItem } from "../../domain/batch";
-import { wechatScheduledCountsByCookie } from "../../domain/batch";
+import {
+  wechatScheduledCountsByCookie,
+  type BatchItem,
+} from "../../domain/batch";
 import { validatePlatformFields } from "../../domain/declarations";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
