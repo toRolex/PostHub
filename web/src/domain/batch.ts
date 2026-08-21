@@ -1,7 +1,7 @@
 /**
  * 矩阵批量发布领域骨架：类型 + itemKey 约定 + 展开规则单点（issue #56）。
  *
- * - 类型自 types/batch.ts 迁入（该文件删除，import 改指此处）。
+ * - 批量相关类型唯一定义于此文件。
  * - itemKey 拼接/解析约定唯一定义于 keyOf / parseKey；不 escape
  *   （信任 filePath 与 cookie 文件名不含 "|"），parseKey 用 lastIndexOf 防御。
  * - 展开规则唯一定义于 buildBatchItemRefs；preview / result / submit 各自 map 加字段。
