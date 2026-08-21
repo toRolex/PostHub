@@ -9,6 +9,7 @@ import {
   type BatchItemResult,
 } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
+import { withMutation } from "./_withMutation";
 
 /**
  * 矩阵批量发布 store。
@@ -181,20 +182,23 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
 
     const request = buildBatchItemsFromMatrix(s.items, s.dailyTimes);
 
-    set({ submitting: true });
-    try {
-      await officialApi.postVideoBatch(base, request);
-      const itemResults = expandItemResults(s.items, true, "批量发布任务已提交");
-      set({ itemResults });
-    } catch (e) {
-      // 请求级错误：每项独立标识失败 + 透传 msg
-      const msg = e instanceof Error ? e.message : String(e);
-      const itemResults = expandItemResults(s.items, false, msg);
-      set({ itemResults });
-      throw e;
-    } finally {
-      set({ submitting: false });
-    }
+    await withMutation(
+      set,
+      async () => {
+        await officialApi.postVideoBatch(base, request);
+        const itemResults = expandItemResults(s.items, true, "批量发布任务已提交");
+        set({ itemResults });
+      },
+      {
+        begin: { submitting: true },
+        end: { submitting: false },
+        // 请求级错误：每项独立标识失败 + 透传 msg
+        onError: (message) => ({
+          itemResults: expandItemResults(s.items, false, message),
+        }),
+        rethrow: true,
+      },
+    );
   },
 
   reset: () => set({ ...initialBatchPublishState }),

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/isTauri";
+import { withMutation } from "./_withMutation";
 
 /**
  * 设置 store —— 目前承载「本地 Chrome 可执行文件路径」。
@@ -36,15 +37,14 @@ export const useSettingsStore = create<SettingsState>()((set) => ({
       set({ chromePath: "", loading: false, error: "" });
       return;
     }
-    set({ loading: true });
-    try {
-      const path = await invoke<string>("get_chrome_path");
-      set({ chromePath: path, error: "" });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ loading: false });
-    }
+    await withMutation(
+      set,
+      async () => {
+        const path = await invoke<string>("get_chrome_path");
+        set({ chromePath: path, error: "" });
+      },
+      { begin: { loading: true }, end: { loading: false } },
+    );
   },
 
   save: async (path) => {
@@ -52,15 +52,13 @@ export const useSettingsStore = create<SettingsState>()((set) => ({
       set({ chromePath: path.trim(), error: "" });
       return;
     }
-    set({ loading: true });
-    try {
-      const saved = await invoke<string>("set_chrome_path", { path: path.trim() });
-      set({ chromePath: saved, error: "" });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
-    } finally {
-      set({ loading: false });
-    }
+    await withMutation(
+      set,
+      async () => {
+        const saved = await invoke<string>("set_chrome_path", { path: path.trim() });
+        set({ chromePath: saved, error: "" });
+      },
+      { begin: { loading: true }, end: { loading: false }, rethrow: true },
+    );
   },
 }));

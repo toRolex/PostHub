@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { DEFAULT_DAEMON_URL } from "../api/types";
+import { withMutation } from "./_withMutation";
 
 interface DaemonState {
   url: string;
@@ -23,15 +24,17 @@ export const useDaemonStore = create<DaemonState>()((set, get) => ({
   ...initialDaemonState,
 
   /** 探活官方后端 /getAccounts：2xx 视为就绪（官方无 /health 路由）。 */
-  checkHealth: async () => {
-    set({ checking: true });
-    try {
-      const res = await fetch(`${get().url}/getAccounts`);
-      set({ connected: res.ok, error: "" });
-    } catch (e) {
-      set({ connected: false, error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ checking: false });
-    }
-  },
+  checkHealth: () =>
+    withMutation(
+      set,
+      async () => {
+        const res = await fetch(`${get().url}/getAccounts`);
+        set({ connected: res.ok, error: "" });
+      },
+      {
+        begin: { checking: true },
+        end: { checking: false },
+        onError: (message) => ({ connected: false, error: message }),
+      },
+    ),
 }));

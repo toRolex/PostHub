@@ -36,7 +36,9 @@ export async function withMutation<T, R = void>(
     return await fn();
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const patch = onError ? onError(message, e) : ({ error: message } as Partial<T>);
+    const patch = onError
+      ? onError(message, e)
+      : ({ error: message } as unknown as Partial<T>);
     if (patch) set(patch);
     if (rethrow) throw e;
     return undefined;

@@ -3,6 +3,7 @@ import { officialApi, buildPostVideoRequest } from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
+import { withMutation } from "./_withMutation";
 import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
 
@@ -239,46 +240,53 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
     const tags = parseTags(s.tags);
     const results: PublishState["results"] = {};
 
-    set({ submitting: true });
-    try {
-      for (const p of s.selectedPlatforms) {
-        const accId = accounts[p];
-        // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
-        const cookieFile =
-          accountList.find((a) => a.id === accId && a.platform === p)?.cookieFile ?? "";
-        // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
-        const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
-        try {
-          await officialApi.postVideo(
-            base,
-            buildPostVideoRequest({
-              platform: p,
-              files: s.selectedFile ? [s.selectedFile] : [],
-              accounts: [cookieFile],
-              title: s.title,
-              caption: s.caption,
-              tags,
-              platformFields: trimmed,
-              timer: {
-                enableTimer: s.timerEnabled,
-                videosPerDay: s.videosPerDay,
-                dailyTimes: s.dailyTimes,
-                startDays: s.startDays,
-              },
-            }),
-          );
-          results[p] = { ok: true, msg: "发布任务已提交" };
-        } catch (e) {
-          results[p] = {
-            ok: false,
-            msg: e instanceof Error ? e.message : String(e),
-          };
+    await withMutation(
+      set,
+      async () => {
+        for (const p of s.selectedPlatforms) {
+          const accId = accounts[p];
+          // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
+          const cookieFile =
+            accountList.find((a) => a.id === accId && a.platform === p)?.cookieFile ?? "";
+          // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
+          const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
+          try {
+            await officialApi.postVideo(
+              base,
+              buildPostVideoRequest({
+                platform: p,
+                files: s.selectedFile ? [s.selectedFile] : [],
+                accounts: [cookieFile],
+                title: s.title,
+                caption: s.caption,
+                tags,
+                platformFields: trimmed,
+                timer: {
+                  enableTimer: s.timerEnabled,
+                  videosPerDay: s.videosPerDay,
+                  dailyTimes: s.dailyTimes,
+                  startDays: s.startDays,
+                },
+              }),
+            );
+            results[p] = { ok: true, msg: "发布任务已提交" };
+          } catch (e) {
+            results[p] = {
+              ok: false,
+              msg: e instanceof Error ? e.message : String(e),
+            };
+          }
         }
-      }
-      set({ results });
-    } finally {
-      set({ submitting: false });
-    }
+        set({ results });
+      },
+      // 平台级错误已逐条收敛进 results；外层异常不写 error、原样抛出。
+      {
+        begin: { submitting: true },
+        end: { submitting: false },
+        onError: () => undefined,
+        rethrow: true,
+      },
+    );
   },
 
   reset: () => set({ ...initialPublishState }),
