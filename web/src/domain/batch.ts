@@ -23,9 +23,8 @@ export type BatchMode = "immediate" | "timer";
  * 对应 issue #37 prototype 内联片段。shape 与内联一致，仅做 TS 化：
  * - filePath 必填（videoFile/ 下的磁盘文件名，即 file_records.file_path）。
  * - mode='timer' 时 startDays + timeOfDay 必填；timeOfDay 必须来自 dailyTimes 池。
- * - accountCookiesByPlatform 字段名为「ids」语义沿用 PRD，但实际承载 cookie 文件名
- *   字符串数组 —— 命名沿用以最小化 PRD 改动；store 层做 number id ↔ string 映射。
- *   该选择让 buildBatchItemsFromMatrix 成为不依赖 accounts store 的纯函数。
+ * - accountCookiesByPlatform 承载 cookie 文件名字符串数组；store 层做 number id ↔
+ *   string 映射。该选择让 buildBatchItemsFromMatrix 成为不依赖 accounts store 的纯函数。
  * - videosPerDay 不暴露（硬写 1），不在 type 上表达。
  */
 export interface BatchItem {
@@ -34,10 +33,7 @@ export interface BatchItem {
   caption: string;
   /** 标签输入态字符串（提交时 parseTags 拆分成数组）。 */
   tags: string;
-  /**
-   * 按平台选中的账号 cookie 文件名数组（cookiesFile/ 下的磁盘文件名）。
-   * 命名沿用 PRD 内联片段的 accountCookiesByPlatform，但语义是 cookie 文件名。
-   */
+  /** 按平台选中的账号 cookie 文件名数组（cookiesFile/ 下的磁盘文件名）。 */
   accountCookiesByPlatform: Partial<Record<Platform, string[]>>;
   mode: BatchMode;
   /** mode='timer' 必填；mode='immediate' 忽略。 */
