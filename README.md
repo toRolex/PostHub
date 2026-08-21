@@ -22,7 +22,7 @@ PostHub 是一个桌面端的多平台短视频发布工具，目标是把「一
 - **本地 Chrome 登录态** —— 通过 `connect_over_cdp` 接管每账号独立的真实浏览器，登录态天然持久化
 - **跨平台并行** —— 一个发布任务展开成 N 个平台子任务，跨平台并行、同平台严格串行
 - **人工介入兜底** —— 验证码、需重登、错过排期等异常主动浮现，不藏在层级深处
-- **AI 内容声明透传** —— 按平台分键（抖音 `declaration` / 视频号 `original_statement` / 小红书 `source`）写入，不靠 OCR 兜底（issue #43 / ADR-0008）
+- **AI 内容声明透传** —— 按平台分键（抖音 `declaration` / 视频号 `original_statement` / 小红书 `source`）写入，不靠 OCR 兜底（issue #43）
 
 ## 下载
 
@@ -98,7 +98,6 @@ src-tauri/   Tauri 2 壳（Rust）：托盘 / 菜单栏常驻、一键退出、�
 web/         React 19 前端（Zustand + Tailwind v4 + shadcn/ui），pnpm 管理
 daemon/      Python 守护进程（uv 管理）：本地 HTTP IPC + 执行引擎 seam
 scripts/     工程辅助脚本（图标生成、打包资源准备等）
-docs/adr/    架构决策记录（ADR-0004 ~ ADR-0008）
 docs/specs/  平台约束与功能规格
 docs/handoffs/  Issue 实现交付快照
 ```
@@ -157,16 +156,6 @@ web/node_modules/.bin/tauri build
 产物：macOS `src-tauri/target/release/bundle/dmg/*.dmg`；Windows `*.exe` / `*.msi`（NSIS + MSI）。
 
 CI 流程：push `v*` tag 触发 `.github/workflows/build.yml`，mac/win 双端构建 + 自动 attach 到 GitHub Release。详细发布流程见 [`docs/deployment.md`](docs/deployment.md)。
-
-## 架构决策（ADR）
-
-关键决策记录在 `docs/adr/`：
-
-- ADR-0004：Windows 桌面打包与官方后端依赖治理
-- ADR-0005：调度规则单一来源（任务状态机的语义边界）
-- ADR-0006：官方后端薄封装（PostHub 仅包一层，不 fork 上游）
-- ADR-0007：守护进程生命周期与退出清理
-- ADR-0008：平台内容声明按平台分键透传（issue #43）
 
 ## 相关项目
 
