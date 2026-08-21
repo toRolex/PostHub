@@ -31,10 +31,38 @@ import {
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
 import type { BatchItem } from "../../types/batch";
+import { validatePlatformFields } from "../../api/declarations";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /* ─────────────────────── 纯逻辑 helper（可单测） ─────────────────────── */
+
+/**
+ * 单条 BatchItem 的行内校验（组件侧副本，与 store validateBatch 对应）。
+ * 独立导出便于不挂 DOM 单测。
+ */
+export function collectItemLocalErrors(
+  item: BatchItem,
+  dailyTimesSet: Set<string>,
+): string[] {
+  const local: string[] = [];
+  if (!item.title.trim()) local.push("标题不能为空");
+  const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
+    (a) => a && a.length > 0,
+  );
+  if (!hasAccount) local.push("至少选一个账号");
+  if (item.mode === "timer") {
+    if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
+      local.push("定时未选时刻");
+    }
+    if (item.startDays === undefined || item.startDays < 0) {
+      local.push("起始日非法");
+    }
+  }
+  const fieldError = validatePlatformFields(item.platformFields);
+  if (fieldError) local.push(fieldError);
+  return local;
+}
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
@@ -200,20 +228,7 @@ export function BatchPublishSection() {
     const map = new Map<string, string[]>();
     const dailyTimesSet = new Set(dailyTimes);
     items.forEach((item) => {
-      const local: string[] = [];
-      if (!item.title.trim()) local.push("标题不能为空");
-      const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-        (a) => a && a.length > 0,
-      );
-      if (!hasAccount) local.push("至少选一个账号");
-      if (item.mode === "timer") {
-        if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-          local.push("定时未选时刻");
-        }
-        if (item.startDays === undefined || item.startDays < 0) {
-          local.push("起始日非法");
-        }
-      }
+      const local = collectItemLocalErrors(item, dailyTimesSet);
       if (local.length > 0) map.set(item.filePath, local);
     });
     return map;
