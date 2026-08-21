@@ -129,10 +129,10 @@ export function AppShell() {
   useEffect(() => {
     void loadDaemonUrl();
     void useAccountsStore.getState().fetchAccounts();
-    void useDaemonStore.getState().checkHealth();
+    void useDaemonStore.getState().probeDaemon();
     const { pollIntervalMs } = useDaemonStore.getState();
     const healthTimer = window.setInterval(
-      () => void useDaemonStore.getState().checkHealth(),
+      () => void useDaemonStore.getState().probeDaemon(),
       pollIntervalMs,
     );
     return () => {

@@ -25,7 +25,7 @@ export interface DaoUserInfo {
   /** 官方 /login 的 id 参数 = 账号名（user_info.userName）。 */
   userName: string;
   /** 1 有效 / 0 无效（官方 getValidAccounts 校验后落库）。 */
-  status: number;
+  status: OfficialCookieStatus;
 }
 
 /**
@@ -70,7 +70,7 @@ export interface OfficialAccount {
   /** 上次校验时的 cookie 有效性（true=可用）。 */
   cookieValid: boolean;
   /** 官方存储的校验状态：1 有效 / 0 无效。 */
-  status: number;
+  status: OfficialCookieStatus;
   /** 账号粒度默认声明；undefined = 未设置。 */
   defaultPlatformFields?: PlatformFields;
 }
@@ -98,14 +98,8 @@ export type OfficialPlatform = 1 | 2 | 3 | 4;
 /** 官方 user_info.status：1 有效 / 0 失效。 */
 export type OfficialCookieStatus = 0 | 1;
 
-/** 解析后的官方账号（cookie 维度）。type 用官方释义：1 小红书 2 视频号 3 抖音 4 快手。 */
-export interface CookiedAccount {
-  id: number;
-  type: OfficialPlatform;
-  filePath: string;
-  userName: string;
-  status: OfficialCookieStatus;
-}
+/** 解析后的官方账号（cookie 维度）——与 DaoUserInfo 同模型，名字保留供 cookie 语境使用。 */
+export type CookiedAccount = DaoUserInfo;
 
 /** 官方 file_records 表记录（GET /getFiles，daemon/sau_backend.py）。 */
 export interface OfficialFileRecord {
