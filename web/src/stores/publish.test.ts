@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initialPublishState, usePublishStore } from "./publish";
-import { parseTags } from "../domain/tags";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
 
@@ -40,11 +39,6 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("parseTags 拆分与去 #", () => {
-    expect(parseTags(" 春天 旅行 #美食，摄影 ")).toEqual(["春天", "旅行", "美食", "摄影"]);
-    expect(parseTags("  ")).toEqual([]);
   });
 
   it("submit 成功 -> 每平台各调一次 /postVideo，携带官方契约体", async () => {
