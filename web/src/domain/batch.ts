@@ -107,3 +107,21 @@ export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
   }
   return refs;
 }
+
+/**
+ * 视频号单账号累计定时任务计数（issue #40；计数规则唯一定义点，issue #58）。
+ *
+ * 统计 `mode='timer'` 且 `accountIdsByPlatform.wechat` 命中的 item 数：每 item 对每个
+ * 命中的 cookie 计一次。返回 cookie → 次数的 Map；未命中 cookie 不出现在 Map 中
+ * （消费方用 `?? 0` 兜底）。本批次内累计；跨批次历史由官方兜底。
+ */
+export function wechatScheduledCountsByCookie(items: BatchItem[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    if (item.mode !== "timer") continue;
+    for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
+      map.set(cookie, (map.get(cookie) ?? 0) + 1);
+    }
+  }
+  return map;
+}
