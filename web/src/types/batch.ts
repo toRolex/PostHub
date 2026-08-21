@@ -11,6 +11,9 @@
 
 import type { Platform } from "../api/types";
 
+/** 视频号单账号单日定时任务软提示上限（与官方工作值对齐；仅 UI 展示，不拦截，issue #40）。 */
+export const WECHAT_DAILY_LIMIT = 5 as const;
+
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;
 
@@ -50,12 +53,14 @@ export interface BatchItem {
  * 单视频条目提交结果（按 item 维度反馈，不再按平台聚合）。
  *
  * 矩阵模式下同一平台可能有多个账号 → 展开为多个 PostVideoRequest 项，
- * 每项独立反馈；itemKey 用来稳定去重（filePath + accountId 组合）。
+ * 每项独立反馈；itemKey 用来稳定去重（filePath + cookieFile 组合）。
  */
 export interface BatchItemResult {
-  /** 稳定 key：filePath + "|" + accountId。便于 UI 按 key 渲染行反馈。 */
+  /** 稳定 key：filePath + "|" + cookieFile。便于 UI 按 key 渲染行反馈。 */
   itemKey: string;
   fileName: string;
+  /** 该展开项的账号 cookie 文件名（= itemKey 的后半段，免 split）。 */
+  cookieFile: string;
   platform: Platform;
   mode: BatchMode;
   /** mode='timer' 时透传。 */

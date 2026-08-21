@@ -9,15 +9,19 @@
  */
 
 import { cn } from "../../lib/utils";
+import { WECHAT_DAILY_LIMIT } from "../../types/batch";
 
 interface PlatformLimitHintProps {
-  /** 本批次该视频号账号累计定时任务数（由 selectWechatScheduledCount 派生）。 */
+  /** 本批次该视频号账号累计定时任务数（由 selectWechatScheduledCountsByAccount 派生）。 */
   count: number;
-  /** 视频号单日上限（默认 5，与官方工作值对齐；待实测）。 */
+  /** 视频号单日上限（默认 WECHAT_DAILY_LIMIT，与官方工作值对齐；待实测）。 */
   limit?: number;
 }
 
-export function PlatformLimitHint({ count, limit = 5 }: PlatformLimitHintProps) {
+export function PlatformLimitHint({
+  count,
+  limit = WECHAT_DAILY_LIMIT,
+}: PlatformLimitHintProps) {
   const exceeded = count > limit;
   return (
     <span

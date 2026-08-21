@@ -10,7 +10,11 @@ import {
 } from "lucide-react";
 import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
-import { useBatchPublishStore } from "../../stores/batchPublish";
+import {
+  selectWechatScheduledCountsByAccount,
+  useBatchPublishStore,
+  validateByFilePath,
+} from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
 import type { Platform } from "../../api/types";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
@@ -34,18 +38,10 @@ const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
-  /** 所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
-  totalAccounts: number;
-  /** 所选平台数。 */
-  platformCount: number;
   /** 例：'3 账号 / 2 平台' 或 '未选账号'。 */
   accountSummary: string;
-  /** '立即' / '定时' / '定时 (待选时刻)'。 */
-  modeSummary: string;
-  /** mode=timer 时 'HH:MM'；否则 null（用于徽标内拼接到 modeSummary 之后）。 */
-  timeOfDayLabel: string | null;
-  /** mode=timer 时 '+N 天'；否则 null。 */
-  startDaysLabel: string | null;
+  /** '立即' / '定时 · HH:MM' / '定时 (待选时刻)'。 */
+  modeChip: string;
 }
 
 /**
@@ -64,30 +60,12 @@ export function summarizeItem(item: BatchItem): ItemSummary {
     totalAccounts === 0 ? "未选账号" : `${totalAccounts} 账号 / ${platformCount} 平台`;
 
   if (item.mode === "immediate") {
-    return {
-      totalAccounts,
-      platformCount,
-      accountSummary,
-      modeSummary: "立即",
-      timeOfDayLabel: null,
-      startDaysLabel: null,
-    };
+    return { accountSummary, modeChip: "立即" };
   }
   return {
-    totalAccounts,
-    platformCount,
     accountSummary,
-    modeSummary: item.timeOfDay ? "定时" : "定时 (待选时刻)",
-    timeOfDayLabel: item.timeOfDay ?? null,
-    startDaysLabel: item.startDays !== undefined ? `+${item.startDays} 天` : null,
+    modeChip: item.timeOfDay ? `定时 · ${item.timeOfDay}` : "定时 (待选时刻)",
   };
-}
-
-/**
- * 顶部 chip 池展示顺序：去重 + HH:MM 字典序排序（'09:00' < '10:00' < '14:30'）。
- */
-export function summarizeDailyTimes(dailyTimes: string[]): string[] {
-  return Array.from(new Set(dailyTimes)).sort();
 }
 
 /* ─────────────────────── 组件 ─────────────────────── */
@@ -116,7 +94,6 @@ export function BatchPublishSection() {
   const addDailyTime = useBatchPublishStore((s) => s.addDailyTime);
   const removeDailyTime = useBatchPublishStore((s) => s.removeDailyTime);
   const submit = useBatchPublishStore((s) => s.submit);
-  const reset = useBatchPublishStore((s) => s.reset);
 
   useEffect(() => {
     void fetchFiles();
@@ -137,53 +114,29 @@ export function BatchPublishSection() {
   const itemsByPath = useMemo(() => new Set(items.map((i) => i.filePath)), [items]);
   const availableToAdd = videos.filter((v) => !itemsByPath.has(v.file_path));
 
-  // 整批错误聚合 + 每 item 错误
-  const allErrors = useBatchPublishStore.getState().validate();
-  const errorsByFilePath = useMemo(() => {
-    const map = new Map<string, string[]>();
-    const dailyTimesSet = new Set(dailyTimes);
-    items.forEach((item) => {
-      const local: string[] = [];
-      if (!item.title.trim()) local.push("标题不能为空");
-      const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-        (a) => a && a.length > 0,
-      );
-      if (!hasAccount) local.push("至少选一个账号");
-      if (item.mode === "timer") {
-        if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-          local.push("定时未选时刻");
-        }
-        if (item.startDays === undefined || item.startDays < 0) {
-          local.push("起始日非法");
-        }
-      }
-      if (local.length > 0) map.set(item.filePath, local);
-    });
-    return map;
-  }, [items, dailyTimes]);
+  // 每 item 错误（filePath → 错误列表）；提交按钮 disabled 也读这份 Map，避免与 validate() 双算
+  const errorsByFilePath = useMemo(
+    () => validateByFilePath(items, dailyTimes),
+    [items, dailyTimes],
+  );
 
   // 每行折叠/展开状态（key = filePath）
-  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
-  const expandedAll =
-    items.length > 0 && items.every((i) => expandedMap[i.filePath]);
-  const collapsedAll =
-    items.length > 0 && items.every((i) => !expandedMap[i.filePath]);
+  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
+  const expandedAll = items.length > 0 && expandedSet.size === items.length;
+  const collapsedAll = expandedSet.size === 0;
   function toggleRow(filePath: string): void {
-    setExpandedMap((m) => ({ ...m, [filePath]: !m[filePath] }));
+    setExpandedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) next.delete(filePath);
+      else next.add(filePath);
+      return next;
+    });
   }
   function expandAll(): void {
-    const next: Record<string, boolean> = {};
-    items.forEach((i) => {
-      next[i.filePath] = true;
-    });
-    setExpandedMap(next);
+    setExpandedSet(new Set(items.map((i) => i.filePath)));
   }
   function collapseAll(): void {
-    const next: Record<string, boolean> = {};
-    items.forEach((i) => {
-      next[i.filePath] = false;
-    });
-    setExpandedMap(next);
+    setExpandedSet(new Set());
   }
 
   async function handleConfirmPreview(): Promise<void> {
@@ -195,20 +148,17 @@ export function BatchPublishSection() {
     }
   }
 
-  // 整批共用 dailyTimes 池（每账号累计定时任务数依赖 items）
-  // wechatCountsByAccount: accountCookie -> 本账号 timer 项数；用于视频号 chip 软提示
-  const wechatCountsByAccount = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of items) {
-      if (item.mode !== "timer") continue;
-      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
-        map.set(cookie, (map.get(cookie) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [items]);
+  // wechatCountsByAccount: cookieFile -> 本账号 timer 项数；用于视频号 chip 软提示（含预览 Dialog）
+  const wechatCountsByAccount = useMemo(
+    () => selectWechatScheduledCountsByAccount(items),
+    [items],
+  );
 
-  const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
+  // 顶部 chip 池展示顺序：去重 + HH:MM 字典序排序（'09:00' < '10:00' < '14:30'）
+  const sortedDailyTimes = useMemo(
+    () => Array.from(new Set(dailyTimes)).sort(),
+    [dailyTimes],
+  );
   const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
     useBatchPublishStore.getState();
 
@@ -325,7 +275,7 @@ export function BatchPublishSection() {
       ) : (
         <ul className="flex flex-col gap-2">
           {items.map((item) => {
-            const isExpanded = !!expandedMap[item.filePath];
+            const isExpanded = expandedSet.has(item.filePath);
             const summary = summarizeItem(item);
             const localErrors = errorsByFilePath.get(item.filePath) ?? [];
             return (
@@ -356,9 +306,9 @@ export function BatchPublishSection() {
                     <span
                       className={cn(
                         "rounded-sm px-1.5 py-0.5",
-                        summary.totalAccounts > 0
-                          ? "bg-accent-tint text-accent-ink"
-                          : "bg-danger-tint text-danger-deep",
+                        summary.accountSummary === "未选账号"
+                          ? "bg-danger-tint text-danger-deep"
+                          : "bg-accent-tint text-accent-ink",
                       )}
                     >
                       {summary.accountSummary}
@@ -366,17 +316,16 @@ export function BatchPublishSection() {
                     <span
                       className={cn(
                         "rounded-sm px-1.5 py-0.5",
-                        item.mode === "immediate" || summary.timeOfDayLabel
+                        item.mode === "immediate" || item.timeOfDay
                           ? "bg-surface-warm text-fg-2"
                           : "bg-danger-tint text-danger-deep",
                       )}
                     >
-                      {summary.modeSummary}
-                      {summary.timeOfDayLabel ? ` · ${summary.timeOfDayLabel}` : ""}
+                      {summary.modeChip}
                     </span>
-                    {summary.startDaysLabel && (
+                    {item.mode === "timer" && item.startDays !== undefined && (
                       <span className="rounded-sm bg-surface-warm px-1.5 py-0.5 text-fg-2">
-                        起始 {summary.startDaysLabel}
+                        起始 +{item.startDays} 天
                       </span>
                     )}
                   </span>
@@ -540,12 +489,12 @@ export function BatchPublishSection() {
                               min={0}
                               className="h-8 w-[80px]"
                               value={item.startDays ?? 0}
-                              onChange={(e) => {
-                                const n = Number(e.target.value);
+                              onChange={(e) =>
+                                // startDays clamp 唯一入口在 store.updateItem
                                 updateItem(item.filePath, {
-                                  startDays: Number.isInteger(n) && n >= 0 ? n : 0,
-                                });
-                              }}
+                                  startDays: Number(e.target.value),
+                                })
+                              }
                               aria-label={`${item.filePath} 起始日`}
                             />
                           </div>
@@ -573,7 +522,9 @@ export function BatchPublishSection() {
       <div className="mt-4 flex items-center gap-3">
         <Button
           variant="primary"
-          disabled={!connected || submitting || items.length === 0 || allErrors.length > 0}
+          disabled={
+            !connected || submitting || items.length === 0 || errorsByFilePath.size > 0
+          }
           onClick={openPreview}
         >
           <Send className="size-4" />
@@ -582,9 +533,6 @@ export function BatchPublishSection() {
         {!connected && (
           <span className="text-caption text-meta">守护进程未连接，无法发布</span>
         )}
-        <Button variant="ghost" size="sm" onClick={reset}>
-          重置
-        </Button>
       </div>
 
       {/* 整体反馈（按 item 维度） */}
@@ -609,7 +557,7 @@ export function BatchPublishSection() {
                 <p className="font-semibold">
                   <span className="tabular-nums">{r.fileName}</span>
                   <span className="ml-2 text-caption text-muted">
-                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.itemKey.split("|")[1]}
+                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.cookieFile}
                   </span>
                 </p>
                 {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
@@ -624,6 +572,7 @@ export function BatchPublishSection() {
         open={previewOpen}
         items={items}
         results={itemResults}
+        wechatCountsByAccount={wechatCountsByAccount}
         onConfirm={() => void handleConfirmPreview()}
         onCancel={closePreview}
       />

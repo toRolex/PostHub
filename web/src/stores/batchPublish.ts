@@ -28,6 +28,25 @@ export function selectWechatScheduledCount(items: BatchItem[], accountId: string
   return count;
 }
 
+/**
+ * 视频号各账号本批次累计定时任务计数（cookieFile → count，issue #40）。
+ *
+ * 与 selectWechatScheduledCount 同一口径，一次遍历产出全账号 Map，
+ * 供 UI（列表行 / 预览 Dialog）按 cookieFile O(1) 读取，避免渲染期逐账号重算。
+ */
+export function selectWechatScheduledCountsByAccount(
+  items: BatchItem[],
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    if (item.mode !== "timer") continue;
+    for (const cookieFile of item.accountIdsByPlatform.wechat ?? []) {
+      map.set(cookieFile, (map.get(cookieFile) ?? 0) + 1);
+    }
+  }
+  return map;
+}
+
 interface BatchPublishState {
   items: BatchItem[];
   /** 整批共用时刻池，'HH:MM' 字符串数组。 */
@@ -80,28 +99,53 @@ export const initialBatchPublishState: Omit<
 
 /* ───────────────────────── 校验 ───────────────────────── */
 
+/** 单 item 校验分支（validateBatch / validateByFilePath 共用，避免双份逻辑漂移）。 */
+function validateItemErrors(item: BatchItem, dailyTimesSet: Set<string>): string[] {
+  const errors: string[] = [];
+  if (!item.title.trim()) errors.push("标题不能为空");
+  const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
+    (a) => a && a.length > 0,
+  );
+  if (!hasAccount) errors.push("请至少选择一个平台的账号");
+  if (item.mode === "timer") {
+    if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
+      errors.push("定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）");
+    }
+    if (item.startDays === undefined || item.startDays < 0) {
+      errors.push("定时模式必须设置起始日 startDays >= 0");
+    }
+  }
+  return errors;
+}
+
 export function validateBatch(items: BatchItem[], dailyTimes: string[]): string[] {
   const errors: string[] = [];
   if (items.length === 0) errors.push("请至少添加一条视频");
   const dailyTimesSet = new Set(dailyTimes);
   items.forEach((item, idx) => {
-    if (!item.title.trim()) errors.push(`第 ${idx + 1} 行：标题不能为空`);
-    const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-      (a) => a && a.length > 0,
-    );
-    if (!hasAccount) errors.push(`第 ${idx + 1} 行：请至少选择一个平台的账号`);
-    if (item.mode === "timer") {
-      if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-        errors.push(
-          `第 ${idx + 1} 行：定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）`,
-        );
-      }
-      if (item.startDays === undefined || item.startDays < 0) {
-        errors.push(`第 ${idx + 1} 行：定时模式必须设置起始日 startDays >= 0`);
-      }
+    for (const e of validateItemErrors(item, dailyTimesSet)) {
+      errors.push(`第 ${idx + 1} 行：${e}`);
     }
   });
   return errors;
+}
+
+/**
+ * 按 filePath 分组的校验错误（filePath → 错误列表），仅含非法 item。
+ * 与 validateBatch 共用校验分支；UI 行内错误与提交按钮 disabled 都读这份 Map，
+ * 避免组件侧再算一遍。
+ */
+export function validateByFilePath(
+  items: BatchItem[],
+  dailyTimes: string[],
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  const dailyTimesSet = new Set(dailyTimes);
+  for (const item of items) {
+    const errors = validateItemErrors(item, dailyTimesSet);
+    if (errors.length > 0) map.set(item.filePath, errors);
+  }
+  return map;
 }
 
 /* ───────────────────────── helpers ───────────────────────── */
@@ -125,6 +169,7 @@ function expandItemResults(
         out.push({
           itemKey: `${item.filePath}|${cookie}`,
           fileName: item.filePath,
+          cookieFile: cookie,
           platform,
           mode: item.mode,
           timeOfDay: item.timeOfDay,
@@ -151,7 +196,15 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
 
   updateItem: (filePath, patch) =>
     set((s) => ({
-      items: s.items.map((i) => (i.filePath === filePath ? { ...i, ...patch } : i)),
+      items: s.items.map((i) => {
+        if (i.filePath !== filePath) return i;
+        // startDays 非负整数 clamp 的唯一入口（spec：startDays >= 0）；UI 不再各自兜底。
+        const startDays =
+          patch.startDays !== undefined
+            ? Math.max(0, Number(patch.startDays) || 0)
+            : i.startDays;
+        return { ...i, ...patch, startDays };
+      }),
     })),
 
   setItemMode: (filePath, mode) =>

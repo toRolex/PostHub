@@ -44,7 +44,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
       itemKey: "a.mp4|d1.json",
       fileName: "a.mp4",
       platform: "douyin",
-      accountCookie: "d1.json",
+      cookieFile: "d1.json",
       mode: "immediate",
       timeOfDay: undefined,
       startDays: undefined,
