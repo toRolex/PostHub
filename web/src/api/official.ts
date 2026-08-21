@@ -289,7 +289,7 @@ function takeTrailing(sseBuffer: string): string {
   return lastBreak === -1 ? sseBuffer : sseBuffer.slice(lastBreak + 2);
 }
 
-/** 官方 user_info 行 [id,type,filePath,userName,status] -> DaoUserInfo。type 须在 1-4 内，否则抛错。 */
+/** 官方 user_info 行 [id,type,filePath,userName,status] -> DaoUserInfo。type 须在 1-4、status 须在 0/1 内，否则抛错。 */
 const OFFICIAL_TYPE_VALUES = new Set<number>([1, 2, 3, 4]);
 
 function mapRows(data: unknown[], from: string): DaoUserInfo[] {
@@ -302,12 +302,16 @@ function mapRows(data: unknown[], from: string): DaoUserInfo[] {
     if (!OFFICIAL_TYPE_VALUES.has(typeNum)) {
       throw new Error(`${from}: 未知平台类型 ${typeNum}（应为 1-4）`);
     }
+    const statusNum = Number(status);
+    if (statusNum !== 0 && statusNum !== 1) {
+      throw new Error(`${from}: 未知账号状态 ${statusNum}（应为 0/1）`);
+    }
     return {
       id: Number(id),
       type: typeNum as DaoUserInfo["type"],
       filePath: String(filePath),
       userName: String(userName),
-      status: Number(status) as DaoUserInfo["status"],
+      status: statusNum as DaoUserInfo["status"],
     };
   });
 }

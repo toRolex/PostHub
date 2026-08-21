@@ -213,6 +213,21 @@ describe("officialApi 账号接口（mock fetch）", () => {
     await expect(officialApi.getAccounts("http://127.0.0.1:9999")).rejects.toThrow("未知平台类型 9");
   });
 
+  it("getAccounts 非法账号状态 -> 抛校验错误", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          code: 200,
+          msg: null,
+          data: [[1, 3, "a.json", "抖音", 7]],
+        }),
+      ),
+    );
+    await expect(officialApi.getAccounts("http://127.0.0.1:9999")).rejects.toThrow("未知账号状态 7");
+  });
+
   it("getValidAccounts 非 200 code 抛错", async () => {
     const { officialApi } = await import("../api/official");
     vi.stubGlobal(
