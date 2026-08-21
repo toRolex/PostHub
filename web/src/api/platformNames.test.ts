@@ -15,7 +15,7 @@ describe("PLATFORM_NAMES", () => {
     }
   });
 
-  it("手持官方 type 派生：每个 OfficialPlatformType 经 OFFICIAL_TYPE_PLATFORM 能取到中文名", () => {
+  it("官方 type 派生：每个 OfficialPlatformType 经 OFFICIAL_TYPE_PLATFORM 能取到中文名", () => {
     const types: OfficialPlatformType[] = [1, 2, 3, 4];
     for (const t of types) {
       expect(PLATFORM_NAMES[OFFICIAL_TYPE_PLATFORM[t]]).toBeTruthy();
