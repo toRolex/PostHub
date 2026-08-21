@@ -400,7 +400,7 @@ function mkWechatItem(over: Partial<{
   filePath: string;
   mode: "immediate" | "timer";
   wechat: string[];
-}>): import("../types/batch").BatchItem {
+}>): import("../domain/batch").BatchItem {
   return {
     filePath: over.filePath ?? "a.mp4",
     title: "t",

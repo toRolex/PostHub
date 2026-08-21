@@ -13,7 +13,7 @@
 import { CheckCircle2, XCircle } from "lucide-react";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
 import type { Platform } from "../../api/types";
-import type { BatchItem, BatchItemResult } from "../../types/batch";
+import type { BatchItem, BatchItemResult } from "../../domain/batch";
 import {
   Dialog,
   DialogContent,

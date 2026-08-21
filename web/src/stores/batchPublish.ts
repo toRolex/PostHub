@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
 import type { Platform, PlatformFields } from "../api/types";
-import type { BatchItem, BatchItemResult } from "../types/batch";
+import type { BatchItem, BatchItemResult } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
 import { validatePlatformFields } from "../domain/declarations";
 

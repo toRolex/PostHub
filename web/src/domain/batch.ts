@@ -1,16 +1,14 @@
 /**
- * 矩阵批量发布领域类型（issue #37 / #38）。
+ * 矩阵批量发布领域骨架：类型 + itemKey 约定 + 展开规则单点（issue #56）。
  *
- * 旧模型：「一组标题/标签 + 多账号」笛卡尔展开到所有选中视频。
- * 新模型：每视频一条 BatchItem，独立标题/描述/标签/账号/定时模式，
- *         整批共用顶部 dailyTimes chip 池（HH:MM）。
- *
- * 重写节奏：#38 落地这些类型 + buildBatchItemsFromMatrix + 重写后的 store；
- *          旧 store 接口以薄适配层保留（#02 切换时统一删除）。
+ * - 类型自 types/batch.ts 迁入（该文件删除，import 改指此处）。
+ * - itemKey 拼接/解析约定唯一定义于 keyOf / parseKey；不 escape
+ *   （信任 filePath 与 cookie 文件名不含 "|"），parseKey 用 lastIndexOf 防御。
+ * - 展开规则唯一定义于 buildBatchItemRefs；preview / result / submit 各自 map 加字段。
  */
 
 import type { Platform } from "../api/types";
-import type { PlatformFields } from "../domain/declarations";
+import type { PlatformFields } from "./declarations";
 
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;
@@ -53,10 +51,10 @@ export interface BatchItem {
  * 单视频条目提交结果（按 item 维度反馈，不再按平台聚合）。
  *
  * 矩阵模式下同一平台可能有多个账号 → 展开为多个 PostVideoRequest 项，
- * 每项独立反馈；itemKey 用来稳定去重（filePath + accountId 组合）。
+ * 每项独立反馈；itemKey 由 keyOf 生成（filePath + cookie 组合），用于稳定去重。
  */
 export interface BatchItemResult {
-  /** 稳定 key：filePath + "|" + accountId。便于 UI 按 key 渲染行反馈。 */
+  /** keyOf(filePath, cookie) 生成的稳定 key。便于 UI 按 key 渲染行反馈。 */
   itemKey: string;
   fileName: string;
   platform: Platform;
@@ -68,4 +66,42 @@ export interface BatchItemResult {
   ok: boolean;
   /** 失败原因（成功时为「批量发布任务已提交」之类的固定文案）。 */
   msg: string;
+}
+
+/** 批量校验错误（issue #57 validateBatch 迁移时使用）。 */
+export type ValidationError = { row: number; filePath: string; msg: string };
+
+/** itemKey 唯一拼接点：filePath + "|" + cookie，不 escape。 */
+export function keyOf(filePath: string, cookie: string): string {
+  return `${filePath}|${cookie}`;
+}
+
+/** itemKey 唯一解析点：lastIndexOf 取最后一个分隔符，防御 filePath 含 "|"。 */
+export function parseKey(itemKey: string): { filePath: string; cookie: string } {
+  const idx = itemKey.lastIndexOf("|");
+  return { filePath: itemKey.slice(0, idx), cookie: itemKey.slice(idx + 1) };
+}
+
+/** (item, platform, cookie) 三元组引用；展开规则的单一来源。 */
+export interface BatchItemRef {
+  item: BatchItem;
+  platform: Platform;
+  cookie: string;
+}
+
+/** 把 BatchItem[] × 平台 × 账号展开为三元组序列；跳过空账号数组。 */
+export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
+  const refs: BatchItemRef[] = [];
+  for (const item of items) {
+    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
+      Platform,
+      string[],
+    ][]) {
+      if (!accounts || accounts.length === 0) continue;
+      for (const cookie of accounts) {
+        refs.push({ item, platform, cookie });
+      }
+    }
+  }
+  return refs;
 }

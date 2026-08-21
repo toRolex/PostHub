@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { buildPreviewRows } from "./BatchPreviewDialog";
-import type { BatchItem } from "../../types/batch";
+import type { BatchItem } from "../../domain/batch";
 
 function mkItem(over: Partial<BatchItem>): BatchItem {
   return {
