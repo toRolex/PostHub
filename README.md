@@ -15,6 +15,9 @@
 
 </div>
 
+> [!NOTE]
+> PostHub 的发布引擎基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload) 构建，感谢 [dreammis](https://github.com/dreammis) 及所有贡献者的开源工作，让本项目得以把精力集中在产品形态与账号 / 任务模型上。
+
 ## 这是什么
 
 PostHub 是一个桌面端的多平台短视频发布工具，目标是把「一个视频发到抖音 / 小红书 / 视频号」这件重复、机械、易触发风控的事，从人工逐平台操作变成 **一键 / 定时批量执行**。
