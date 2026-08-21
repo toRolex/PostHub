@@ -27,11 +27,14 @@ if str(_DAEMON_DIR) not in sys.path:
 
 import db_init  # noqa: E402  # 建库模块；其顶层 `import conf` 触发配置校验（上游依赖解析）
 
+from posthub.uploader_wrapper import install as install_uploader_wrapper  # noqa: E402
+
 HOST = "127.0.0.1"
 PORT = 5409
 
 
 db_init.ensure_db()
+install_uploader_wrapper()
 
 import sau_backend  # noqa: E402  # 官方主入口（原样）
 

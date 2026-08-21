@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { officialApi, buildPostVideoRequest } from "../api/official";
-import type { Account, Platform } from "../api/types";
+import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
+import { trimPlatformFields, validatePlatformFields } from "../api/declarations";
 
 const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   douyin: null,
@@ -72,6 +73,7 @@ const initialForm = (): PublishFormValues => {
     videosPerDay: pref.videosPerDay,
     dailyTimes: pref.dailyTimes,
     startDays: pref.startDays,
+    platformFields: {},
   };
 };
 
@@ -98,6 +100,8 @@ export interface PublishFormValues {
   dailyTimes: number[];
   /** 定时：起始天（startDays，0 = 明天起）。 */
   startDays: number;
+  /** 内容声明按平台分键（issue #43）。空字段视为不覆盖账号默认。 */
+  platformFields: PlatformFields;
 }
 
 interface PublishState extends PublishFormValues {
@@ -198,6 +202,8 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
         break;
       }
     }
+    const fieldError = validatePlatformFields(s.platformFields);
+    if (fieldError) errors.push(fieldError);
     // 定时：仅启用时校验，规则与官方 generate_schedule_time_next_day 对齐。
     if (s.timerEnabled) {
       if (!Number.isInteger(s.videosPerDay) || s.videosPerDay <= 0) {
@@ -247,6 +253,8 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
         // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
         const cookieFile =
           accountList.find((a) => a.id === accId && a.platform === p)?.cookieFile ?? "";
+        // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
+        const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
         try {
           await officialApi.postVideo(
             base,
@@ -257,6 +265,7 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
               title: s.title,
               caption: s.caption,
               tags,
+              platformFields: trimmed,
               timer: {
                 enableTimer: s.timerEnabled,
                 videosPerDay: s.videosPerDay,

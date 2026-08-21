@@ -10,6 +10,7 @@
  */
 
 import type { Platform } from "../api/types";
+import type { PlatformFields } from "../api/declarations";
 
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;
@@ -44,6 +45,8 @@ export interface BatchItem {
   startDays?: number;
   /** 'HH:MM'，mode='timer' 必填，从 dailyTimes 池里挑 1 个。 */
   timeOfDay?: string;
+  /** 内容声明按平台分键透传（issue #43）；覆盖账号 defaultPlatformFields。 */
+  platformFields?: PlatformFields;
 }
 
 /**

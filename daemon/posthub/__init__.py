@@ -4,4 +4,4 @@
 前端左下角版本号读取 `/health` 返回的此值，发版时需同步 bump（见 docs/deployment.md 发布流程）。
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"

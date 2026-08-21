@@ -1,7 +1,7 @@
 # CONTEXT.md — PostHub（发布中枢）
 
 > single-context 领域文档。术语与决策的唯一事实来源；改术语先改这里，再改代码。
-> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`、`docs/adr/0004-desktop-packaging.md`、`docs/adr/0005-scheduler-rules-single-source.md`、`docs/adr/0006-official-backend-thin-wrapper.md`、`docs/adr/0007-daemon-process-lifecycle-cleanup.md`。
+> 决策细节见 `docs/adr/0001-task-and-sqlite-schema.md`、`docs/adr/0002-manifest-batch-format.md`、`docs/adr/0003-frontend-react-shadcn-migration.md`、`docs/adr/0004-desktop-packaging.md`、`docs/adr/0005-scheduler-rules-single-source.md`、`docs/adr/0006-official-backend-thin-wrapper.md`、`docs/adr/0007-daemon-process-lifecycle-cleanup.md`、`docs/adr/0008-platform-declaration-pass-through.md`。
 
 ## 领域
 
@@ -31,6 +31,13 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **矩阵批量** | 「批量发布」区段的产品形态（issue #37/#38/#39）：每视频一条 BatchItem（独立标题 / 描述 / 标签 / 账号 / 定时模式），不再笛卡尔展开成「标题 × 账号」共享一份内容。提交时一行 BatchItem 展开为多条 PostVideoRequest（每账号一条），一次 POST `/postVideoBatch`。 |
 | **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上、提交时由 `buildBatchItemsFromMatrix` 按整点取整映射回 0–23 整型数组下发。 |
 | **无 CLI** | PostHub 不发布命令行工具（`posthub` CLI / `ph` 子命令等）；所有交互走桌面壳 GUI。官方 `sau_backend.py` 仍由桌面壳作为子进程拉起（不在用户 shell 暴露）。PostHub 用户面对的「官方后端」只通过桌面壳的 HTTP/SSE seam 触达。 |
+| **内容声明** | 各平台发布页要求创作者勾选/选择的合规标识字段，承载「是否 AI 生成 / 虚构 / 实拍 / 营销 / 转载 / 个人观点」等语义。三家平台 UI 字段名与候选文案均不统一。 |
+| **平台声明字段** | 视频号「添加声明」8 选项 / 抖音「自主声明」单选 radio / 小红书「添加内容类型声明」单选 radio。PostHub **按平台分键透传**到 `platform_fields.<platform>`，不抽象成统一键 —— 三家语义不对齐，统一键会丢精度。 |
+| **`platform_fields.<platform>`** | PostHub 任务级 JSON 字段（ADR-0001 预留位），承载平台专属透传。键名沿用 glossary "平台"：`wechat` / `douyin` / `xiaohongshu`。当前已规划子键：`wechat.declaration / wechat.origin`；`douyin.declaration`；`xiaohongshu.source / xiaohongshu.origin`。上游未支持的子键（如小红书 `source`）由 PostHub wrapper 层处理。 |
+| **`declaration`（透传值）** | 视频号：`'no_label' \| 'ai_generated' \| 'fictional' \| 'personal_opinion' \| 'marketing' \| 'self_shoot' \| 'shoot_time_location' \| 'repost'`；抖音：`'ai_generated' \| 'personal_opinion' \| 'repost' \| 'marketing' \| 'fictional' \| 'no_need'`。PostHub 这层映射成上游能识别的中文文案（如 `'no_label' → "无需标注"`）。 |
+| **`source`（透传值，小红书）** | `'fictional' \| 'ai_synthesized' \| 'marketing' \| 'self_declare'`（值随平台 UI 文案变更同步更新；上游无 source 字段代码，PostHub 用 DOM wrapper 处理）。 |
+| **`origin`** | 「声明原创」开关，三家平台都有；PostHub 透传布尔，不参与合规声明语义。 |
+| **平台默认声明** | 账号维度配置；批量场景下，未在任务表单覆盖时使用账号默认。**解决「批量发布全部被预选 AI 生成」痛点的关键开关**。PostHub 账号管理页提供默认声明设置入口。 |
 
 ## 平台约束注册表（已实测/调研）
 
@@ -53,6 +60,18 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 - 平台枚举命名（CONTEXT.md 层）：`douyin` / `xiaohongshu` / `wechat`。对接官方后端时映射到官方整型（1=小红书 2=视频号 3=抖音 4=快手）。
 - 所有 Python 用 `uv` 管理，不用裸 pip / venv。
 - 官方代码（`uploader/*`、`sau_backend.py`、`myUtils`、`sau_frontend`）不 fork、不改；PostHub 只在 seam（HTTP）与桌面壳侧包一层。
+
+## 内容声明透传（seam 扩展示例）
+
+| 平台 | UI 字段 | PostHub 透传键 | 取值（内部枚举） |
+|---|---|---|---|
+| 视频号 `wechat` | 添加声明 8 选项 | `platform_fields.wechat.declaration` | `no_label` / `ai_generated` / `fictional` / `personal_opinion` / `marketing` / `self_shoot` / `shoot_time_location` / `repost` |
+| 视频号 `wechat` | 声明原创 | `platform_fields.wechat.origin` | `true` / `false` |
+| 抖音 `douyin` | 自主声明 6 选项 | `platform_fields.douyin.declaration` | `ai_generated` / `personal_opinion` / `repost` / `marketing` / `fictional` / `no_need` |
+| 小红书 `xiaohongshu` | 添加内容类型声明 | `platform_fields.xiaohongshu.source` | `fictional` / `ai_synthesized` / `marketing` / `self_declare`（上游无 source 字段代码，PostHub 用 DOM wrapper） |
+| 小红书 `xiaohongshu` | 声明原创 | `platform_fields.xiaohongshu.origin` | `true` / `false` |
+
+> 上游 `social-auto-upload/uploader/*` 当前支持度（实测 2026-08-21）：抖音 `declaration` 全链通；视频号仅尝试回避项（候选列表不含 "无需标注"，需 PostHub wrapper 扩列）；小红书 `source` 无代码。详见 `docs/research/2026-08-21-three-platform-aigc-declaration-fields.md`。
 
 ## 待验证项（真实账号实测后回填）
 

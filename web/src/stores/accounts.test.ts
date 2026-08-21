@@ -76,6 +76,9 @@ describe("accounts store（官方账号管理）", () => {
           ],
         });
       }
+      if (url.endsWith("/getAccountDefaults")) {
+        return jsonResponse({ code: 200, msg: null, data: {} });
+      }
       return jsonResponse(mockRows);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -88,10 +91,11 @@ describe("accounts store（官方账号管理）", () => {
     expect(s.accounts[0].cookieValid).toBe(true);
     expect(s.accounts[2].cookieValid).toBe(false);
     expect(s.error).toBe("");
-    // 两家官方接口各请求一次
+    // 三家官方接口各请求一次
     const urls = fetchMock.mock.calls.map(([u]) => u as string);
     expect(urls.some((u) => u.endsWith("/getAccounts"))).toBe(true);
     expect(urls.some((u) => u.endsWith("/getValidAccounts"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/getAccountDefaults"))).toBe(true);
   });
 
   it("fetchAccounts 失败 -> 记录 error 且列表为空", async () => {

@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS file_records (
 _CREATE_TABLES = (CREATE_USER_INFO, CREATE_FILE_RECORDS)
 
 
+# 官方 user_info 表增量迁移（issue #43 / ADR-0008）：账号粒度「默认声明」。
+# 老库无此列 → ADD COLUMN（SQLite 3.35+ 支持 IF NOT EXISTS；旧版只跑一次幂等即可）。
+# 列类型：TEXT（JSON 字符串；NULL = 账号未设置默认声明）。
+ALTER_USER_INFO_DEFAULT_PLATFORM_FIELDS = (
+    "ALTER TABLE user_info ADD COLUMN default_platform_fields TEXT"
+)
+
+
 # 官方写入数据但**不自动创建**的目录（官方自建只到 cookies/ 与 cookiesFile/）；
 # 缺失会导致 /uploadSave 抛 [Errno 2]。运行时补齐（PowerShell Copy-Item 语义幂等）。
 DATA_DIRS = ("videoFile",)
@@ -72,4 +80,10 @@ def ensure_db(db_path: Path | str | None = None) -> Path:
     with sqlite3.connect(path) as conn:
         for ddl in _CREATE_TABLES:
             conn.execute(ddl)
+        # 增量迁移：尝试 ADD COLUMN。已存在的库（旧版未建此列）执行一次即生效，
+        # 二次执行会抛「duplicate column name」——忽略该错，保持幂等。
+        try:
+            conn.execute(ALTER_USER_INFO_DEFAULT_PLATFORM_FIELDS)
+        except sqlite3.OperationalError:
+            pass
     return path

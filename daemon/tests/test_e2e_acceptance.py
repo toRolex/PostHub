@@ -240,6 +240,151 @@ def test_download_cookie_missing_filepath_error_relayed(
     assert body["msg"], "官方应返回非空错误信息"
 
 
+def test_get_account_defaults_returns_empty_dict_initially(
+    backend: tuple[str, Path],
+) -> None:
+    """新端点契约 smoke：/getAccountDefaults 返 `{code,msg,data}` + data 为 dict。"""
+    url, _ = backend
+    status, body = _get(f"{url}/getAccountDefaults")
+    assert status == 200
+    assert {"code", "msg", "data"} <= set(body)
+    assert isinstance(body["data"], dict)
+    # 增量迁移后默认空
+    assert body["data"] == {}
+
+
+def test_post_video_with_platform_fields_pass_through(
+    backend: tuple[str, Path],
+) -> None:
+    """issue #43：/postVideo 接受 platform_fields 字段。
+
+    这里只验证 seam 接受该字段且校验失败时返 400（不会触发真实发布流程）。
+    """
+    url, _ = backend
+    payload = {
+        "accountList": ["a.json"],
+        "type": 1,
+        "title": "t",
+        "platformFields": {
+            "wechat": {"declaration": "no_label"},
+            "douyin": {"declaration": "no_need"},
+            "xiaohongshu": {"source": "self_declare", "origin": True},
+        },
+    }
+    # 缺 fileList → 官方 400，但 platform_fields seam 已通过校验
+    status, body = _post_json(f"{url}/postVideo", payload)
+    assert status == 400
+    assert "文件列表" in body["msg"]
+
+
+def test_post_video_unknown_platform_field_rejected(
+    backend: tuple[str, Path],
+) -> None:
+    """story #22 / #25：平台字段非法 → 400，明确指出平台 / 字段 / 候选。"""
+    url, _ = backend
+    payload = {
+        "fileList": ["a.mp4"],
+        "accountList": ["a.json"],
+        "type": 3,  # 抖音
+        "title": "t",
+        "platformFields": {
+            "douyin": {"declaration": "bogus_value"},
+        },
+    }
+    status, body = _post_json(f"{url}/postVideo", payload)
+    assert status == 400
+    # 错误信息应同时指出平台 + 字段名 + 候选集合
+    msg = body["msg"]
+    assert "douyin" in msg or "字段" in msg
+    assert "bogus_value" in msg
+
+
+def test_post_video_unknown_platform_subkey_rejected(
+    backend: tuple[str, Path],
+) -> None:
+    """抖音不接受 origin（小红书/视频号才有）→ 400。"""
+    url, _ = backend
+    payload = {
+        "fileList": ["a.mp4"],
+        "accountList": ["a.json"],
+        "type": 3,  # 抖音
+        "title": "t",
+        "platformFields": {
+            "douyin": {"origin": True},  # 抖音不支持 origin
+        },
+    }
+    status, body = _post_json(f"{url}/postVideo", payload)
+    assert status == 400
+    assert "douyin" in body["msg"] or "origin" in body["msg"]
+
+
+def test_post_video_batch_with_platform_fields_validated(
+    backend: tuple[str, Path],
+) -> None:
+    """/postVideoBatch 接受 platform_fields 数组；任一项非法 → 整批 400。"""
+    url, _ = backend
+    payload = [
+        {
+            "fileList": ["a.mp4"],
+            "accountList": ["a.json"],
+            "type": 3,
+            "title": "t",
+            "platformFields": {"douyin": {"declaration": "no_need"}},
+        },
+        {
+            "fileList": ["b.mp4"],
+            "accountList": ["b.json"],
+            "type": 3,
+            "title": "u",
+            "platformFields": {"douyin": {"declaration": "bogus"}},
+        },
+    ]
+    status, body = _post_json(f"{url}/postVideoBatch", payload)
+    assert status == 400
+    assert "bogus" in body["msg"]
+
+
+def test_update_account_defaults_roundtrip(
+    backend: tuple[str, Path],
+) -> None:
+    """/updateAccountDefaults 持久化后 /getAccountDefaults 立即可见。"""
+    url, base = backend
+    db_path = Path(base) / "db" / "database.db"
+    # 注入一个测试账号
+    cookie_file = "test_default.json"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO user_info (type, filePath, userName) VALUES (3, ?, '测试号')",
+            (cookie_file,),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM user_info WHERE filePath = ?", (cookie_file,)
+        ).fetchone()[0]
+
+    # 写默认声明
+    payload = {
+        "id": row_id,
+        "default_platform_fields": {"douyin": {"declaration": "no_need"}},
+    }
+    status, body = _post_json(f"{url}/updateAccountDefaults", payload)
+    assert status == 200
+    assert body["code"] == 200
+
+    # 读回
+    _, body = _get(f"{url}/getAccountDefaults")
+    assert body["data"][cookie_file]["douyin"]["declaration"] == "no_need"
+
+    # 清除
+    status, _ = _post_json(
+        f"{url}/updateAccountDefaults",
+        {"id": row_id, "default_platform_fields": None},
+    )
+    assert status == 200
+    _, body = _get(f"{url}/getAccountDefaults")
+    assert cookie_file not in body["data"] or body["data"][cookie_file] is None
+
+
 def test_upload_getfiles_delete_chain(backend: tuple[str, Path]) -> None:
     """素材链往返：/uploadSave → /getFiles 可见 → /deleteFile 移除。"""
     url, _ = backend

@@ -3,6 +3,10 @@
  * 与后端字段命名保持一致（snake_case）。
  */
 
+import type { PlatformFields } from "./declarations";
+
+export type { PlatformFields };
+
 export type Platform = "douyin" | "xiaohongshu" | "wechat" | "kuaishou";
 
 /**
@@ -67,6 +71,8 @@ export interface OfficialAccount {
   cookieValid: boolean;
   /** 官方存储的校验状态：1 有效 / 0 无效。 */
   status: number;
+  /** 账号粒度默认声明；undefined = 未设置。 */
+  defaultPlatformFields?: PlatformFields;
 }
 
 export type Account = OfficialAccount;
