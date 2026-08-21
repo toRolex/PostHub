@@ -71,9 +71,6 @@ export interface BatchItemResult {
   msg: string;
 }
 
-/** 批量校验错误（issue #57 validateBatch 迁移时使用）。 */
-export type ValidationError = { row: number; filePath: string; msg: string };
-
 /** itemKey 唯一拼接点：filePath + "|" + cookie，不 escape。 */
 export function keyOf(filePath: string, cookie: string): string {
   return `${filePath}|${cookie}`;
@@ -110,10 +107,13 @@ export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
 }
 
 /**
+ * 批量校验错误。row 从 1 起编号；整批级错误（空批次）row=0、filePath=""。
+ */
+export type ValidationError = { row: number; filePath: string; msg: string };
+
+/**
  * 批量校验唯一实现：返回结构化 ValidationError[]。
- *
- * - row 从 1 起编号；整批级错误（空批次）row=0、filePath=""。
- * - store.validate() 在边界拼「第 N 行：」前缀；组件按 filePath 分组重排版。
+ * store.validate() 在边界拼「第 N 行：」前缀；组件按 filePath 分组重排版。
  */
 export function validateBatch(items: BatchItem[], dailyTimes: string[]): ValidationError[] {
   const errors: ValidationError[] = [];

@@ -30,8 +30,7 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
-import type { BatchItem } from "../../domain/batch";
-import { validateBatch } from "../../domain/batch";
+import { validateBatch, type BatchItem } from "../../domain/batch";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 

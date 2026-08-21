@@ -91,13 +91,6 @@ export const initialBatchPublishState: Omit<
   previewOpen: false,
 };
 
-/* ───────────────────────── 校验 ───────────────────────── */
-
-/**
- * 批量校验入口已收敛至 domain/batch.ts 的 validateBatch（结构化 ValidationError）。
- * 本 store 的公开 validate() 在边界拼「第 N 行：」前缀，保持 string[] 返回（视图层零改动）。
- */
-
 /* ───────────────────────── helpers ───────────────────────── */
 
 /**
