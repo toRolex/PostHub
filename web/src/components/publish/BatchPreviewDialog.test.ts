@@ -20,7 +20,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
     title: "t",
     caption: "",
     tags: "",
-    accountIdsByPlatform: {},
+    accountCookiesByPlatform: {},
     mode: "immediate",
     ...over,
   };
@@ -35,7 +35,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d1.json"] },
+        accountCookiesByPlatform: { douyin: ["d1.json"] },
         mode: "immediate",
       }),
     ]);
@@ -55,7 +55,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: {
+        accountCookiesByPlatform: {
           douyin: ["d1.json", "d2.json"],
           xiaohongshu: ["x1.json"],
         },
@@ -71,11 +71,11 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
       }),
       mkItem({
         filePath: "b.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"], xiaohongshu: ["x.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"], xiaohongshu: ["x.json"] },
       }),
     ]);
     expect(rows).toHaveLength(3);
@@ -87,7 +87,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
         mode: "timer",
         timeOfDay: "10:00",
         startDays: 1,
@@ -98,11 +98,11 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     expect(rows[0].startDays).toBe(1);
   });
 
-  it("accountIdsByPlatform 字段空数组时该平台不产出行", () => {
+  it("accountCookiesByPlatform 字段空数组时该平台不产出行", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: [], xiaohongshu: ["x.json"] },
+        accountCookiesByPlatform: { douyin: [], xiaohongshu: ["x.json"] },
       }),
     ]);
     expect(rows).toHaveLength(1);
@@ -113,7 +113,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "video_x.mp4",
-        accountIdsByPlatform: { wechat: ["w_a.json"] },
+        accountCookiesByPlatform: { wechat: ["w_a.json"] },
       }),
     ]);
     expect(rows[0].itemKey).toBe("video_x.mp4|w_a.json");

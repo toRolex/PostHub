@@ -15,7 +15,7 @@ function makeItem(patch: Partial<BatchItem> = {}): BatchItem {
     title: "标题",
     caption: "",
     tags: "",
-    accountIdsByPlatform: { douyin: ["d1.json"] },
+    accountCookiesByPlatform: { douyin: ["d1.json"] },
     mode: "immediate",
     ...patch,
   };
@@ -53,14 +53,14 @@ describe("buildBatchItemRefs", () => {
     const items = [
       makeItem({
         filePath: "v1.mp4",
-        accountIdsByPlatform: { douyin: ["d1.json", "d2.json"], wechat: [] },
+        accountCookiesByPlatform: { douyin: ["d1.json", "d2.json"], wechat: [] },
       }),
       makeItem({
         filePath: "v2.mp4",
         mode: "timer",
         startDays: 1,
         timeOfDay: "09:00",
-        accountIdsByPlatform: { xiaohongshu: ["x1.json"] },
+        accountCookiesByPlatform: { xiaohongshu: ["x1.json"] },
       }),
     ];
     const refs = buildBatchItemRefs(items);
@@ -85,7 +85,7 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
 
   it("合法批次 → 无错误", () => {
     const errors = validateBatch(
-      [makeItem({ title: "t", accountIdsByPlatform: { douyin: ["d.json"] } })],
+      [makeItem({ title: "t", accountCookiesByPlatform: { douyin: ["d.json"] } })],
       [],
     );
     expect(errors).toEqual([]);
@@ -100,7 +100,7 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
 
   it("未勾账号 → 错误带 row 与 filePath", () => {
     const errors = validateBatch(
-      [makeItem({ filePath: "v2.mp4", accountIdsByPlatform: {} })],
+      [makeItem({ filePath: "v2.mp4", accountCookiesByPlatform: {} })],
       [],
     );
     expect(errors).toEqual([
@@ -184,7 +184,7 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
       [
         makeItem({
           filePath: "v7.mp4",
-          accountIdsByPlatform: { xiaohongshu: ["x.json"] },
+          accountCookiesByPlatform: { xiaohongshu: ["x.json"] },
           platformFields: { xiaohongshu: { source: "ai_synthesized" } },
         }),
       ],
@@ -202,7 +202,7 @@ describe("wechatScheduledCountsByCookie（视频号累计定时任务计数）",
   }): BatchItem {
     return makeItem({
       filePath: over.filePath ?? "a.mp4",
-      accountIdsByPlatform: { wechat: over.wechat ?? [] },
+      accountCookiesByPlatform: { wechat: over.wechat ?? [] },
       mode: over.mode ?? "immediate",
     });
   }

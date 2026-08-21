@@ -13,7 +13,7 @@ import { useDaemonStore } from "./daemon";
 /**
  * 矩阵批量发布 store。
  *
- * 模型：每视频一条 BatchItem，独立 title/caption/tags/accountIdsByPlatform/mode；
+ * 模型：每视频一条 BatchItem，独立 title/caption/tags/accountCookiesByPlatform/mode；
  * 整批共用 dailyTimes 池；result 按 (filePath, cookieFile) 稳定组合反馈。
  */
 

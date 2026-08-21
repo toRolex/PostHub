@@ -17,7 +17,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
     title: "标题",
     caption: "",
     tags: "",
-    accountIdsByPlatform: {},
+    accountCookiesByPlatform: {},
     mode: "immediate",
     ...over,
   };
@@ -25,7 +25,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
 
 describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("无账号勾选 → accountSummary = '未选账号'", () => {
-    const s = summarizeItem(mkItem({ accountIdsByPlatform: {} }));
+    const s = summarizeItem(mkItem({ accountCookiesByPlatform: {} }));
     expect(s.accountSummary).toBe("未选账号");
     expect(s.totalAccounts).toBe(0);
   });
@@ -33,7 +33,7 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("多平台多账号 → accountSummary = 'N 账号 / M 平台'", () => {
     const s = summarizeItem(
       mkItem({
-        accountIdsByPlatform: {
+        accountCookiesByPlatform: {
           douyin: ["d1.json", "d2.json"],
           xiaohongshu: ["x1.json"],
         },
@@ -72,7 +72,7 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("有账号 + timer 全配置 → accountSummary / timeOfDayLabel 都填充", () => {
     const s = summarizeItem(
       mkItem({
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
         mode: "timer",
         timeOfDay: "10:00",
       }),

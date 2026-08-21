@@ -23,7 +23,7 @@ export type BatchMode = "immediate" | "timer";
  * 对应 issue #37 prototype 内联片段。shape 与内联一致，仅做 TS 化：
  * - filePath 必填（videoFile/ 下的磁盘文件名，即 file_records.file_path）。
  * - mode='timer' 时 startDays + timeOfDay 必填；timeOfDay 必须来自 dailyTimes 池。
- * - accountIdsByPlatform 字段名为「ids」语义沿用 PRD，但实际承载 cookie 文件名
+ * - accountCookiesByPlatform 字段名为「ids」语义沿用 PRD，但实际承载 cookie 文件名
  *   字符串数组 —— 命名沿用以最小化 PRD 改动；store 层做 number id ↔ string 映射。
  *   该选择让 buildBatchItemsFromMatrix 成为不依赖 accounts store 的纯函数。
  * - videosPerDay 不暴露（硬写 1），不在 type 上表达。
@@ -36,9 +36,9 @@ export interface BatchItem {
   tags: string;
   /**
    * 按平台选中的账号 cookie 文件名数组（cookiesFile/ 下的磁盘文件名）。
-   * 命名沿用 PRD 内联片段的 accountIdsByPlatform，但语义是 cookie 文件名。
+   * 命名沿用 PRD 内联片段的 accountCookiesByPlatform，但语义是 cookie 文件名。
    */
-  accountIdsByPlatform: Partial<Record<Platform, string[]>>;
+  accountCookiesByPlatform: Partial<Record<Platform, string[]>>;
   mode: BatchMode;
   /** mode='timer' 必填；mode='immediate' 忽略。 */
   startDays?: number;
@@ -93,7 +93,7 @@ export interface BatchItemRef {
 export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
   const refs: BatchItemRef[] = [];
   for (const item of items) {
-    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
+    for (const [platform, accounts] of Object.entries(item.accountCookiesByPlatform) as [
       Platform,
       string[],
     ][]) {
@@ -126,7 +126,7 @@ export function validateBatch(items: BatchItem[], dailyTimes: string[]): Validat
     if (!item.title.trim()) {
       errors.push({ row, filePath: item.filePath, msg: "标题不能为空" });
     }
-    const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
+    const hasAccount = (Object.values(item.accountCookiesByPlatform) as string[][]).some(
       (a) => a && a.length > 0,
     );
     if (!hasAccount) {
@@ -157,7 +157,7 @@ export function validateBatch(items: BatchItem[], dailyTimes: string[]): Validat
 /**
  * 视频号单账号累计定时任务计数（issue #40；计数规则唯一定义点，issue #58）。
  *
- * 统计 `mode='timer'` 且 `accountIdsByPlatform.wechat` 命中的 item 数：每 item 对每个
+ * 统计 `mode='timer'` 且 `accountCookiesByPlatform.wechat` 命中的 item 数：每 item 对每个
  * 命中的 cookie 计一次。返回 cookie → 次数的 Map；未命中 cookie 不出现在 Map 中
  * （消费方用 `?? 0` 兜底）。本批次内累计；跨批次历史由官方兜底。
  */
@@ -165,7 +165,7 @@ export function wechatScheduledCountsByCookie(items: BatchItem[]): Map<string, n
   const map = new Map<string, number>();
   for (const item of items) {
     if (item.mode !== "timer") continue;
-    for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
+    for (const cookie of item.accountCookiesByPlatform.wechat ?? []) {
       map.set(cookie, (map.get(cookie) ?? 0) + 1);
     }
   }

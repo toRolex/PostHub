@@ -29,7 +29,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "标题 A",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     const s = useBatchPublishStore.getState();
@@ -44,7 +44,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "A",
       caption: "",
       tags: "",
-      accountIdsByPlatform: {},
+      accountCookiesByPlatform: {},
       mode: "immediate",
     });
     addItem({
@@ -52,7 +52,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "B",
       caption: "",
       tags: "",
-      accountIdsByPlatform: {},
+      accountCookiesByPlatform: {},
       mode: "immediate",
     });
     removeItem("a.mp4");
@@ -68,7 +68,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "原标题",
       caption: "原描述",
       tags: "tag",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     updateItem("a.mp4", { title: "新标题" });
@@ -85,7 +85,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     setItemMode("a.mp4", "timer");
@@ -102,7 +102,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     setItemMode("a.mp4", "timer");
@@ -119,7 +119,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { wechat: ["w.json"] },
+      accountCookiesByPlatform: { wechat: ["w.json"] },
       mode: "immediate",
     });
     setItemPlatformField("a.mp4", "wechat", { declaration: "no_label" });
@@ -135,7 +135,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { wechat: ["w.json"] },
+      accountCookiesByPlatform: { wechat: ["w.json"] },
       mode: "immediate",
     });
     setItemPlatformField(
@@ -175,7 +175,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     const errors = useBatchPublishStore.getState().validate();
@@ -189,7 +189,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: {},
+      accountCookiesByPlatform: {},
       mode: "immediate",
     });
     const errors = useBatchPublishStore.getState().validate();
@@ -204,7 +204,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     setItemMode("a.mp4", "timer"); // startDays=0 默认，但 timeOfDay 为空
@@ -226,7 +226,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "标题 A",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json", "douyin_b.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json", "douyin_b.json"] },
       mode: "immediate",
     });
 
@@ -271,7 +271,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json", "douyin_b.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json", "douyin_b.json"] },
       mode: "immediate",
     });
 
@@ -299,7 +299,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
 
@@ -336,7 +336,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "立即",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     addItem({
@@ -344,7 +344,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "定时",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_b.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_b.json"] },
       mode: "immediate",
     });
     setItemMode("b.mp4", "timer");
@@ -370,7 +370,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       title: "t",
       caption: "",
       tags: "",
-      accountIdsByPlatform: { douyin: ["douyin_a.json"] },
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
       mode: "immediate",
     });
     addDailyTime("10:00");
@@ -382,13 +382,13 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(s.submitting).toBe(false);
   });
 
-  it("旧接口字段（title/tags/selectedFiles/accountIdsByPlatform/batchResult）已从 state 移除", () => {
+  it("旧接口字段（title/tags/selectedFiles/accountCookiesByPlatform/batchResult）已从 state 移除", () => {
     // #39 清理后，新 store 不再暴露旧字段（适配层删除）。
     const s = useBatchPublishStore.getState();
     expect((s as unknown as Record<string, unknown>).title).toBeUndefined();
     expect((s as unknown as Record<string, unknown>).tags).toBeUndefined();
     expect((s as unknown as Record<string, unknown>).selectedFiles).toBeUndefined();
-    expect((s as unknown as Record<string, unknown>).accountIdsByPlatform).toBeUndefined();
+    expect((s as unknown as Record<string, unknown>).accountCookiesByPlatform).toBeUndefined();
     expect((s as unknown as Record<string, unknown>).batchResult).toBeUndefined();
   });
 });

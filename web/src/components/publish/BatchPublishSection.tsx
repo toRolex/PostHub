@@ -42,7 +42,7 @@ const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
-  /** 所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
+  /** 所选账号总数（= Σ |accountCookiesByPlatform[p]|）。 */
   totalAccounts: number;
   /** 所选平台数。 */
   platformCount: number;
@@ -60,7 +60,7 @@ export interface ItemSummary {
  * 计算单视频条目折叠态摘要。纯函数，便于不挂 DOM 单测。
  */
 export function summarizeItem(item: BatchItem): ItemSummary {
-  const entries = Object.entries(item.accountIdsByPlatform) as [Platform, string[]][];
+  const entries = Object.entries(item.accountCookiesByPlatform) as [Platform, string[]][];
   const totalAccounts = entries.reduce(
     (acc, [, cookies]) => acc + (cookies ? cookies.length : 0),
     0,
@@ -107,7 +107,7 @@ function BatchItemDeclarationBlock({
   accounts: ReturnType<typeof useAccountsStore.getState>["accounts"];
 }) {
   const supported = PLATFORMS.filter(
-    (p) => p !== "kuaishou" && (item.accountIdsByPlatform[p]?.length ?? 0) > 0,
+    (p) => p !== "kuaishou" && (item.accountCookiesByPlatform[p]?.length ?? 0) > 0,
   ) as Array<"wechat" | "douyin" | "xiaohongshu">;
   const setItemPlatformField = useBatchPublishStore((s) => s.setItemPlatformField);
   // 把账号按 cookieFile 索引一次，避免每个平台重复 .find()。
@@ -119,7 +119,7 @@ function BatchItemDeclarationBlock({
 
   if (supported.length === 0) return null;
   const getAccountDefault = (p: "wechat" | "douyin" | "xiaohongshu") => {
-    const cookies = item.accountIdsByPlatform[p] ?? [];
+    const cookies = item.accountCookiesByPlatform[p] ?? [];
     return accountByCookie.get(cookies[0])?.defaultPlatformFields?.[p];
   };
 
@@ -317,7 +317,7 @@ export function BatchPublishSection() {
                     title: f.filename ?? "",
                     caption: "",
                     tags: "",
-                    accountIdsByPlatform: {},
+                    accountCookiesByPlatform: {},
                     mode: "immediate",
                   })
                 }
@@ -491,7 +491,7 @@ export function BatchPublishSection() {
                               </div>
                               <div className="flex flex-wrap gap-1.5">
                                 {list.map((a) => {
-                                  const cur = item.accountIdsByPlatform[p] ?? [];
+                                  const cur = item.accountCookiesByPlatform[p] ?? [];
                                   const checked = cur.includes(a.cookieFile);
                                   const usable = a.status === 1;
                                   return (
@@ -511,8 +511,8 @@ export function BatchPublishSection() {
                                             ? cur.filter((c) => c !== a.cookieFile)
                                             : [...cur, a.cookieFile];
                                           updateItem(item.filePath, {
-                                            accountIdsByPlatform: {
-                                              ...item.accountIdsByPlatform,
+                                            accountCookiesByPlatform: {
+                                              ...item.accountCookiesByPlatform,
                                               [p]: next,
                                             },
                                           });
