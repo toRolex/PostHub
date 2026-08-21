@@ -4,6 +4,7 @@ import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
 import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
+import { parseTags } from "../domain/tags";
 
 const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   douyin: null,
@@ -129,14 +130,6 @@ export const initialPublishState: PublishStateFields = {
   submitting: false,
   results: {},
 };
-
-/** 标签输入 → 数组（去空、去 #）。 */
-export function parseTags(raw: string): string[] {
-  return raw
-    .split(/[\s,，]+/)
-    .map((t) => t.replace(/^#+/, "").trim())
-    .filter(Boolean);
-}
 
 export const usePublishStore = create<PublishState>()((set, get) => ({
   ...initialPublishState,

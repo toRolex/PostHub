@@ -3,7 +3,8 @@ import { CheckCircle2, FileVideo, RefreshCw, Send, XCircle } from "lucide-react"
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useFilesStore } from "../stores/files";
-import { usePublishStore, parseTags } from "../stores/publish";
+import { usePublishStore } from "../stores/publish";
+import { parseTags } from "../domain/tags";
 import type { Platform, PlatformFields } from "../api/types";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../api/types";
 import { cn } from "../lib/utils";

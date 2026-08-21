@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initialPublishState, usePublishStore, parseTags } from "./publish";
+import { initialPublishState, usePublishStore } from "./publish";
+import { parseTags } from "../domain/tags";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
 

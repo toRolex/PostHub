@@ -26,6 +26,7 @@ import type {
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
 import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
+import { parseTags } from "../domain/tags";
 import type { BatchItem } from "../types/batch";
 
 /** 官方 /login SSE 事件类型。 */
@@ -486,17 +487,6 @@ export function mergeTitleWithCaption(title: string, caption?: string): string {
   return title ? `${title}\n${trimmed}` : trimmed;
 }
 
-/**
- * 前端 tags 输入态字符串 → 官方 tags 数组。按空白/逗号（中英文）拆，去前缀 `#`，去空白，去空串。
- */
-export function parseTagsInput(tags: string): string[] {
-  if (!tags) return [];
-  return tags
-    .split(/[\s,，]+/)
-    .map((t) => t.replace(/^#+/, "").trim())
-    .filter(Boolean);
-}
-
 /* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
 
 /**
@@ -565,7 +555,7 @@ function buildOneMatrixItem(
   accountCookie: string,
   dailyTimesSet: Set<string>,
 ): PostVideoRequest {
-  const tags = parseTagsInput(item.tags);
+  const tags = parseTags(item.tags);
   const base = {
     fileList: [item.filePath],
     accountList: [accountCookie],
