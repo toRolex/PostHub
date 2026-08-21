@@ -14,6 +14,7 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
 import type { Platform } from "../../api/types";
 import type { BatchItem, BatchItemResult } from "../../domain/batch";
+import { buildBatchItemRefs, keyOf } from "../../domain/batch";
 import {
   Dialog,
   DialogContent,
@@ -44,27 +45,15 @@ export interface PreviewRow {
  * 纯函数，便于不挂 DOM 直接单测。
  */
 export function buildPreviewRows(items: BatchItem[]): PreviewRow[] {
-  const rows: PreviewRow[] = [];
-  for (const item of items) {
-    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
-      Platform,
-      string[],
-    ][]) {
-      if (!accounts) continue;
-      for (const cookie of accounts) {
-        rows.push({
-          itemKey: `${item.filePath}|${cookie}`,
-          fileName: item.filePath,
-          platform,
-          accountCookie: cookie,
-          mode: item.mode,
-          timeOfDay: item.timeOfDay,
-          startDays: item.startDays,
-        });
-      }
-    }
-  }
-  return rows;
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => ({
+    itemKey: keyOf(item.filePath, cookie),
+    fileName: item.filePath,
+    platform,
+    accountCookie: cookie,
+    mode: item.mode,
+    timeOfDay: item.timeOfDay,
+    startDays: item.startDays,
+  }));
 }
 
 interface BatchPreviewDialogProps {

@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
-import type { Platform, PlatformFields } from "../api/types";
+import type { PlatformFields } from "../api/types";
 import type { BatchItem, BatchItemResult } from "../domain/batch";
+import { buildBatchItemRefs, keyOf } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
 import { validatePlatformFields } from "../domain/declarations";
 
@@ -125,27 +126,16 @@ function expandItemResults(
   ok: boolean,
   msg: string,
 ): BatchItemResult[] {
-  const out: BatchItemResult[] = [];
-  for (const item of items) {
-    for (const [platform, cookies] of Object.entries(item.accountIdsByPlatform) as [
-      Platform,
-      string[],
-    ][]) {
-      for (const cookie of cookies) {
-        out.push({
-          itemKey: `${item.filePath}|${cookie}`,
-          fileName: item.filePath,
-          platform,
-          mode: item.mode,
-          timeOfDay: item.timeOfDay,
-          startDays: item.startDays,
-          ok,
-          msg,
-        });
-      }
-    }
-  }
-  return out;
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => ({
+    itemKey: keyOf(item.filePath, cookie),
+    fileName: item.filePath,
+    platform,
+    mode: item.mode,
+    timeOfDay: item.timeOfDay,
+    startDays: item.startDays,
+    ok,
+    msg,
+  }));
 }
 
 /* ───────────────────────── store 实现 ───────────────────────── */

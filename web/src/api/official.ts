@@ -28,6 +28,7 @@ import { OFFICIAL_PLATFORM_TYPE } from "./types";
 import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
 import type { BatchItem } from "../domain/batch";
+import { buildBatchItemRefs } from "../domain/batch";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -532,20 +533,10 @@ export function buildBatchItemsFromMatrix(
   dailyTimes: string[],
 ): PostVideoRequest[] {
   const dailyTimesSet = new Set(dailyTimes);
-  const result: PostVideoRequest[] = [];
-  for (const item of items) {
-    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
-      Platform,
-      string[],
-    ][]) {
-      if (!accounts || accounts.length === 0) continue;
-      // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
-      for (const accountCookie of accounts) {
-        result.push(buildOneMatrixItem(item, platform, accountCookie, dailyTimesSet));
-      }
-    }
-  }
-  return result;
+  // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) =>
+    buildOneMatrixItem(item, platform, cookie, dailyTimesSet),
+  );
 }
 
 /** 单个 (item, platform, account) → PostVideoRequest。 */
