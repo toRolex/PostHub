@@ -10,7 +10,7 @@
  */
 
 import type { Platform } from "../api/types";
-import type { PlatformFields } from "../api/declarations";
+import type { PlatformFields } from "../domain/declarations";
 
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;

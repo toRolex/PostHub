@@ -13,13 +13,13 @@ import type {
   PlatformFields,
   WechatDeclaration,
   XiaohongshuSource,
-} from "../../api/declarations";
+} from "../../domain/declarations";
 import {
   DOUYIN_DECLARATIONS,
   WECHAT_DECLARATIONS,
   XIAOHONGSHU_SOURCES,
   renderDeclarationLabel,
-} from "../../api/declarations";
+} from "../../domain/declarations";
 
 const NONE_VALUE = "__none__";
 

@@ -3,7 +3,7 @@ import { officialApi, buildPostVideoRequest } from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
-import { trimPlatformFields, validatePlatformFields } from "../api/declarations";
+import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
 
 const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   douyin: null,

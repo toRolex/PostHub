@@ -3,7 +3,7 @@
  * 与后端字段命名保持一致（snake_case）。
  */
 
-import type { PlatformFields } from "./declarations";
+import type { PlatformFields } from "../domain/declarations";
 
 export type { PlatformFields };
 

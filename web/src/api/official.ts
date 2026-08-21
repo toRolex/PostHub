@@ -25,7 +25,7 @@ import type {
   Platform,
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
-import { trimPlatformFields, type PlatformFields } from "./declarations";
+import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
 import type { BatchItem } from "../types/batch";
 
 /** 官方 /login SSE 事件类型。 */
