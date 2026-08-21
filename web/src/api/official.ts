@@ -25,6 +25,7 @@ import type {
   Platform,
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
+import type { BatchItem } from "../types/batch";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -324,7 +325,7 @@ export const officialApi = {
       body: JSON.stringify(payload),
     }),
   /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
-  postVideoBatch: (base: string, payload: PostVideoBatchRequest) =>
+  postVideoBatch: (base: string, payload: PostVideoRequest[]) =>
     request<null>(base, "/postVideoBatch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -419,18 +420,11 @@ export function buildPostVideoRequest(input: {
   };
 }): PostVideoRequest {
   // 官方单个发布动作只针对单一平台（type 唯一）；多平台则由页面拆成多次提交。
-  let title = input.title;
-  const caption = input.caption?.trim();
-  if (caption) {
-    // 官方契约仅 title/tags 两处承载文本；正文（小红书/抖音以 title 作为正文，视频号作标题）
-    // 与标题拆分无官方字段承接，故合入 title 一并下发，避免信息丢失。
-    title = input.title ? `${input.title}\n${caption}` : caption;
-  }
   const body: PostVideoRequest = {
     fileList: input.files,
     accountList: input.accounts,
     type: OFFICIAL_PLATFORM_TYPE[input.platform],
-    title,
+    title: mergeTitleWithCaption(input.title, input.caption),
     tags: input.tags ?? [],
     enableTimer: false,
   };
@@ -445,42 +439,129 @@ export function buildPostVideoRequest(input: {
   return body;
 }
 
-/* ───────────────────────── 批量发布（/postVideoBatch 契约）───────────────────────── */
+/**
+ * 标题 + 描述折叠：官方契约仅 title/tags 两处承载文本；正文（小红书/抖音以 title 作正文，
+ * 视频号作标题）与标题拆分无官方字段承接，故合入 title 一并下发，避免信息丢失。
+ */
+export function mergeTitleWithCaption(title: string, caption?: string): string {
+  const trimmed = caption?.trim();
+  if (!trimmed) return title;
+  return title ? `${title}\n${trimmed}` : trimmed;
+}
 
 /**
- * 官方 /postVideoBatch 请求体（@see daemon/sau_backend.py:519 postVideoBatch）。
- * 契约要点：请求体是 **JSON 数组**，每项即一个 /postVideo 形态对象（多文件 fileList ×
- * 多账号 accountList），后端对每项做 `files × accounts` 笛卡尔发布。
- * 响应统一 `{ code: 200, msg: null, data: null }`（异步 fire-and-forget，无逐子项状态）；
- * 非数组或请求级错误时按 `{ code, msg }` 返回（400/500）——由前端中继展示。
+ * 前端 tags 输入态字符串 → 官方 tags 数组。按空白/逗号（中英文）拆，去前缀 `#`，去空白，去空串。
  */
-export type PostVideoBatchRequest = PostVideoRequest[];
+export function parseTagsInput(tags: string): string[] {
+  if (!tags) return [];
+  return tags
+    .split(/[\s,，]+/)
+    .map((t) => t.replace(/^#+/, "").trim())
+    .filter(Boolean);
+}
+
+/* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
 
 /**
- * 前端批量表单（多文件 + 多账号，可按平台勾选）→ 官方 /postVideoBatch 请求体。
- * 每选中一个平台生成一个数组项：fileList = 全部所选文件，accountList = 该平台所选账号
- * 的 cookie 文件名，type = 官方平台整型。标题/描述折叠与单视频规则一致（caption 合入 title）。
+ * 把 "HH:MM" 字符串解析为官方整型小时（0-23）。非整点按 Math.floor 取整；
+ * 越界（>= 24 或负数 / 非数字）抛错。不静默丢弃（验收硬要求）。
+ *
+ * 例：parseHHMMToHour("10:00") -> 10；"14:30" -> 14；"24:00" -> 抛错。
  */
-export function buildPostVideoBatchRequest(input: {
-  /** 多选素材 file_path（videoFile 磁盘名）。 */
-  files: string[];
-  title: string;
-  caption?: string;
-  tags: string[];
-  /** 按平台分组的账号：每项 platform + 该平台所选账号 cookie 文件名。 */
-  platforms: { platform: Platform; accounts: string[] }[];
-}): PostVideoBatchRequest {
-  let title = input.title;
-  const caption = input.caption?.trim();
-  if (caption) {
-    title = input.title ? `${input.title}\n${caption}` : caption;
+export function parseHHMMToHour(hm: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
+  if (!m) throw new Error(`dailyTimes 格式非法：${hm}（应为 HH:MM）`);
+  const hour = Number(m[1]);
+  if (!Number.isInteger(hour) || hour < 0 || hour >= 24) {
+    throw new Error(`dailyTimes 越界：${hm}（小时应在 0–23）`);
   }
-  return input.platforms.map(({ platform, accounts }) => ({
-    fileList: input.files,
-    accountList: accounts,
+  // 分钟字段语义保留（用于将来支持半点等）；当前版本按整点取整，丢弃 minute。
+  void m[2];
+  return Math.floor(hour);
+}
+
+/**
+ * 矩阵批量表单 → 官方 /postVideoBatch 请求体（issue #38）。
+ *
+ * 与 buildPostVideoRequest（单视频）的语义差异：
+ * - 旧：按平台笛卡尔展开（一个平台一项，fileList = 全部所选文件，accountList = 该平台账号）。
+ * - 新：按「每视频×每账号」展开（一个 (item, platform, accountId) 一个 postVideo 项）；
+ *       同一平台多账号展开为多个 postVideo 项（result 维度变化的原因）。
+ *
+ * 模式：
+ * - mode='immediate'：enableTimer: false；严格不带 timer 四字段
+ *   （enableTimer/videosPerDay/dailyTimes/startDays 都不在请求体键集合里）。
+ * - mode='timer'：enableTimer: true；videosPerDay 硬写 1（不暴露）；dailyTimes
+ *   从 item.timeOfDay 解析（按整点取整回官方 0–23 整数）；startDays 透传。
+ *
+ * 校验：
+ * - item.timeOfDay 必须命中 dailyTimes 池（防止 UI 与提交语义漂移）。
+ * - dailyTimes 越界（HH:MM 解析后 hour >= 24）抛错。
+ *
+ * 命名约定：函数名 buildBatchItemsFromMatrix 沿用 issue #37 PRD 命名。
+ */
+export function buildBatchItemsFromMatrix(
+  items: BatchItem[],
+  dailyTimes: string[],
+): PostVideoRequest[] {
+  const dailyTimesSet = new Set(dailyTimes);
+  const result: PostVideoRequest[] = [];
+  for (const item of items) {
+    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
+      Platform,
+      string[],
+    ][]) {
+      if (!accounts || accounts.length === 0) continue;
+      // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
+      for (const accountCookie of accounts) {
+        result.push(buildOneMatrixItem(item, platform, accountCookie, dailyTimesSet));
+      }
+    }
+  }
+  return result;
+}
+
+/** 单个 (item, platform, account) → PostVideoRequest。 */
+function buildOneMatrixItem(
+  item: BatchItem,
+  platform: Platform,
+  accountCookie: string,
+  dailyTimesSet: Set<string>,
+): PostVideoRequest {
+  const tags = parseTagsInput(item.tags);
+
+  if (item.mode === "immediate") {
+    return {
+      fileList: [item.filePath],
+      accountList: [accountCookie],
+      type: OFFICIAL_PLATFORM_TYPE[platform],
+      title: mergeTitleWithCaption(item.title, item.caption),
+      tags,
+      enableTimer: false,
+    };
+  }
+
+  // mode='timer'
+  if (item.timeOfDay === undefined || item.startDays === undefined) {
+    throw new Error(
+      `mode='timer' 必须提供 startDays 与 timeOfDay（item=${item.filePath}）`,
+    );
+  }
+  if (!dailyTimesSet.has(item.timeOfDay)) {
+    throw new Error(
+      `item.timeOfDay="${item.timeOfDay}" 不在 dailyTimes 池中（${Array.from(dailyTimesSet).join(", ")}）`,
+    );
+  }
+  const hour = parseHHMMToHour(item.timeOfDay);
+  return {
+    fileList: [item.filePath],
+    accountList: [accountCookie],
     type: OFFICIAL_PLATFORM_TYPE[platform],
-    title,
-    tags: input.tags ?? [],
-    enableTimer: false,
-  }));
+    title: mergeTitleWithCaption(item.title, item.caption),
+    tags,
+    enableTimer: true,
+    videosPerDay: 1,
+    dailyTimes: [hour],
+    startDays: item.startDays,
+  };
 }

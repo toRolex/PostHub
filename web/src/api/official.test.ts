@@ -5,7 +5,10 @@ import {
   parseSseChunk,
   parseSseDataLine,
 } from "../api/official";
-import { buildPostVideoBatchRequest, officialApi } from "../api/official";
+import {
+  buildBatchItemsFromMatrix,
+  officialApi,
+} from "../api/official";
 
 /** 构造一个 body 为 SSE 流的 mock Response（jsdom 支持 ReadableStream）。 */
 function sseResponse(chunks: string[]): Response {
@@ -207,7 +210,7 @@ describe("officialApi 账号接口（mock fetch）", () => {
         }),
       ),
     );
-    await expect(officialApi.getAccounts("http://x")).rejects.toThrow("未知平台类型 9");
+    await expect(officialApi.getAccounts("http://127.0.0.1:9999")).rejects.toThrow("未知平台类型 9");
   });
 
   it("getValidAccounts 非 200 code 抛错", async () => {
@@ -230,63 +233,6 @@ describe("officialApi 账号接口（mock fetch）", () => {
       ),
     );
     await expect(officialApi.deleteAccount("http://x", 1)).rejects.toThrow("account not found");
-  });
-});
-
-describe("buildPostVideoBatchRequest（表单 → /postVideoBatch 契约）", () => {
-  it("请求体是数组，每选中平台一个 postVideo 形态项；多文件 × 各平台多账号", () => {
-    const body = buildPostVideoBatchRequest({
-      files: ["a.mp4", "b.mp4"],
-      title: "批量标题",
-      caption: "正文",
-      tags: ["批量", "发布"],
-      platforms: [
-        { platform: "douyin", accounts: ["d1.json", "d2.json"] },
-        { platform: "xiaohongshu", accounts: ["x1.json"] },
-      ],
-    });
-    expect(body).toHaveLength(2);
-    // 抖音项：type=3 + 多文件 + 该平台多账号
-    expect(body[0]).toMatchObject({
-      fileList: ["a.mp4", "b.mp4"],
-      accountList: ["d1.json", "d2.json"],
-      type: 3,
-      tags: ["批量", "发布"],
-      enableTimer: false,
-    });
-    // 小红书项：type=1 + 该平台账号
-    expect(body[1]).toMatchObject({
-      fileList: ["a.mp4", "b.mp4"],
-      accountList: ["x1.json"],
-      type: 1,
-    });
-    // 标题/描述折叠与单视频同规则
-    expect(body[0].title).toBe("批量标题\n正文");
-    expect(body[1].title).toBe("批量标题\n正文");
-  });
-
-  it("空 caption 时标题不折叠", () => {
-    const body = buildPostVideoBatchRequest({
-      files: ["a.mp4"],
-      title: "纯标题",
-      tags: [],
-      platforms: [{ platform: "douyin", accounts: ["d1.json"] }],
-    });
-    expect(body[0].title).toBe("纯标题");
-  });
-
-  it("平台整型映射：1 小红书 2 视频号 3 抖音 4 快手", () => {
-    const make = (platform: Parameters<typeof buildPostVideoBatchRequest>[0]["platforms"][0]["platform"]) =>
-      buildPostVideoBatchRequest({
-        files: ["a.mp4"],
-        title: "x",
-        tags: [],
-        platforms: [{ platform, accounts: ["a.json"] }],
-      })[0].type;
-    expect(make("xiaohongshu")).toBe(1);
-    expect(make("wechat")).toBe(2);
-    expect(make("douyin")).toBe(3);
-    expect(make("kuaishou")).toBe(4);
   });
 });
 
@@ -327,5 +273,220 @@ describe("officialApi.postVideoBatch（mock fetch）", () => {
     await expect(
       officialApi.postVideoBatch("http://127.0.0.1:5409", []),
     ).rejects.toThrow("Expected a JSON array");
+  });
+});
+
+describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）", () => {
+  it("每视频×每账号展开一个 postVideo 项：单视频多平台多账号", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "标题 A",
+          caption: "正文 A",
+          tags: "标签A",
+          accountIdsByPlatform: {
+            douyin: ["d1.json", "d2.json"],
+            xiaohongshu: ["x1.json"],
+          },
+          mode: "immediate",
+        },
+      ],
+      [],
+    );
+    expect(body).toHaveLength(3); // 抖音 × 2 + 小红书 × 1
+    const douyin = body.filter((b) => b.type === 3);
+    expect(douyin).toHaveLength(2);
+    expect(douyin[0].fileList).toEqual(["a.mp4"]);
+    expect(douyin[0].accountList).toEqual(["d1.json"]);
+    expect(douyin[1].accountList).toEqual(["d2.json"]);
+    const xhs = body.filter((b) => b.type === 1);
+    expect(xhs).toHaveLength(1);
+    expect(xhs[0].accountList).toEqual(["x1.json"]);
+  });
+
+  it("混合模式（immediate + timer）共存，按 item 独立 enableTimer", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "立即发",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: { douyin: ["d1.json"] },
+          mode: "immediate",
+        },
+        {
+          filePath: "b.mp4",
+          title: "定时发",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: { douyin: ["d2.json"] },
+          mode: "timer",
+          startDays: 1,
+          timeOfDay: "10:00",
+        },
+      ],
+      ["10:00", "14:30"],
+    );
+    expect(body).toHaveLength(2);
+    const [immediate, timer] = body;
+    expect(immediate.enableTimer).toBe(false);
+    // immediate 严格不带 timer 四字段
+    expect("videosPerDay" in immediate).toBe(false);
+    expect("dailyTimes" in immediate).toBe(false);
+    expect("startDays" in immediate).toBe(false);
+    // timer 完整三字段
+    expect(timer.enableTimer).toBe(true);
+    expect(timer.videosPerDay).toBe(1);
+    expect(timer.dailyTimes).toEqual([10]);
+    expect(timer.startDays).toBe(1);
+  });
+
+  it("HH:MM 整点取整：'10:00' -> 10；'14:30' -> 14（按 Math.floor(hour)）", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "t",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: { douyin: ["d.json"] },
+          mode: "timer",
+          startDays: 0,
+          timeOfDay: "14:30",
+        },
+      ],
+      ["14:30"],
+    );
+    expect(body[0].dailyTimes).toEqual([14]);
+  });
+
+  it("非整点（如 09:01）按整点取整为 9", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "t",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: { douyin: ["d.json"] },
+          mode: "timer",
+          startDays: 0,
+          timeOfDay: "09:01",
+        },
+      ],
+      ["09:01"],
+    );
+    expect(body[0].dailyTimes).toEqual([9]);
+  });
+
+  it("越界（HH:MM 解析后 >= 24）-> 抛错，不静默丢弃", () => {
+    expect(() =>
+      buildBatchItemsFromMatrix(
+        [
+          {
+            filePath: "a.mp4",
+            title: "t",
+            caption: "",
+            tags: "",
+            accountIdsByPlatform: { douyin: ["d.json"] },
+            mode: "timer",
+            startDays: 0,
+            timeOfDay: "24:00",
+          },
+        ],
+        ["24:00"],
+      ),
+    ).toThrow(/越界|hour|24/);
+  });
+
+  it("mode='timer' 但 timeOfDay 不在 dailyTimes 池中 -> 抛错", () => {
+    expect(() =>
+      buildBatchItemsFromMatrix(
+        [
+          {
+            filePath: "a.mp4",
+            title: "t",
+            caption: "",
+            tags: "",
+            accountIdsByPlatform: { douyin: ["d.json"] },
+            mode: "timer",
+            startDays: 0,
+            timeOfDay: "10:00",
+          },
+        ],
+        ["11:00"],
+      ),
+    ).toThrow(/不在|dailyTimes|timeOfDay/);
+  });
+
+  it("caption 折叠进 title：与单视频发布规则一致（title\\ncaption）", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "标题",
+          caption: "正文",
+          tags: "",
+          accountIdsByPlatform: { douyin: ["d.json"] },
+          mode: "immediate",
+        },
+      ],
+      [],
+    );
+    expect(body[0].title).toBe("标题\n正文");
+  });
+
+  it("多视频多平台混合：抖音视频 A + 小红书视频 B + 视频 B 还勾选了快手", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "A",
+          caption: "",
+          tags: "tagA",
+          accountIdsByPlatform: { douyin: ["d.json"] },
+          mode: "immediate",
+        },
+        {
+          filePath: "b.mp4",
+          title: "B",
+          caption: "bCap",
+          tags: "tagB",
+          accountIdsByPlatform: { xiaohongshu: ["x1.json"], kuaishou: ["k1.json"] },
+          mode: "immediate",
+        },
+      ],
+      [],
+    );
+    expect(body).toHaveLength(3);
+    // 每项 fileList 只含本视频 filePath（不笛卡尔到全部视频）
+    expect(body.find((b) => b.type === 3)?.fileList).toEqual(["a.mp4"]);
+    expect(body.find((b) => b.type === 1)?.fileList).toEqual(["b.mp4"]);
+    expect(body.find((b) => b.type === 4)?.fileList).toEqual(["b.mp4"]);
+    expect(body.find((b) => b.type === 1)?.title).toBe("B\nbCap");
+  });
+
+  it("platform 整型映射正确：xiaohongshu=1 wechat=2 douyin=3 kuaishou=4", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "t",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: {
+            xiaohongshu: ["x.json"],
+            wechat: ["w.json"],
+            douyin: ["d.json"],
+            kuaishou: ["k.json"],
+          },
+          mode: "immediate",
+        },
+      ],
+      [],
+    );
+    expect(body.map((b) => b.type).sort()).toEqual([1, 2, 3, 4]);
   });
 });
