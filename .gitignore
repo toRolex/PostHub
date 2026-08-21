@@ -39,6 +39,7 @@ daemon/db/
 
 # --- 工具本地缓存 ---
 .impeccable/
+.firecrawl/
 
 # --- 工具 / 会话 / 规划文档（本地生成，不入库） ---
 .agents/

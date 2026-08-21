@@ -26,6 +26,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Textarea } from "../ui/textarea";
 import { BatchPreviewDialog } from "./BatchPreviewDialog";
 import { PlatformLimitHint } from "./PlatformLimitHint";
+import {
+  PlatformDeclarationPicker,
+  PlatformDeclarationBadge,
+} from "./PlatformDeclarationPicker";
 import type { BatchItem } from "../../types/batch";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
@@ -88,6 +92,59 @@ export function summarizeItem(item: BatchItem): ItemSummary {
  */
 export function summarizeDailyTimes(dailyTimes: string[]): string[] {
   return Array.from(new Set(dailyTimes)).sort();
+}
+
+/** 单条 BatchItem 的「内容声明」编辑块（issue #43）。仅在 item 已勾选至少一个非快手平台时渲染。 */
+function BatchItemDeclarationBlock({
+  item,
+  accounts,
+}: {
+  item: BatchItem;
+  accounts: ReturnType<typeof useAccountsStore.getState>["accounts"];
+}) {
+  const supported = PLATFORMS.filter(
+    (p) => p !== "kuaishou" && (item.accountIdsByPlatform[p]?.length ?? 0) > 0,
+  ) as Array<"wechat" | "douyin" | "xiaohongshu">;
+  const setItemPlatformField = useBatchPublishStore((s) => s.setItemPlatformField);
+  // 把账号按 cookieFile 索引一次，避免每个平台重复 .find()。
+  const accountByCookie = useMemo(() => {
+    const m = new Map<string, (typeof accounts)[number]>();
+    for (const a of accounts) m.set(a.cookieFile, a);
+    return m;
+  }, [accounts]);
+
+  if (supported.length === 0) return null;
+  const getAccountDefault = (p: "wechat" | "douyin" | "xiaohongshu") => {
+    const cookies = item.accountIdsByPlatform[p] ?? [];
+    return accountByCookie.get(cookies[0])?.defaultPlatformFields?.[p];
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-caption text-meta">内容声明（不选则用账号默认）</span>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        {supported.map((p) => (
+          <div key={p} className="rounded-md border border-border-soft bg-bg px-3 py-2">
+            <div className="mb-2 flex items-center gap-2">
+              <PlatformMark platform={p} />
+              <span className="text-caption text-meta">
+                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+              </span>
+              <span className="ml-auto text-caption text-meta">
+                默认：
+                <PlatformDeclarationBadge platform={p} value={getAccountDefault(p)} />
+              </span>
+            </div>
+            <PlatformDeclarationPicker
+              platform={p}
+              value={item.platformFields?.[p]}
+              onChange={(v) => setItemPlatformField(item.filePath, p, v)}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ─────────────────────── 组件 ─────────────────────── */
@@ -552,6 +609,9 @@ export function BatchPublishSection() {
                         </div>
                       )}
                     </div>
+
+                    {/* 内容声明按平台分键透传（issue #43）。仅展示该 item 已勾选平台。 */}
+                    <BatchItemDeclarationBlock item={item} accounts={accounts} />
 
                     {/* 行内错误 */}
                     {localErrors.length > 0 && (

@@ -113,6 +113,41 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(item.startDays).toBe(0);
   });
 
+  it("setItemPlatformField：写入单平台声明；不影响其他字段（issue #43）", () => {
+    const { addItem, setItemPlatformField } = useBatchPublishStore.getState();
+    addItem({
+      filePath: "a.mp4",
+      title: "t",
+      caption: "",
+      tags: "",
+      accountIdsByPlatform: { wechat: ["w.json"] },
+      mode: "immediate",
+    });
+    setItemPlatformField("a.mp4", "wechat", { declaration: "no_label" });
+    const item = useBatchPublishStore.getState().items[0];
+    expect(item.platformFields).toEqual({ wechat: { declaration: "no_label" } });
+    expect(item.title).toBe("t");
+  });
+
+  it("setItemPlatformField：非法枚举 → validate 失败", () => {
+    const { addItem, setItemPlatformField } = useBatchPublishStore.getState();
+    addItem({
+      filePath: "a.mp4",
+      title: "t",
+      caption: "",
+      tags: "",
+      accountIdsByPlatform: { wechat: ["w.json"] },
+      mode: "immediate",
+    });
+    setItemPlatformField(
+      "a.mp4",
+      "wechat",
+      { declaration: "bogus" } as unknown as { declaration: never },
+    );
+    const errors = useBatchPublishStore.getState().validate();
+    expect(errors.some((e) => e.includes("视频号"))).toBe(true);
+  });
+
   it("addDailyTime / removeDailyTime：dailyTimes 池增减", () => {
     const { addDailyTime, removeDailyTime } = useBatchPublishStore.getState();
     addDailyTime("10:00");

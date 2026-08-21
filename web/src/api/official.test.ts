@@ -489,4 +489,27 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     );
     expect(body.map((b) => b.type).sort()).toEqual([1, 2, 3, 4]);
   });
+
+  it("BatchItem 携带 platformFields 时透传到对应平台的 postVideo 项（issue #43）", () => {
+    const body = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "a.mp4",
+          title: "t",
+          caption: "",
+          tags: "",
+          accountIdsByPlatform: { wechat: ["w.json"], douyin: ["d.json"] },
+          mode: "immediate",
+          platformFields: { wechat: { declaration: "no_label" } },
+        },
+      ],
+      [],
+    );
+    expect(body).toHaveLength(2);
+    const wechatBody = body.find((b) => b.type === 2)!;
+    const douyinBody = body.find((b) => b.type === 3)!;
+    expect(wechatBody.platformFields).toEqual({ wechat: { declaration: "no_label" } });
+    // 抖音没在 platformFields 里 → 不写入键
+    expect("platformFields" in douyinBody).toBe(false);
+  });
 });

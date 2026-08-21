@@ -1,11 +1,20 @@
 import { create } from "zustand";
 import { officialApi } from "../api/official";
-import type { DaoUserInfo, OfficialAccount } from "../api/types";
+import type { DaoUserInfo, OfficialAccount, PlatformFields } from "../api/types";
 import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { useDaemonStore } from "./daemon";
 
+/**
+ * 官方 `/getAccounts` / `/getValidAccounts` 旧版只返 5 列；
+ * `default_platform_fields` 通过新端点 `/getAccountDefaults` 增量获取
+ * （issue #43）。空 / 缺失 → 视为「账号未设置默认声明」。
+ */
+
 /** 官方 user_info 行 -> 展示模型。 */
-export function mapDaoAccount(row: DaoUserInfo): OfficialAccount {
+export function mapDaoAccount(
+  row: DaoUserInfo,
+  defaults?: PlatformFields,
+): OfficialAccount {
   return {
     id: row.id,
     typeNum: row.type,
@@ -14,6 +23,7 @@ export function mapDaoAccount(row: DaoUserInfo): OfficialAccount {
     cookieFile: row.filePath,
     cookieValid: row.status === 1,
     status: row.status,
+    defaultPlatformFields: defaults,
   };
 }
 
@@ -49,6 +59,11 @@ interface AccountsState {
     type: OfficialAccount["typeNum"];
     userName: string;
   }) => Promise<void>;
+  /** 持久化账号粒度「默认声明」（issue #43）；null = 清除。 */
+  updateAccountDefaults: (
+    id: number,
+    defaults: PlatformFields | null,
+  ) => Promise<void>;
 }
 
 export const initialAccountsState = {
@@ -61,16 +76,23 @@ export const initialAccountsState = {
 export const useAccountsStore = create<AccountsState>()((set, get) => ({
   ...initialAccountsState,
 
-  /** 拉取账号列表：getAccounts（快）合并 getValidAccounts（cookie 校验）。 */
+  /** 拉取账号列表：getAccounts（快）合并 getValidAccounts（cookie 校验）+ 默认声明。 */
   fetchAccounts: async () => {
     set({ loading: true });
     try {
       const base = useDaemonStore.getState().url;
-      const [all, valid] = await Promise.all([
+      const [all, valid, defaultsMap] = await Promise.all([
         officialApi.getAccounts(base),
         loadValidAccounts(),
+        officialApi.getAccountDefaults(base),
       ]);
-      set({ accounts: mergeCookieValidity(all.map(mapDaoAccount), valid), error: "" });
+      const mapped = all.map((row) =>
+        mapDaoAccount(row, defaultsMap[row.filePath] as PlatformFields | undefined),
+      );
+      set({
+        accounts: mergeCookieValidity(mapped, valid),
+        error: "",
+      });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -107,11 +129,7 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
   },
 
   /** 更新账号的平台/名称：官方 /updateUserinfo，成功后刷新列表。 */
-  updateAccount: async (payload: {
-    id: number;
-    type: OfficialAccount["typeNum"];
-    userName: string;
-  }) => {
+  updateAccount: async (payload) => {
     try {
       const base = useDaemonStore.getState().url;
       await officialApi.updateAccount(base, {
@@ -120,6 +138,26 @@ export const useAccountsStore = create<AccountsState>()((set, get) => ({
         userName: payload.userName,
       });
       set({ error: "" });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  },
+
+  /** 持久化账号默认声明到官方 user_info.default_platform_fields（issue #43）。 */
+  updateAccountDefaults: async (id, defaults) => {
+    try {
+      const base = useDaemonStore.getState().url;
+      await officialApi.updateAccountDefaults(base, {
+        id,
+        default_platform_fields: defaults,
+      });
+      set((s) => ({
+        accounts: s.accounts.map((a) =>
+          a.id === id ? { ...a, defaultPlatformFields: defaults ?? undefined } : a,
+        ),
+        error: "",
+      }));
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
       throw e;

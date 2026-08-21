@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
-import type { Platform } from "../api/types";
+import type { Platform, PlatformFields } from "../api/types";
 import type { BatchItem, BatchItemResult } from "../types/batch";
 import { useDaemonStore } from "./daemon";
+import { validatePlatformFields } from "../api/declarations";
 
 /**
  * 矩阵批量发布 store。
@@ -43,6 +44,12 @@ interface BatchPublishState {
   updateItem: (filePath: string, patch: Partial<BatchItem>) => void;
   setItemMode: (filePath: string, mode: BatchItem["mode"]) => void;
   setItemTimeOfDay: (filePath: string, timeOfDay: string) => void;
+  /** 设置单条 BatchItem 的某平台声明（issue #43）。 */
+  setItemPlatformField: (
+    filePath: string,
+    platform: "wechat" | "douyin" | "xiaohongshu",
+    value: PlatformFields["wechat"] | PlatformFields["douyin"] | PlatformFields["xiaohongshu"],
+  ) => void;
   addDailyTime: (hm: string) => void;
   removeDailyTime: (hm: string) => void;
   openPreview: () => void;
@@ -63,6 +70,7 @@ export const initialBatchPublishState: Omit<
   | "updateItem"
   | "setItemMode"
   | "setItemTimeOfDay"
+  | "setItemPlatformField"
   | "addDailyTime"
   | "removeDailyTime"
   | "openPreview"
@@ -100,6 +108,8 @@ export function validateBatch(items: BatchItem[], dailyTimes: string[]): string[
         errors.push(`第 ${idx + 1} 行：定时模式必须设置起始日 startDays >= 0`);
       }
     }
+    const fieldError = validatePlatformFields(item.platformFields);
+    if (fieldError) errors.push(`第 ${idx + 1} 行：${fieldError}`);
   });
   return errors;
 }
@@ -173,6 +183,15 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
     set((s) => ({
       items: s.items.map((i) =>
         i.filePath === filePath ? { ...i, timeOfDay } : i,
+      ),
+    })),
+
+  setItemPlatformField: (filePath, platform, value) =>
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.filePath === filePath
+          ? { ...i, platformFields: { ...(i.platformFields ?? {}), [platform]: value } }
+          : i,
       ),
     })),
 

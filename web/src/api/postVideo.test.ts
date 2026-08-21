@@ -115,6 +115,29 @@ describe("buildPostVideoRequest（表单 → /postVideo 契约）", () => {
     expect(body.dailyTimes).toHaveLength(3);
     expect(body.startDays).toBe(1);
   });
+
+  it("传入 platformFields 时透传到请求体（issue #43）", () => {
+    const body = buildPostVideoRequest({
+      platform: "wechat",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+      platformFields: { wechat: { declaration: "no_label" } },
+    });
+    expect(body.platformFields).toEqual({ wechat: { declaration: "no_label" } });
+  });
+
+  it("未传 platformFields 时不写入键（避免覆盖账号默认）", () => {
+    const body = buildPostVideoRequest({
+      platform: "douyin",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+    });
+    expect("platformFields" in body).toBe(false);
+  });
 });
 
 describe("officialApi.postVideo（mock fetch）", () => {

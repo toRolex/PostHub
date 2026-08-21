@@ -4,7 +4,7 @@ import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useFilesStore } from "../stores/files";
 import { usePublishStore, parseTags } from "../stores/publish";
-import type { Platform } from "../api/types";
+import type { Platform, PlatformFields } from "../api/types";
 import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../api/types";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
@@ -16,6 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { BatchPublishSection } from "../components/publish/BatchPublishSection";
+import {
+  PlatformDeclarationPicker,
+  PlatformDeclarationBadge,
+} from "../components/publish/PlatformDeclarationPicker";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
@@ -401,6 +405,62 @@ function TimerSection({ errors }: { errors: string[] }) {
   );
 }
 
+/* ───────────────────────── 内容声明（issue #43）───────────────────────── */
+
+function DeclarationSection() {
+  const selected = usePublishStore((s) => s.selectedPlatforms);
+  const platformFields = usePublishStore((s) => s.platformFields);
+  const setForm = usePublishStore((s) => s.setForm);
+  const accounts = useAccountsStore((s) => s.accounts);
+  const accountByPlatform = usePublishStore((s) => s.accountByPlatform);
+
+  const supported = selected.filter((p) => p !== "kuaishou") as Array<
+    "wechat" | "douyin" | "xiaohongshu"
+  >;
+  if (supported.length === 0) return null;
+
+  function setPlatformField(p: "wechat" | "douyin" | "xiaohongshu", v: PlatformFields[typeof p]) {
+    setForm({
+      platformFields: { ...platformFields, [p]: v },
+    });
+  }
+
+  function getAccountDefault(p: Platform) {
+    const accId = accountByPlatform[p];
+    return accounts.find((a) => a.id === accId)?.defaultPlatformFields?.[p as "wechat" | "douyin" | "xiaohongshu"];
+  }
+
+  return (
+    <section className="border-t border-border-soft py-6">
+      <SectionHead title="内容声明" hint="按平台分别设置；不选则用账号默认" />
+      <div className="flex flex-col gap-3">
+        {supported.map((p) => (
+          <div key={p} className="rounded-lg border border-border-soft bg-bg p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <PlatformMark platform={p} />
+              <span className="text-label font-medium text-fg-2">
+                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+              </span>
+              <span className="ml-auto text-caption text-meta">
+                账号默认：
+                <PlatformDeclarationBadge
+                  platform={p}
+                  value={getAccountDefault(p)}
+                />
+              </span>
+            </div>
+            <PlatformDeclarationPicker
+              platform={p}
+              value={platformFields[p]}
+              onChange={(v) => setPlatformField(p, v)}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
 function FeedbackPanel() {
@@ -502,9 +562,10 @@ export function PublishView() {
   const videosPerDay = usePublishStore((s) => s.videosPerDay);
   const dailyTimes = usePublishStore((s) => s.dailyTimes);
   const startDays = usePublishStore((s) => s.startDays);
+  const platformFields = usePublishStore((s) => s.platformFields);
   const validate = usePublishStore((s) => s.validate);
 
-  // 订阅表单字段以驱动校验重算（validate 与 store 校验共享同一规则）。
+  // 订阅表单字段以驱动校验重算（validate 与 store 校验结果同源）。
   const errors = useMemo<string[]>(
     () =>
       validate({
@@ -518,6 +579,7 @@ export function PublishView() {
         videosPerDay,
         dailyTimes,
         startDays,
+        platformFields,
       }),
     [
       validate,
@@ -531,6 +593,7 @@ export function PublishView() {
       videosPerDay,
       dailyTimes,
       startDays,
+      platformFields,
     ],
   );
 
@@ -541,6 +604,7 @@ export function PublishView() {
       <TargetSection />
       <ContentSection />
       <TimerSection errors={errors} />
+      <DeclarationSection />
       <PublishActions errors={errors} />
       <BatchPublishSection />
     </div>

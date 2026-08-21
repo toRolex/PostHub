@@ -25,6 +25,7 @@ import type {
   Platform,
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
+import { trimPlatformFields, type PlatformFields } from "./declarations";
 import type { BatchItem } from "../types/batch";
 
 /** 官方 /login SSE 事件类型。 */
@@ -360,6 +361,35 @@ export const officialApi = {
     });
   },
 
+  /**
+   * 读取所有账号的「默认声明」JSON 字典（issue #43）。
+   * 返回 `{[cookieFile: string]: PlatformFields}`；
+   * 老库无 default_platform_fields 列时端点返 500，前端按空对象兜底。
+   */
+  getAccountDefaults: async (base: string): Promise<Record<string, PlatformFields>> => {
+    try {
+      return await request<Record<string, PlatformFields>>(base, "/getAccountDefaults");
+    } catch {
+      return {};
+    }
+  },
+
+  /**
+   * 持久化账号粒度默认声明：null 表示清除。
+   */
+  updateAccountDefaults: (
+    base: string,
+    payload: { id: number; default_platform_fields: PlatformFields | null },
+  ): Promise<null> =>
+    request<null>(base, "/updateAccountDefaults", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: payload.id,
+        default_platform_fields: payload.default_platform_fields,
+      }),
+    }),
+
   getAccounts,
   getValidAccounts,
   deleteAccount,
@@ -396,6 +426,8 @@ export interface PostVideoRequest {
   isDraft?: boolean;
   productLink?: string;
   productTitle?: string;
+  /** 平台内容声明按平台分键透传（issue #43 / ADR-0008）。任务级覆盖账号默认。 */
+  platformFields?: PlatformFields;
 }
 
 /** 前端表单（发布页语义）→ 官方 /postVideo 请求体的纯函数。 */
@@ -408,6 +440,8 @@ export function buildPostVideoRequest(input: {
   /** 正文/描述：官方 /postVideo 无独立 desc 字段，折叠进 title（title\ncaption）。 */
   caption?: string;
   thumbnail?: string;
+  /** 任务级平台声明（覆盖账号 default_platform_fields）。 */
+  platformFields?: PlatformFields;
   /**
    * 定时发布配置。启用时（enableTimer=true）随请求提交完整三字段；
    * 缺省/未启用时保持 enableTimer: false（立即发布）。
@@ -436,6 +470,9 @@ export function buildPostVideoRequest(input: {
     body.dailyTimes = input.timer.dailyTimes;
     body.startDays = input.timer.startDays;
   }
+  // 平台声明：仅当调用方显式传入时透传。后端 `_merge_platform_fields` 会按
+  // 「任务级 > 账号级 > 不传」合并，调用方未给 = 后端走账号默认。
+  if (input.platformFields) body.platformFields = input.platformFields;
   return body;
 }
 
@@ -529,16 +566,25 @@ function buildOneMatrixItem(
   dailyTimesSet: Set<string>,
 ): PostVideoRequest {
   const tags = parseTagsInput(item.tags);
+  const base = {
+    fileList: [item.filePath],
+    accountList: [accountCookie],
+    type: OFFICIAL_PLATFORM_TYPE[platform],
+    title: mergeTitleWithCaption(item.title, item.caption),
+    tags,
+  };
+  // 仅当该平台在 platformFields 中**实际存在子键**时才透传，避免把空对象
+  // 发到后端覆盖账号默认。`kuaishou` 在 PlatformFields 形状内缺席。
+  const trimmed =
+    platform !== "kuaishou" && item.platformFields
+      ? trimPlatformFields(item.platformFields, platform)
+      : undefined;
+  if (trimmed) {
+    (base as PostVideoRequest).platformFields = trimmed;
+  }
 
   if (item.mode === "immediate") {
-    return {
-      fileList: [item.filePath],
-      accountList: [accountCookie],
-      type: OFFICIAL_PLATFORM_TYPE[platform],
-      title: mergeTitleWithCaption(item.title, item.caption),
-      tags,
-      enableTimer: false,
-    };
+    return { ...base, enableTimer: false };
   }
 
   // mode='timer'
@@ -554,11 +600,7 @@ function buildOneMatrixItem(
   }
   const hour = parseHHMMToHour(item.timeOfDay);
   return {
-    fileList: [item.filePath],
-    accountList: [accountCookie],
-    type: OFFICIAL_PLATFORM_TYPE[platform],
-    title: mergeTitleWithCaption(item.title, item.caption),
-    tags,
+    ...base,
     enableTimer: true,
     videosPerDay: 1,
     dailyTimes: [hour],

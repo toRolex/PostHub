@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sqlite3
 import threading
@@ -14,6 +15,13 @@ from conf import BASE_DIR
 from myUtils.login import get_tencent_cookie, douyin_cookie_gen, get_ks_cookie, xiaohongshu_cookie_gen
 from myUtils.postVideo import post_video_tencent, post_video_DouYin, post_video_ks, post_video_xhs
 
+from posthub.declarations import (
+    DeclarationMappingError,
+    resolve_platform_fields,
+    select_for_platform,
+)
+from posthub.uploader_wrapper import set_pending_declarations
+
 active_queues = {}
 app = Flask(__name__)
 
@@ -22,6 +30,93 @@ CORS(app)
 
 # 限制上传文件大小为160MB
 app.config['MAX_CONTENT_LENGTH'] = 160 * 1024 * 1024
+
+
+# ─────────────────────── PostHub 平台声明透传（issue #43 / ADR-0008）───────────────────────
+#
+# social-auto-upload 上游 user_info 行格式 [id, type, filePath, userName, status]；
+# 我们把账号维度的默认声明从 `default_platform_fields` 列取出，merge 到任务级
+# `platform_fields`（任务级 > 账号级；账号级 > 不传）。merge 后写入
+# posthub.uploader_wrapper 的 thread-local 队列，由包装层注入到 post_video_*。
+#
+# default_platform_fields 列在 issue #43 / ADR-0008 通过 ADD COLUMN 增量迁移。
+
+
+def _load_account_defaults_map() -> dict[str, dict]:
+    """{cookieFile: parsed_default_platform_fields} —— /postVideo 入口按 cookie 文件名查表。"""
+    out: dict[str, dict] = {}
+    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT filePath, default_platform_fields FROM user_info"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # 老库无此列 → 当作全部账号未设置默认声明
+            return out
+    for file_path, raw in rows:
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            out[file_path] = parsed
+    return out
+
+
+def _merge_platform_fields(
+    task_fields: dict | None,
+    accounts_with_defaults: list[dict],
+) -> dict:
+    """任务级 platform_fields 优先，账号级 default_platform_fields 兜底。
+
+    accounts_with_defaults：[{filePath, default_platform_fields}, ...]；
+    同一任务可能带多个账号（多账号并发发布），按各账号默认值取并集 —— 同一字段
+    多账号不同值时优先任务级（若任务级未给，则取**首个**账号默认值；这与官方
+    `accountList` 在文件维度的语义一致）。
+    """
+    base: dict = {}
+    for acc in accounts_with_defaults:
+        defaults = acc.get("default_platform_fields")
+        if isinstance(defaults, dict):
+            for plat, fields in defaults.items():
+                if not isinstance(fields, dict):
+                    continue
+                base.setdefault(plat, {})
+                for k, v in fields.items():
+                    base[plat].setdefault(k, v)
+    if not task_fields:
+        return base
+    for plat, fields in task_fields.items():
+        if not isinstance(fields, dict):
+            continue
+        base.setdefault(plat, {})
+        for k, v in fields.items():
+            if v is not None:
+                base[plat][k] = v
+    return base
+
+
+def _validate_platform_fields(platform_fields: dict | None, platform: int) -> None:
+    """校验 platform_fields 形状；非法时抛 DeclarationMappingError。"""
+    if not platform_fields:
+        return
+    allowed_keys: dict[int, set[str]] = {
+        1: {"source", "origin"},  # 小红书
+        2: {"declaration", "origin"},  # 视频号
+        3: {"declaration"},  # 抖音
+    }
+    keys = allowed_keys.get(platform, set())
+    plat_alias = {1: "xiaohongshu", 2: "wechat", 3: "douyin"}[platform]
+    section = platform_fields.get(plat_alias)
+    if not isinstance(section, dict):
+        return
+    unknown = set(section) - keys
+    if unknown:
+        raise DeclarationMappingError(
+            f"{plat_alias} 字段非法：{sorted(unknown)}（合法子键：{sorted(keys)}）"
+        )
 
 # 获取当前目录（假设 index.html 和 assets 在这里）
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -243,8 +338,8 @@ async def getValidAccounts():
             if not flag:
                 row[4] = 0
                 cursor.execute('''
-                UPDATE user_info 
-                SET status = ? 
+                UPDATE user_info
+                SET status = ?
                 WHERE id = ?
                 ''', (0,row[0]))
                 conn.commit()
@@ -442,6 +537,27 @@ def postVideo():
     if not title:
         return jsonify({"code": 400, "msg": "标题不能为空", "data": None}), 400
 
+    # PostHub 透传：platform_fields 任务级 + 账号 default_platform_fields 兜底。
+    # HTTP seam 字段名沿用 PostHub 风格（camelCase，与 fileList / accountList 一致）；
+    # ADR-0008 schema 用 snake_case 但仅是「持久化/内部」语义。
+    platform_fields = data.get('platformFields') or data.get('platform_fields')
+    try:
+        _validate_platform_fields(platform_fields, type)
+        defaults_map = _load_account_defaults_map()
+        accounts_with_defaults = [
+            {"filePath": fp, "default_platform_fields": defaults_map.get(fp)}
+            for fp in account_list
+        ]
+        merged = _merge_platform_fields(platform_fields, accounts_with_defaults)
+        resolved = resolve_platform_fields(merged) if merged else None
+        if resolved is not None:
+            payload = select_for_platform(resolved, type)
+            set_pending_declarations([{"platform": type, **payload}])
+        else:
+            set_pending_declarations([])
+    except DeclarationMappingError as err:
+        return jsonify({"code": 400, "msg": str(err), "data": None}), 400
+
     # 打印获取到的数据（仅作为示例）
     print("File List:", file_list)
     print("Account List:", account_list)
@@ -522,6 +638,33 @@ def postVideoBatch():
 
     if not isinstance(data_list, list):
         return jsonify({"code": 400, "msg": "Expected a JSON array", "data": None}), 400
+
+    # 一次请求展开多个 postVideo 项；为每个项预先解析 platformFields → 声明文案。
+    # 任一项 platformFields 非法 → 整批 400 拒绝（避免部分提交）。
+    pending: list[dict] = []
+    defaults_map = _load_account_defaults_map()
+    try:
+        for data in data_list:
+            type = data.get('type')
+            account_list = data.get('accountList', [])
+            platform_fields = data.get('platformFields') or data.get('platform_fields')
+            _validate_platform_fields(platform_fields, type)
+            accounts_with_defaults = [
+                {"filePath": fp, "default_platform_fields": defaults_map.get(fp)}
+                for fp in account_list
+            ]
+            merged = _merge_platform_fields(platform_fields, accounts_with_defaults)
+            if not merged:
+                pending.append({"platform": type})
+                continue
+            resolved = resolve_platform_fields(merged)
+            payload = select_for_platform(resolved, type)
+            pending.append({"platform": type, **payload})
+        set_pending_declarations(pending)
+    except DeclarationMappingError as err:
+        set_pending_declarations([])
+        return jsonify({"code": 400, "msg": str(err), "data": None}), 400
+
     for data in data_list:
         # 从JSON数据中提取fileList和accountList
         file_list = data.get('fileList', [])
@@ -556,6 +699,7 @@ def postVideoBatch():
             case 4:
                 post_video_ks(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
                           start_days)
+    set_pending_declarations([])
     # 返回响应给客户端
     return jsonify(
         {
@@ -563,6 +707,86 @@ def postVideoBatch():
             "msg": None,
             "data": None
         }), 200
+
+
+@app.route('/getAccountDefaults', methods=['GET'])
+def get_account_defaults():
+    """返回 `{cookieFile: parsed_default_platform_fields}`（issue #43）。
+
+    账号管理页批量拉取；老库无 default_platform_fields 列时返 500，
+    前端会兜底为空对象（视作未设置默认声明）。
+    """
+    out: dict[str, dict] = {}
+    try:
+        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                "SELECT filePath, default_platform_fields FROM user_info"
+            ).fetchall()
+    except sqlite3.OperationalError as err:
+        if "no such column" in str(err).lower():
+            return jsonify({
+                "code": 500,
+                "msg": "user_info 缺 default_platform_fields 列，请先启动后端一次让 db_init 迁移",
+                "data": None,
+            }), 500
+        return jsonify({"code": 500, "msg": str(err), "data": None}), 500
+    for file_path, raw in rows:
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            out[file_path] = parsed
+    return jsonify({"code": 200, "msg": None, "data": out}), 200
+
+
+@app.route('/updateAccountDefaults', methods=['POST'])
+def update_account_defaults():
+    """PostHub 账号维度「默认声明」持久化端点（issue #43）。
+
+    请求体：`{id: number, default_platform_fields: object|null}`。
+    字段为 `null` 或空对象 → 清除该账号默认声明。
+    """
+    payload = request.get_json()
+    if not payload or "id" not in payload:
+        return jsonify({"code": 400, "msg": "缺少账号 id", "data": None}), 400
+    account_id = payload.get("id")
+    fields = payload.get("default_platform_fields")
+
+    serialized: str | None
+    if fields is None:
+        serialized = None
+    elif isinstance(fields, dict):
+        try:
+            serialized = json.dumps(fields, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return jsonify({"code": 400, "msg": "default_platform_fields 不是合法 JSON 对象", "data": None}), 400
+    else:
+        return jsonify({"code": 400, "msg": "default_platform_fields 必须是 object 或 null", "data": None}), 400
+
+    try:
+        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE user_info SET default_platform_fields = ? WHERE id = ?",
+                (serialized, account_id),
+            )
+            conn.commit()
+        return jsonify({"code": 200, "msg": "ok", "data": None}), 200
+    except sqlite3.OperationalError as err:
+        # 增量迁移未跑过 → 列不存在
+        if "no such column" in str(err).lower():
+            return jsonify({
+                "code": 500,
+                "msg": "user_info 缺 default_platform_fields 列，请先启动后端一次让 db_init 迁移",
+                "data": None,
+            }), 500
+        return jsonify({"code": 500, "msg": str(err), "data": None}), 500
+    except Exception as err:
+        return jsonify({"code": 500, "msg": str(err), "data": None}), 500
 
 # Cookie文件上传API
 @app.route('/uploadCookie', methods=['POST'])

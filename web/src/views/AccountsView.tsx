@@ -13,7 +13,7 @@ import { useToastStore } from "../stores/toast";
 import { PLATFORM_NAMES } from "../api/platformNames";
 import { openLoginSse, type LoginSseHandle } from "../api/official";
 import { OFFICIAL_PLATFORM_TYPE } from "../api/types";
-import type { OfficialAccount, Platform } from "../api/types";
+import type { OfficialAccount, Platform, PlatformFields } from "../api/types";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import {
@@ -30,6 +30,7 @@ import { PlatformMark } from "../components/ui/platform-mark";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
 import { CookieManager } from "../components/CookieManager";
+import { PlatformDeclarationPicker, PlatformDeclarationBadge } from "../components/publish/PlatformDeclarationPicker";
 
 const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat", "kuaishou"];
 
@@ -332,6 +333,94 @@ function EditAccountDialog({
   );
 }
 
+/** 编辑账号默认声明（issue #43）：账号管理页「默认声明」入口。 */
+function EditDefaultsDialog({
+  account,
+  onClose,
+}: {
+  account: OfficialAccount | null;
+  onClose: () => void;
+}) {
+  const updateAccountDefaults = useAccountsStore((s) => s.updateAccountDefaults);
+  const [draft, setDraft] = useState<PlatformFields>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (account) {
+      setDraft(account.defaultPlatformFields ?? {});
+      setError("");
+    }
+  }, [account]);
+
+  async function handleSave(): Promise<void> {
+    if (!account) return;
+    // 清空所有子键 → 视作清除默认声明
+    const isEmpty = !draft.wechat && !draft.douyin && !draft.xiaohongshu;
+    const payload = isEmpty ? null : draft;
+    setSaving(true);
+    try {
+      await updateAccountDefaults(account.id, payload);
+      useToastStore.getState().show(
+        payload ? "账号默认声明已保存" : "账号默认声明已清除",
+        "ok",
+      );
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function setPlatformField(
+    p: "wechat" | "douyin" | "xiaohongshu",
+    v: PlatformFields[typeof p],
+  ) {
+    setDraft((d: PlatformFields) => ({ ...d, [p]: v }));
+  }
+
+  return (
+    <Dialog open={account !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[min(520px,92vw)]">
+        <DialogTitle>默认声明</DialogTitle>
+        <DialogDescription className="text-label text-muted">
+          「{account?.name}」({account ? PLATFORM_NAMES[account.platform] : ""}) · 批量场景下未在表单覆盖时使用
+        </DialogDescription>
+        <div className="mt-4 flex flex-col gap-3">
+          {account && account.platform !== "kuaishou" ? (
+            <div className="rounded-lg border border-border-soft bg-bg p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <PlatformMark platform={account.platform} />
+                <span className="text-label font-medium text-fg-2">
+                  {PLATFORM_NAMES[account.platform]}
+                </span>
+                <span className="ml-auto text-caption text-meta">保存即覆盖所有未填声明的视频</span>
+              </div>
+              <PlatformDeclarationPicker
+                platform={account.platform as "wechat" | "douyin" | "xiaohongshu"}
+                value={draft[account.platform as "wechat" | "douyin" | "xiaohongshu"]}
+                onChange={(v) => setPlatformField(account.platform as "wechat" | "douyin" | "xiaohongshu", v)}
+              />
+            </div>
+          ) : (
+            <p className="text-label text-meta">快手暂无声明字段</p>
+          )}
+          {error && <p className="text-label text-danger-deep">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" disabled={saving} onClick={onClose}>
+            取消
+          </Button>
+          <Button variant="primary" disabled={saving} onClick={() => void handleSave()}>
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AccountsView() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
@@ -342,6 +431,7 @@ export function AccountsView() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<OfficialAccount | null>(null);
   const [editTarget, setEditTarget] = useState<OfficialAccount | null>(null);
+  const [defaultsTarget, setDefaultsTarget] = useState<OfficialAccount | null>(null);
 
   useEffect(() => {
     if (connected) void fetchAccounts();
@@ -398,6 +488,9 @@ export function AccountsView() {
                 <th className="px-4 py-2.5 text-left text-caption font-medium text-meta">
                   Cookie 有效性
                 </th>
+                <th className="px-4 py-2.5 text-left text-caption font-medium text-meta">
+                  默认声明
+                </th>
                 <th className="px-4 py-2.5 text-right text-caption font-medium text-meta">
                   操作
                 </th>
@@ -429,7 +522,28 @@ export function AccountsView() {
                       {a.cookieValid ? "Cookie 有效" : "Cookie 已失效"}
                     </span>
                   </td>
+                  <td className="px-4 py-3">
+                    {a.platform === "kuaishou" ? (
+                      <span className="text-caption text-meta">—</span>
+                    ) : (
+                      <PlatformDeclarationBadge
+                        platform={a.platform as "wechat" | "douyin" | "xiaohongshu"}
+                        value={a.defaultPlatformFields?.[a.platform as "wechat" | "douyin" | "xiaohongshu"]}
+                      />
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right">
+                    {a.platform !== "kuaishou" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-fg-2 hover:bg-surface"
+                        onClick={() => setDefaultsTarget(a)}
+                      >
+                        <PencilLine className="size-4" />
+                        默认声明
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -479,6 +593,10 @@ export function AccountsView() {
       <EditAccountDialog
         account={editTarget}
         onClose={() => setEditTarget(null)}
+      />
+      <EditDefaultsDialog
+        account={defaultsTarget}
+        onClose={() => setDefaultsTarget(null)}
       />
 
       <CookieManager />
