@@ -58,6 +58,8 @@ export interface BatchItemResult {
   itemKey: string;
   fileName: string;
   platform: Platform;
+  /** 展开项对应的账号 cookie 文件名（渲染时直接取，不再从 itemKey 反解）。 */
+  accountCookie: string;
   mode: BatchMode;
   /** mode='timer' 时透传。 */
   timeOfDay?: string;

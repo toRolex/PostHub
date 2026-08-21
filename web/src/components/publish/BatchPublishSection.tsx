@@ -684,7 +684,7 @@ export function BatchPublishSection() {
                 <p className="font-semibold">
                   <span className="tabular-nums">{r.fileName}</span>
                   <span className="ml-2 text-caption text-muted">
-                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.itemKey.split("|")[1]}
+                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
                   </span>
                 </p>
                 {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}

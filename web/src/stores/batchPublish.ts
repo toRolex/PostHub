@@ -130,6 +130,7 @@ function expandItemResults(
     itemKey: keyOf(item.filePath, cookie),
     fileName: item.filePath,
     platform,
+    accountCookie: cookie,
     mode: item.mode,
     timeOfDay: item.timeOfDay,
     startDays: item.startDays,
