@@ -99,7 +99,7 @@ export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
       Platform,
       string[],
     ][]) {
-      if (!accounts || accounts.length === 0) continue;
+      if (!accounts?.length) continue;
       for (const cookie of accounts) {
         refs.push({ item, platform, cookie });
       }

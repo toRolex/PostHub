@@ -27,8 +27,7 @@ import type {
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
 import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
-import type { BatchItem } from "../domain/batch";
-import { buildBatchItemRefs } from "../domain/batch";
+import { buildBatchItemRefs, type BatchItem } from "../domain/batch";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
