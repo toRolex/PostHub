@@ -3,7 +3,7 @@ import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
 import type { Platform, PlatformFields } from "../api/types";
 import type { BatchItem, BatchItemResult } from "../types/batch";
 import { useDaemonStore } from "./daemon";
-import { validatePlatformFields } from "../api/declarations";
+import { validatePlatformFields } from "../domain/declarations";
 
 /**
  * 矩阵批量发布 store。
