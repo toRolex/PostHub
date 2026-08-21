@@ -31,38 +31,11 @@ import {
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
 import type { BatchItem } from "../../domain/batch";
-import { validatePlatformFields } from "../../domain/declarations";
+import { validateBatch } from "../../domain/batch";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /* ─────────────────────── 纯逻辑 helper（可单测） ─────────────────────── */
-
-/**
- * 单条 BatchItem 的行内校验（组件侧副本，与 store validateBatch 对应）。
- * 独立导出便于不挂 DOM 单测。
- */
-export function collectItemLocalErrors(
-  item: BatchItem,
-  dailyTimesSet: Set<string>,
-): string[] {
-  const local: string[] = [];
-  if (!item.title.trim()) local.push("标题不能为空");
-  const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-    (a) => a && a.length > 0,
-  );
-  if (!hasAccount) local.push("至少选一个账号");
-  if (item.mode === "timer") {
-    if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-      local.push("定时未选时刻");
-    }
-    if (item.startDays === undefined || item.startDays < 0) {
-      local.push("起始日非法");
-    }
-  }
-  const fieldError = validatePlatformFields(item.platformFields);
-  if (fieldError) local.push(fieldError);
-  return local;
-}
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
@@ -222,15 +195,16 @@ export function BatchPublishSection() {
   const itemsByPath = useMemo(() => new Set(items.map((i) => i.filePath)), [items]);
   const availableToAdd = videos.filter((v) => !itemsByPath.has(v.file_path));
 
-  // 整批错误聚合 + 每 item 错误
+  // 整批错误聚合 + 每 item 错误（对 domain 结构化错误按 filePath 分组重排版）
   const allErrors = useBatchPublishStore.getState().validate();
   const errorsByFilePath = useMemo(() => {
     const map = new Map<string, string[]>();
-    const dailyTimesSet = new Set(dailyTimes);
-    items.forEach((item) => {
-      const local = collectItemLocalErrors(item, dailyTimesSet);
-      if (local.length > 0) map.set(item.filePath, local);
-    });
+    for (const e of validateBatch(items, dailyTimes)) {
+      if (!e.filePath) continue;
+      const arr = map.get(e.filePath);
+      if (arr) arr.push(e.msg);
+      else map.set(e.filePath, [e.msg]);
+    }
     return map;
   }, [items, dailyTimes]);
 

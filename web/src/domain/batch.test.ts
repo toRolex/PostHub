@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBatchItemRefs, keyOf, parseKey } from "./batch";
+import { buildBatchItemRefs, keyOf, parseKey, validateBatch } from "./batch";
 import type { BatchItem } from "./batch";
 
 function makeItem(patch: Partial<BatchItem> = {}): BatchItem {
@@ -68,5 +68,122 @@ describe("buildBatchItemRefs", () => {
     const item = makeItem();
     const refs = buildBatchItemRefs([item]);
     expect(refs[0].item).toBe(item);
+  });
+});
+
+describe("validateBatch（结构化 ValidationError，issue #57）", () => {
+  it("items 为空 → 单条整批错误（row=0，无 filePath）", () => {
+    const errors = validateBatch([], []);
+    expect(errors).toEqual([{ row: 0, filePath: "", msg: "请至少添加一条视频" }]);
+  });
+
+  it("合法批次 → 无错误", () => {
+    const errors = validateBatch(
+      [makeItem({ title: "t", accountIdsByPlatform: { douyin: ["d.json"] } })],
+      [],
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("标题为空 → 错误带 row 与 filePath", () => {
+    const errors = validateBatch([makeItem({ filePath: "v1.mp4", title: "  " })], []);
+    expect(errors).toEqual([
+      { row: 1, filePath: "v1.mp4", msg: "标题不能为空" },
+    ]);
+  });
+
+  it("未勾账号 → 错误带 row 与 filePath", () => {
+    const errors = validateBatch(
+      [makeItem({ filePath: "v2.mp4", accountIdsByPlatform: {} })],
+      [],
+    );
+    expect(errors).toEqual([
+      { row: 1, filePath: "v2.mp4", msg: "请至少选择一个平台的账号" },
+    ]);
+  });
+
+  it("timer 未从 dailyTimes 池挑时刻 → 错误", () => {
+    const errors = validateBatch(
+      [
+        makeItem({
+          filePath: "v3.mp4",
+          mode: "timer",
+          startDays: 0,
+          timeOfDay: "09:00",
+        }),
+      ],
+      ["10:00"],
+    );
+    expect(errors).toEqual([
+      {
+        row: 1,
+        filePath: "v3.mp4",
+        msg: "定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）",
+      },
+    ]);
+  });
+
+  it("timer startDays 缺失或为负 → 错误", () => {
+    const errors = validateBatch(
+      [
+        makeItem({
+          filePath: "v4.mp4",
+          mode: "timer",
+          timeOfDay: "10:00",
+          startDays: undefined,
+        }),
+        makeItem({
+          filePath: "v5.mp4",
+          mode: "timer",
+          timeOfDay: "10:00",
+          startDays: -1,
+        }),
+      ],
+      ["10:00"],
+    );
+    expect(errors).toEqual([
+      { row: 1, filePath: "v4.mp4", msg: "定时模式必须设置起始日 startDays >= 0" },
+      { row: 2, filePath: "v5.mp4", msg: "定时模式必须设置起始日 startDays >= 0" },
+    ]);
+  });
+
+  it("多行错误 → row 按 1 起编号，对应各自 filePath", () => {
+    const errors = validateBatch(
+      [
+        makeItem({ filePath: "ok.mp4" }),
+        makeItem({ filePath: "bad.mp4", title: "" }),
+      ],
+      [],
+    );
+    expect(errors).toEqual([{ row: 2, filePath: "bad.mp4", msg: "标题不能为空" }]);
+  });
+
+  it("platformFields 声明非法 → 错误带 filePath，文案与 validatePlatformFields 一致", () => {
+    const errors = validateBatch(
+      [
+        makeItem({
+          filePath: "v6.mp4",
+          platformFields: { douyin: { declaration: "bogus" as never } },
+        }),
+      ],
+      [],
+    );
+    expect(errors).toEqual([
+      { row: 1, filePath: "v6.mp4", msg: "抖音「自主声明」取值非法：bogus" },
+    ]);
+  });
+
+  it("platformFields 合法声明 → 不报错", () => {
+    const errors = validateBatch(
+      [
+        makeItem({
+          filePath: "v7.mp4",
+          accountIdsByPlatform: { xiaohongshu: ["x.json"] },
+          platformFields: { xiaohongshu: { source: "ai_synthesized" } },
+        }),
+      ],
+      [],
+    );
+    expect(errors).toEqual([]);
   });
 });

@@ -4,11 +4,11 @@ import type { PlatformFields } from "../api/types";
 import {
   buildBatchItemRefs,
   keyOf,
+  validateBatch,
   type BatchItem,
   type BatchItemResult,
 } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
-import { validatePlatformFields } from "../domain/declarations";
 
 /**
  * 矩阵批量发布 store。
@@ -93,31 +93,10 @@ export const initialBatchPublishState: Omit<
 
 /* ───────────────────────── 校验 ───────────────────────── */
 
-export function validateBatch(items: BatchItem[], dailyTimes: string[]): string[] {
-  const errors: string[] = [];
-  if (items.length === 0) errors.push("请至少添加一条视频");
-  const dailyTimesSet = new Set(dailyTimes);
-  items.forEach((item, idx) => {
-    if (!item.title.trim()) errors.push(`第 ${idx + 1} 行：标题不能为空`);
-    const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-      (a) => a && a.length > 0,
-    );
-    if (!hasAccount) errors.push(`第 ${idx + 1} 行：请至少选择一个平台的账号`);
-    if (item.mode === "timer") {
-      if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-        errors.push(
-          `第 ${idx + 1} 行：定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）`,
-        );
-      }
-      if (item.startDays === undefined || item.startDays < 0) {
-        errors.push(`第 ${idx + 1} 行：定时模式必须设置起始日 startDays >= 0`);
-      }
-    }
-    const fieldError = validatePlatformFields(item.platformFields);
-    if (fieldError) errors.push(`第 ${idx + 1} 行：${fieldError}`);
-  });
-  return errors;
-}
+/**
+ * 批量校验入口已收敛至 domain/batch.ts 的 validateBatch（结构化 ValidationError）。
+ * 本 store 的公开 validate() 在边界拼「第 N 行：」前缀，保持 string[] 返回（视图层零改动）。
+ */
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -211,7 +190,9 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
 
   validate: () => {
     const s = get();
-    return validateBatch(s.items, s.dailyTimes);
+    return validateBatch(s.items, s.dailyTimes).map((e) =>
+      e.row > 0 ? `第 ${e.row} 行：${e.msg}` : e.msg,
+    );
   },
 
   submit: async () => {

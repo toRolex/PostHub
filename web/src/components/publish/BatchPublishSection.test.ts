@@ -8,11 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-  summarizeItem,
-  summarizeDailyTimes,
-  collectItemLocalErrors,
-} from "./BatchPublishSection";
+import { summarizeItem, summarizeDailyTimes } from "./BatchPublishSection";
 import type { BatchItem } from "../../domain/batch";
 
 function mkItem(over: Partial<BatchItem>): BatchItem {
@@ -83,42 +79,6 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
     );
     expect(s.accountSummary).toBe("1 账号 / 1 平台");
     expect(s.timeOfDayLabel).toBe("10:00");
-  });
-});
-
-describe("BatchPublishSection · collectItemLocalErrors（行内校验，issue #53）", () => {
-  const times = new Set(["10:00"]);
-
-  it("合法条目 → 无错误", () => {
-    const errs = collectItemLocalErrors(
-      mkItem({ title: "t", accountIdsByPlatform: { douyin: ["d.json"] } }),
-      times,
-    );
-    expect(errs).toEqual([]);
-  });
-
-  it("platformFields 声明非法 → 提交前行内即报错，文案与 validatePlatformFields 一致", () => {
-    const errs = collectItemLocalErrors(
-      mkItem({
-        accountIdsByPlatform: { douyin: ["d.json"] },
-        platformFields: {
-          douyin: { declaration: "bogus" as never },
-        },
-      }),
-      times,
-    );
-    expect(errs).toEqual(["抖音「自主声明」取值非法：bogus"]);
-  });
-
-  it("platformFields 合法声明 → 不报错", () => {
-    const errs = collectItemLocalErrors(
-      mkItem({
-        accountIdsByPlatform: { xiaohongshu: ["x.json"] },
-        platformFields: { xiaohongshu: { source: "ai_synthesized" } },
-      }),
-      times,
-    );
-    expect(errs).toEqual([]);
   });
 });
 

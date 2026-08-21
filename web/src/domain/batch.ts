@@ -9,6 +9,7 @@
 
 import type { Platform } from "../api/types";
 import type { PlatformFields } from "./declarations";
+import { validatePlatformFields } from "./declarations";
 
 /** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
 export type DailyTime = string;
@@ -106,4 +107,49 @@ export function buildBatchItemRefs(items: BatchItem[]): BatchItemRef[] {
     }
   }
   return refs;
+}
+
+/**
+ * 批量校验唯一实现：返回结构化 ValidationError[]。
+ *
+ * - row 从 1 起编号；整批级错误（空批次）row=0、filePath=""。
+ * - store.validate() 在边界拼「第 N 行：」前缀；组件按 filePath 分组重排版。
+ */
+export function validateBatch(items: BatchItem[], dailyTimes: string[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (items.length === 0) {
+    errors.push({ row: 0, filePath: "", msg: "请至少添加一条视频" });
+  }
+  const dailyTimesSet = new Set(dailyTimes);
+  items.forEach((item, idx) => {
+    const row = idx + 1;
+    if (!item.title.trim()) {
+      errors.push({ row, filePath: item.filePath, msg: "标题不能为空" });
+    }
+    const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
+      (a) => a && a.length > 0,
+    );
+    if (!hasAccount) {
+      errors.push({ row, filePath: item.filePath, msg: "请至少选择一个平台的账号" });
+    }
+    if (item.mode === "timer") {
+      if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
+        errors.push({
+          row,
+          filePath: item.filePath,
+          msg: "定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）",
+        });
+      }
+      if (item.startDays === undefined || item.startDays < 0) {
+        errors.push({
+          row,
+          filePath: item.filePath,
+          msg: "定时模式必须设置起始日 startDays >= 0",
+        });
+      }
+    }
+    const fieldError = validatePlatformFields(item.platformFields);
+    if (fieldError) errors.push({ row, filePath: item.filePath, msg: fieldError });
+  });
+  return errors;
 }
