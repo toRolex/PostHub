@@ -6,7 +6,7 @@ import { useFilesStore } from "../stores/files";
 import { usePublishStore } from "../stores/publish";
 import { parseTags } from "../domain/tags";
 import type { Platform, PlatformFields } from "../api/types";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../api/types";
+import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
@@ -21,8 +21,6 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "../components/publish/PlatformDeclarationPicker";
-
-const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 function ViewHead({ title, hint }: { title: string; hint: string }) {
   return (
@@ -244,11 +242,11 @@ function TargetSection() {
               checked={checked}
               disabled={!usable}
               onChange={() => togglePlatform(p)}
-              aria-label={`发布到${OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}`}
+              aria-label={`发布到${PLATFORM_NAMES[p]}`}
             />
             <PlatformMark platform={p} />
             <span className="text-body font-medium text-fg">
-              {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+              {PLATFORM_NAMES[p]}
             </span>
             <span className="ml-auto text-caption text-meta">
               {list.length > 1 ? `${list.length} 个账号` : list[0].name}
@@ -440,7 +438,7 @@ function DeclarationSection() {
             <div className="mb-2 flex items-center gap-2">
               <PlatformMark platform={p} />
               <span className="text-label font-medium text-fg-2">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
               </span>
               <span className="ml-auto text-caption text-meta">
                 账号默认：
@@ -490,7 +488,7 @@ function FeedbackPanel() {
             )}
             <div className="min-w-0">
               <p className="font-semibold">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
                 <span className="ml-2 font-normal text-muted">
                   {r.ok ? "发布任务已提交" : "失败"}
                 </span>

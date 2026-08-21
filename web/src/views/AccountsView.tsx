@@ -10,7 +10,7 @@ import {
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useToastStore } from "../stores/toast";
-import { PLATFORM_NAMES } from "../api/platformNames";
+import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
 import { openLoginSse, type LoginSseHandle } from "../api/official";
 import { OFFICIAL_PLATFORM_TYPE } from "../api/types";
 import type { OfficialAccount, Platform, PlatformFields } from "../api/types";
@@ -31,8 +31,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Skeleton } from "../components/ui/skeleton";
 import { CookieManager } from "../components/CookieManager";
 import { PlatformDeclarationPicker, PlatformDeclarationBadge } from "../components/publish/PlatformDeclarationPicker";
-
-const PLATFORMS: Platform[] = ["douyin", "xiaohongshu", "wechat", "kuaishou"];
 
 function ErrorHint({ message }: { message: string }) {
   if (!message) return null;

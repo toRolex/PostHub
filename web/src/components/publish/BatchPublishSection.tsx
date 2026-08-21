@@ -13,7 +13,7 @@ import { useFilesStore } from "../../stores/files";
 import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
 import type { Platform } from "../../api/types";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
+import { PLATFORM_NAMES, PLATFORMS } from "../../api/platformNames";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -35,8 +35,6 @@ import {
   wechatScheduledCountsByCookie,
   type BatchItem,
 } from "../../domain/batch";
-
-const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 /* ─────────────────────── 纯逻辑 helper（可单测） ─────────────────────── */
 
@@ -132,7 +130,7 @@ function BatchItemDeclarationBlock({
             <div className="mb-2 flex items-center gap-2">
               <PlatformMark platform={p} />
               <span className="text-caption text-meta">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
               </span>
               <span className="ml-auto text-caption text-meta">
                 默认：
@@ -486,7 +484,7 @@ export function BatchPublishSection() {
                               <div className="mb-1.5 flex items-center gap-2">
                                 <PlatformMark platform={p} />
                                 <span className="text-caption text-meta">
-                                  {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                                  {PLATFORM_NAMES[p]}
                                 </span>
                               </div>
                               <div className="flex flex-wrap gap-1.5">
@@ -655,7 +653,7 @@ export function BatchPublishSection() {
                 <p className="font-semibold">
                   <span className="tabular-nums">{r.fileName}</span>
                   <span className="ml-2 text-caption text-muted">
-                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
+                    {PLATFORM_NAMES[r.platform]} · {r.accountCookie}
                   </span>
                 </p>
                 {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
