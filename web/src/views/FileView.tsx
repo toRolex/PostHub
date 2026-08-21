@@ -34,15 +34,17 @@ function UploadCard() {
   async function handleFileChange(
     e: React.ChangeEvent<HTMLInputElement>,
   ): Promise<void> {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length === 0) return;
+    const customName = name.trim() ? name.trim() : undefined;
     try {
-      const customName = name.trim() ? name.trim() : undefined;
-      await upload(file, customName);
-      useToastStore.getState().show(
-        customName ? `「${customName}」已上传到素材库` : "素材已上传到素材库",
-        "ok",
-      );
+      for (const file of files) {
+        await upload(file, customName);
+        useToastStore.getState().show(
+          customName ? `「${customName}」已上传到素材库` : "素材已上传到素材库",
+          "ok",
+        );
+      }
       setName("");
     } catch (err) {
       useToastStore.getState().show(
@@ -66,6 +68,7 @@ function UploadCard() {
             ref={fileRef}
             type="file"
             accept="video/*,image/*"
+            multiple
             className="hidden"
             onChange={(e) => void handleFileChange(e)}
           />
