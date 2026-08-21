@@ -279,10 +279,10 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
         }
         set({ results });
       },
-      // 平台级错误已逐条收敛进 results；外层异常不写 error、原样抛出。
       {
         begin: { submitting: true },
         end: { submitting: false },
+        // 平台级错误已逐条收敛进 results；外层异常不写 error、原样抛出。
         onError: () => undefined,
         rethrow: true,
       },
