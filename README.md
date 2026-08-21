@@ -2,7 +2,7 @@
 
 # PostHub（发布中枢）
 
-**一个视频，一键 / 定时发布到 抖音、小红书、视频号**
+**一个视频，一键或定时发布到抖音、小红书、视频号**
 
 [![Release](https://img.shields.io/github/v/release/toRolex/PostHub?style=flat-square&color=blue)](https://github.com/toRolex/PostHub/releases)
 [![Build](https://img.shields.io/github/actions/workflow/status/toRolex/PostHub/build.yml?style=flat-square&label=build)](https://github.com/toRolex/PostHub/actions)
@@ -16,16 +16,16 @@
 </div>
 
 > [!NOTE]
-> PostHub 的发布引擎基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload) 构建，感谢 [dreammis](https://github.com/dreammis) 及所有贡献者的开源工作，让本项目得以把精力集中在产品形态与账号 / 任务模型上。
+> 发布引擎基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload)，感谢 [dreammis](https://github.com/dreammis) 与所有贡献者。
 
 ## 这是什么
 
-PostHub 是一个桌面端的多平台短视频发布工具，目标是把「一个视频发到抖音 / 小红书 / 视频号」这件重复、机械、易触发风控的事，从人工逐平台操作变成 **一键 / 定时批量执行**。
+PostHub 是一个桌面端的多平台短视频发布工具。它把「一个视频发到抖音 / 小红书 / 视频号」这件重复又易触发风控的事，从逐平台手动操作变成一键或定时批量执行。
 
-- **本地 Chrome 登录态** —— 通过 `connect_over_cdp` 接管每账号独立的真实浏览器，登录态天然持久化
-- **跨平台并行** —— 一个发布任务展开成 N 个平台子任务，跨平台并行、同平台严格串行
-- **人工介入兜底** —— 验证码、需重登、错过排期等异常主动浮现，不藏在层级深处
-- **AI 内容声明透传** —— 按平台分键（抖音 `declaration` / 视频号 `original_statement` / 小红书 `source`）写入，不靠 OCR 兜底（issue #43）
+- 本地 Chrome 登录态：通过 `connect_over_cdp` 接管每账号独立的真实浏览器，登录态随账号 user-data-dir 持久化
+- 跨平台并行：发布任务展开成 N 个平台子任务，跨平台并行、同平台严格串行
+- 人工介入兜底：验证码、需重登、错过排期等异常主动浮出来，不藏在深层菜单
+- AI 内容声明透传：按平台分键（抖音 `declaration` / 视频号 `original_statement` / 小红书 `source`）写入，不靠 OCR 兜底（issue #43）
 
 ## 下载
 
@@ -38,36 +38,36 @@ PostHub 是一个桌面端的多平台短视频发布工具，目标是把「一
 | Windows (MSI) | `PostHub_0.1.7_x64_en-US.msi` | 343 MB |
 
 > [!NOTE]
-> 当前安装包未签名：macOS 首次打开需右键「打开」绕过 Gatekeeper；Windows 有 SmartScreen 提示，点「仍要运行」即可。
+> 安装包未签名。macOS 首次打开需右键「打开」绕过 Gatekeeper；Windows 有 SmartScreen 提示，点「仍要运行」即可。
 
 > [!WARNING]
-> macOS 仅提供 aarch64（Apple Silicon）构建；Intel Mac 用户需自行从源码构建。
+> macOS 只出了 aarch64（Apple Silicon）；Intel Mac 用户需自行从源码构建。
 
 ## 特性
 
 ### 账号管理
 
-- 每账号 = 一台本机 Chrome（独立 `user-data-dir`）+ 独立调试端口
-- 「打开」拉起 Chrome 扫码登录，发布脚本接管真实浏览器，**登录态天然持久化**
-- 账号级默认声明（按平台分键），新建任务自动继承
+- 每账号 = 一台本机 Chrome（独立 `user-data-dir` + 独立调试端口）
+- 「打开」拉起 Chrome 扫码登录，发布脚本接管真实浏览器，登录态靠 user-data-dir 持久化
+- 账号级默认声明按平台分键，新建任务自动继承
 
 ### 素材与发布
 
-- 官方素材库：上传视频 / 图片，发布时直接选取
+- 官方素材库：上传视频或图片，发布时直接选取
 - 文件夹批量导入：`manifest.json` 驱动多任务批量发布
-- 矩阵批量（`BatchItem`）：每个视频独立标题 / 标签 / 账号组合，跨平台并发
+- 矩阵批量（`BatchItem`）：每个视频独立标题、标签、账号组合，跨平台并发
 
 ### 任务调度与监控
 
-- 任务管理页：发布进度、平台结果、人工介入状态一目了然
+- 任务管理页：发布进度、平台结果、人工介入状态都能直接看到
 - 异常兜底：Tauri 弹窗 + 应用内通知 + 本地日志
-- 调度器：定时任务、单日累计、视频号软提示等平台专属约束
+- 调度器按平台约束执行（定时任务、单日累计、视频号软提示等）
 
 ### 内置守护进程
 
-- Python 守护进程常驻：本地 HTTP IPC（默认 `127.0.0.1:5409`）
+- Python 守护进程常驻，本地 HTTP IPC（默认 `127.0.0.1:5409`）
 - 首次启动按需建 venv（`UV_PROJECT_ENVIRONMENT`），冷启动 1–3 分钟后复用
-- 引擎层基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload)（MIT），**不 fork 不改源码**
+- 引擎层基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload)（MIT），PostHub 不 fork 不改源码
 
 ## 架构
 
@@ -108,15 +108,15 @@ docs/handoffs/  Issue 实现交付快照
 ## 快速上手
 
 > [!IMPORTANT]
-> 守护进程首次启动会在应用数据目录建 venv（联网拉依赖）；如果你的网络受限，可提前在仓库内 `cd daemon && uv sync` 预热。
+> 守护进程首次启动会在应用数据目录建 venv（联网拉依赖）；如果网络受限，可提前在仓库内 `cd daemon && uv sync` 预热。
 
-1. 从上方「下载」获取安装包，安装到你常用的桌面平台
+1. 从上方「下载」获取安装包，安装到你的桌面
 2. 启动 PostHub，系统托盘 / 菜单栏出现图标
-3. 「账号管理」→ 「打开」拉起 Chrome，扫码登录抖音 / 小红书 / 视频号
-4. 「文件」上传你的视频 / 图片素材
-5. 「发布」填标题 / 标签 / 平台，一键发布；或建定时任务
+3. 「账号管理」→「打开」拉起 Chrome，扫码登录抖音 / 小红书 / 视频号
+4. 「文件」上传视频或图片素材
+5. 「发布」填标题、标签、平台，一键发布；或建定时任务
 
-详细发布约束（封面、声明、字数）见 [`docs/specs/`](docs/specs/)。
+发布约束（封面、声明、字数）见 [`docs/specs/`](docs/specs/)。
 
 ## 开发
 
@@ -140,11 +140,11 @@ cargo test                                       # Rust 单元测试
 
 桌面壳 dev（项目根执行）：`web/node_modules/.bin/tauri dev` 拉起前端 dev server + 桌面壳；壳启动时自动经 `uv run --project daemon python -m posthub` 拉起守护进程，前端即可看到连通状态。
 
-### 关键设计约束
+### 关键约束
 
-- **所有 Python 操作必须用 `uv`** —— 不使用裸 pip / venv，所有 `pyproject.toml` / `uv.lock` 是依赖规范
-- **发布引擎不 fork** —— 需要自定义行为时在 PostHub 侧包一层（`daemon/posthub/declarations.py` / `uploader_wrapper.py`）
-- **平台 UI 自动化脆弱** —— 改动前查 `social-auto-upload/uploader/*` 当前结构，避免依赖私有 DOM 路径
+- Python 操作必须用 `uv`：不裸用 pip / venv，依赖规范由 `pyproject.toml` / `uv.lock` 给出
+- 发布引擎不 fork：需要自定义行为时在 PostHub 侧包一层（`daemon/posthub/declarations.py` / `uploader_wrapper.py`）
+- 平台 UI 自动化很脆弱：改动前查 `social-auto-upload/uploader/*` 当前结构，不要依赖私有 DOM 路径
 
 ## 打包 / 发布
 
@@ -158,11 +158,11 @@ web/node_modules/.bin/tauri build
 
 产物：macOS `src-tauri/target/release/bundle/dmg/*.dmg`；Windows `*.exe` / `*.msi`（NSIS + MSI）。
 
-CI 流程：push `v*` tag 触发 `.github/workflows/build.yml`，mac/win 双端构建 + 自动 attach 到 GitHub Release。详细发布流程见 [`docs/deployment.md`](docs/deployment.md)。
+CI：push `v*` tag 触发 `.github/workflows/build.yml`，mac/win 双端构建后自动 attach 到 GitHub Release。流程细节见 [`docs/deployment.md`](docs/deployment.md)。
 
 ## 相关项目
 
-- [social-auto-upload](https://github.com/dreammis/social-auto-upload) —— 发布引擎（MIT），被 PostHub 以依赖方式接入
+- [social-auto-upload](https://github.com/dreammis/social-auto-upload) （MIT），发布引擎，被 PostHub 以依赖方式接入
 
 ## 许可证
 
