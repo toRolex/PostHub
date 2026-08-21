@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.7 (2026-08-21)
+
+### Added
+- FileView「上传素材」支持多选：`<input multiple>` + `handleFileChange` 顺序串行上传至官方素材库
+- docs/handoffs/2026-08-21-issue-43-handoff.md：归档 issue #43 实现细节、测试结果、待办与文件路径速查
+
+### Notes
+- 本轮 bump 仅记录本次新增；v0.1.3~v0.1.6 的 CHANGELOG 条目仍待补（reviewer risk #4），按 ADR/issue 节奏后续 issue 跟进
+
 ## v0.1.2 (2026-08-14)
 
 ### Fixed
