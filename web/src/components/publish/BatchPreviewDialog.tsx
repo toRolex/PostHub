@@ -11,7 +11,7 @@
  */
 
 import { CheckCircle2, XCircle } from "lucide-react";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
+import { PLATFORM_NAMES } from "../../api/platformNames";
 import type { Platform } from "../../api/types";
 import {
   buildBatchItemRefs,
@@ -125,7 +125,7 @@ export function BatchPreviewDialog({
                       <div className="flex items-center gap-2">
                         <PlatformMark platform={r.platform} />
                         <span className="text-caption text-meta">
-                          {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
+                          {PLATFORM_NAMES[r.platform]} · {r.accountCookie}
                         </span>
                         {r.platform === "wechat" && (
                           <PlatformLimitHint

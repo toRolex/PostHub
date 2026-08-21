@@ -28,17 +28,6 @@ export interface DaoUserInfo {
   status: OfficialCookieStatus;
 }
 
-/**
- * 平台展示名（单一来源）。值来自官方 `myUtils/login.py` 的 4 种登录生成器。
- * @see daemon/sau_backend.py:387
- */
-export const OFFICIAL_PLATFORM_NAMES: Record<OfficialPlatformType, string> = {
-  1: "小红书",
-  2: "视频号",
-  3: "抖音",
-  4: "快手",
-};
-
 /** 前端 Platform -> 官方 type 号（登录时 /login?type= 所需）。 */
 export const OFFICIAL_PLATFORM_TYPE: Record<Platform, OfficialPlatformType> = {
   xiaohongshu: 1,
