@@ -4,7 +4,7 @@
  * 受控哑组件：props 由父组件（BatchPublishSection）传入；不读 store。
  * - 列项：视频名 / 目标平台与账号 / 模式 / 时刻 / 起始日。
  * - 「取消」调 onCancel；「确认发布」调 onConfirm（即 store.submit）。
- * - 视频号条目旁挂 PlatformLimitHint（issue #40），由 selectWechatScheduledCount
+ * - 视频号条目旁挂 PlatformLimitHint（issue #40），由 wechatScheduledCountsByCookie
  *   派生该账号本批次累计定时任务数；仅展示不拦截提交。
  *
  * 边界规则（issue #39）：不挂 store；只通过 props 渲染。
@@ -16,6 +16,7 @@ import type { Platform } from "../../api/types";
 import {
   buildBatchItemRefs,
   keyOf,
+  wechatScheduledCountsByCookie,
   type BatchItem,
   type BatchItemResult,
 } from "../../domain/batch";
@@ -84,16 +85,7 @@ export function BatchPreviewDialog({
   if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
   // 视频号单账号累计定时任务数（避免每行重复遍历 items）
-  const wechatScheduledCounts = (() => {
-    const map = new Map<string, number>();
-    for (const item of items) {
-      if (item.mode !== "timer") continue;
-      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
-        map.set(cookie, (map.get(cookie) ?? 0) + 1);
-      }
-    }
-    return map;
-  })();
+  const wechatScheduledCounts = wechatScheduledCountsByCookie(items);
 
   return (
     <Dialog

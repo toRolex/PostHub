@@ -30,7 +30,11 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
-import { validateBatch, type BatchItem } from "../../domain/batch";
+import {
+  validateBatch,
+  wechatScheduledCountsByCookie,
+  type BatchItem,
+} from "../../domain/batch";
 
 const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
@@ -242,16 +246,10 @@ export function BatchPublishSection() {
 
   // 整批共用 dailyTimes 池（每账号累计定时任务数依赖 items）
   // wechatCountsByAccount: accountCookie -> 本账号 timer 项数；用于视频号 chip 软提示
-  const wechatCountsByAccount = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of items) {
-      if (item.mode !== "timer") continue;
-      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
-        map.set(cookie, (map.get(cookie) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [items]);
+  const wechatCountsByAccount = useMemo(
+    () => wechatScheduledCountsByCookie(items),
+    [items],
+  );
 
   const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
   const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
