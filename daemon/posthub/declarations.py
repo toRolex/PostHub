@@ -14,7 +14,7 @@ PostHub 这层定义英文枚举值（如 `no_label` / `ai_generated`），通�
 设计原则：
 - 持久化层存英文枚举（不随平台 UI 文案变化失效）；
 - 映射集中维护在本文件，便于上游 UI 文案变更时单点更新；
-- 非法映射抛 `DeclarationMappingError`，由 `sau_backend.py` 兜底返回 400。
+- 非法映射抛 `DeclarationMappingError`，由组合层发布 seam hook 兜底返回 400。
 """
 
 from __future__ import annotations

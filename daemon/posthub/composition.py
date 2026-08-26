@@ -17,13 +17,42 @@ from posthub.uploader_wrapper import install as install_uploader_wrapper
 _COMPOSITION_MARKER = "_posthub_composition"
 
 
+def _configure_official_base_dir(base_dir: Path) -> None:
+    """让已导入的官方模块共同使用显式 db_path 所属数据目录。
+
+    上游模块通过 ``from conf import BASE_DIR`` 捕获值，单独修改 conf 模块
+    不会影响已导入路由。因此在组合边界集中更新这些运行时引用，而不修改
+    上游源文件；官方路由与 PostHub 路由随后都解析到同一个 database.db。
+    """
+    import myUtils.auth as official_auth
+    import myUtils.login as official_login
+    import myUtils.postVideo as official_post_video
+    import uploader.douyin_uploader.main as douyin_main
+    import uploader.tencent_uploader.main as tencent_main
+
+    import conf
+    import sau_backend
+
+    conf.BASE_DIR = base_dir
+    for module in (
+        official_auth,
+        official_login,
+        official_post_video,
+        sau_backend,
+        douyin_main,
+        tencent_main,
+    ):
+        module.BASE_DIR = base_dir
+
+
 def compose_posthub_backend(app: Any, db_path: Path | str) -> Any:
     """在指定 Flask 应用上一次性组合 PostHub-owned 生命周期与路由。"""
     existing = getattr(app, "extensions", {}).get(_COMPOSITION_MARKER)
     if existing is not None:
         return app
 
-    path = Path(db_path)
+    path = Path(db_path).resolve()
+    _configure_official_base_dir(path.parent.parent)
     db_init.ensure_db(db_path=path)
     install_uploader_wrapper()
     register_posthub_routes(app, path)

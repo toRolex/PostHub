@@ -23,6 +23,7 @@ from posthub.uploader_wrapper import set_pending_declarations
 _ROUTE_MARKER = "_posthub_owned_routes_registered"
 _HOOK_MARKER = "_posthub_declaration_hooks_registered"
 _PLATFORM_NAMES = {1: "xiaohongshu", 2: "wechat", 3: "douyin"}
+_PENDING_PLATFORM_NAMES = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}
 _PLATFORM_FIELD_KEYS = {
     1: {"source", "origin"},
     2: {"declaration", "origin"},
@@ -30,16 +31,16 @@ _PLATFORM_FIELD_KEYS = {
 }
 
 
-def _load_account_defaults_map(db_path: Path) -> dict[str, dict]:
-    """从官方 user_info 读取账号默认声明；旧库缺列时按空配置处理。"""
-    out: dict[str, dict] = {}
+def _read_account_defaults_rows(db_path: Path) -> list[tuple[str, str | None]]:
+    """读取官方账号默认声明原始行；JSON 解析统一由下方 reader 完成。"""
     with sqlite3.connect(db_path) as conn:
-        try:
-            rows = conn.execute(
-                "SELECT filePath, default_platform_fields FROM user_info"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            return out
+        return conn.execute(
+            "SELECT filePath, default_platform_fields FROM user_info"
+        ).fetchall()
+
+
+def _parse_account_defaults_rows(rows: list[tuple[str, str | None]]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
     for file_path, raw in rows:
         if not raw:
             continue
@@ -50,6 +51,14 @@ def _load_account_defaults_map(db_path: Path) -> dict[str, dict]:
         if isinstance(parsed, dict):
             out[file_path] = parsed
     return out
+
+
+def _load_account_defaults_map(db_path: Path) -> dict[str, dict]:
+    """从官方 user_info 读取账号默认声明；旧库缺列时按空配置处理。"""
+    try:
+        return _parse_account_defaults_rows(_read_account_defaults_rows(db_path))
+    except sqlite3.OperationalError:
+        return {}
 
 
 def _merge_platform_fields(
@@ -83,7 +92,7 @@ def _merge_platform_fields(
 
 def _validate_platform_fields(platform_fields: dict | None, platform: int) -> None:
     """校验 PostHub 平台字段形状，非法时返回可读的 400 错误。"""
-    if not platform_fields or platform not in _PLATFORM_NAMES:
+    if not platform_fields or not isinstance(platform, int) or platform not in _PLATFORM_NAMES:
         return
     section = platform_fields.get(_PLATFORM_NAMES[platform])
     if not isinstance(section, dict):
@@ -111,8 +120,15 @@ def _declaration_item(
     merged = _merge_platform_fields(platform_fields, accounts_with_defaults)
     if not merged:
         return {"platform": platform}
+
     resolved = resolve_platform_fields(merged)
-    return {"platform": platform, **select_for_platform(resolved, platform)}
+    selected = select_for_platform(resolved, platform)
+    pending_key = _PENDING_PLATFORM_NAMES.get(platform)
+    if not pending_key or not selected:
+        return {"platform": platform}
+    # pending item 的平台字段与 wrapper 消费契约保持一致，避免把扁平
+    # {platform, declaration} 误当作含 douyin/tencent 子键的对象。
+    return {"platform": platform, pending_key: selected}
 
 
 def register_declaration_hooks(app: Flask, db_path: Path) -> None:
@@ -136,6 +152,8 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
             items = [payload]
 
         try:
+            if not all(isinstance(item, dict) for item in items):
+                raise DeclarationMappingError("发布请求中的每个 item 必须是 object")
             defaults_map = _load_account_defaults_map(db_path)
             set_pending_declarations(
                 [_declaration_item(item, defaults_map) for item in items]
@@ -159,12 +177,8 @@ def register_posthub_routes(app: Flask, db_path: Path) -> None:
 
     @app.get("/getAccountDefaults")
     def get_account_defaults():
-        out: dict[str, dict] = {}
         try:
-            with sqlite3.connect(db_path) as conn:
-                rows = conn.execute(
-                    "SELECT filePath, default_platform_fields FROM user_info"
-                ).fetchall()
+            out = _parse_account_defaults_rows(_read_account_defaults_rows(db_path))
         except sqlite3.OperationalError as err:
             if "no such column" in str(err).lower():
                 return jsonify(
@@ -175,16 +189,6 @@ def register_posthub_routes(app: Flask, db_path: Path) -> None:
                     }
                 ), 500
             return jsonify({"code": 500, "msg": str(err), "data": None}), 500
-
-        for file_path, raw in rows:
-            if not raw:
-                continue
-            try:
-                parsed = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if isinstance(parsed, dict):
-                out[file_path] = parsed
         return jsonify({"code": 200, "msg": None, "data": out}), 200
 
     @app.post("/updateAccountDefaults")
