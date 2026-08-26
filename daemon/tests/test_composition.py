@@ -25,6 +25,15 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     monkeypatch.setattr(sau_backend, "BASE_DIR", unselected_base)
 
     first = compose_official_backend(db_path=db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO user_info (type, filePath, userName, status)
+            VALUES (?, 'a.json', ?, 1)
+            """,
+            [(1, "小红书测试号"), (2, "视频号测试号"), (3, "抖音测试号")],
+        )
+        conn.commit()
     selected_base = db_path.parent.parent
     assert sau_backend.BASE_DIR == selected_base
     assert official_post_video.BASE_DIR == selected_base
@@ -41,10 +50,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     }
 
     second = compose_official_backend(db_path=db_path)
-    repeated_route_counts = {
-        path: _rule_count(second, path)
-        for path in route_counts
-    }
+    repeated_route_counts = {path: _rule_count(second, path) for path in route_counts}
 
     assert second is first
     assert repeated_route_counts == route_counts
@@ -73,12 +79,8 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         pending_fields.append(uploader_wrapper._active_fields(3).copy())
 
     monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_XHS", fake_xhs)
-    monkeypatch.setattr(
-        uploader_wrapper, "_ORIGINAL_POST_VIDEO_TENCENT", fake_tencent
-    )
-    monkeypatch.setattr(
-        uploader_wrapper, "_ORIGINAL_POST_VIDEO_DOUYIN", fake_douyin
-    )
+    monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_TENCENT", fake_tencent)
+    monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_DOUYIN", fake_douyin)
 
     with first.test_client() as client:
         assert client.get("/getAccounts").status_code == 200
@@ -129,16 +131,42 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         )
         assert douyin_response.status_code == 200
 
+        # 单视频与旧批量对完全相同输入必须经过同一 normalization + execution
+        # adapter，并交给官方函数完全相同的 effective command。
+        shared_payload = {
+            "fileList": ["same.mp4"],
+            "accountList": ["a.json"],
+            "type": 3,
+            "title": "same",
+            "tags": ["一致"],
+            "category": 2,
+            "enableTimer": True,
+            "videosPerDay": 1,
+            "dailyTimes": [10],
+            "startDays": 1,
+            "thumbnail": "same-cover.jpg",
+            "productLink": "https://example.test/same",
+            "productTitle": "同款商品",
+            "platformFields": {"douyin": {"declaration": "no_need"}},
+        }
+        assert client.post("/postVideo", json=shared_payload).status_code == 200
+        assert client.post("/postVideoBatch", json=[shared_payload]).status_code == 200
+
     assert len(xhs_calls) == 1
     assert len(tencent_calls) == 1
-    assert len(douyin_calls) == 1
+    assert len(douyin_calls) == 3
     assert pending_tencent_fields == [{"declaration": "无需标注"}]
     assert douyin_calls[0][-3:] == (
         "",
         "https://example.test/product",
         "商品",
     )
-    assert pending_fields == [{"declaration": "无需添加自主声明"}]
+    assert douyin_calls[1] == douyin_calls[2]
+    assert pending_fields == [
+        {"declaration": "无需添加自主声明"},
+        {"declaration": "无需添加自主声明"},
+        {"declaration": "无需添加自主声明"},
+    ]
 
     # 代理只负责把声明交给官方上传类，不复制官方发布循环。
     with uploader_wrapper._declaration_context(
@@ -165,9 +193,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     with sqlite3.connect(db_path) as conn:
         tables = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
     assert {"user_info", "file_records"} <= tables
     assert not (unselected_base / "db" / "database.db").exists()

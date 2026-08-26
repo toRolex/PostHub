@@ -11,24 +11,16 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 
-from posthub.declarations import (
-    DeclarationMappingError,
-    resolve_platform_fields,
-    select_for_platform,
+from posthub.publish_adapter import NormalizationError, normalize_publish_payloads
+from posthub.uploader_wrapper import (
+    set_pending_declarations,
+    set_pending_effective_items,
 )
-from posthub.uploader_wrapper import set_pending_declarations
 
 _ROUTE_MARKER = "_posthub_owned_routes_registered"
 _HOOK_MARKER = "_posthub_declaration_hooks_registered"
-_PLATFORM_NAMES = {1: "xiaohongshu", 2: "wechat", 3: "douyin"}
-_PENDING_PLATFORM_NAMES = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}
-_PLATFORM_FIELD_KEYS = {
-    1: {"source", "origin"},
-    2: {"declaration", "origin"},
-    3: {"declaration"},
-}
 
 
 def _read_account_defaults_rows(db_path: Path) -> list[tuple[str, str | None]]:
@@ -53,82 +45,26 @@ def _parse_account_defaults_rows(rows: list[tuple[str, str | None]]) -> dict[str
     return out
 
 
-def _load_account_defaults_map(db_path: Path) -> dict[str, dict]:
-    """从官方 user_info 读取账号默认声明；旧库缺列时按空配置处理。"""
-    try:
-        return _parse_account_defaults_rows(_read_account_defaults_rows(db_path))
-    except sqlite3.OperationalError:
-        return {}
-
-
-def _merge_platform_fields(
-    task_fields: dict | None,
-    accounts_with_defaults: list[dict[str, Any]],
-) -> dict:
-    """任务级声明覆盖账号默认声明，缺失字段从账号默认值补齐。"""
-    base: dict = {}
-    for account in accounts_with_defaults:
-        defaults = account.get("default_platform_fields")
-        if not isinstance(defaults, dict):
-            continue
-        for platform, fields in defaults.items():
-            if not isinstance(fields, dict):
-                continue
-            base.setdefault(platform, {})
-            for key, value in fields.items():
-                base[platform].setdefault(key, value)
-
-    if not task_fields:
-        return base
-    for platform, fields in task_fields.items():
-        if not isinstance(fields, dict):
-            continue
-        base.setdefault(platform, {})
-        for key, value in fields.items():
-            if value is not None:
-                base[platform][key] = value
-    return base
-
-
-def _validate_platform_fields(platform_fields: dict | None, platform: int) -> None:
-    """校验 PostHub 平台字段形状，非法时返回可读的 400 错误。"""
-    if not platform_fields or not isinstance(platform, int) or platform not in _PLATFORM_NAMES:
-        return
-    section = platform_fields.get(_PLATFORM_NAMES[platform])
-    if not isinstance(section, dict):
-        return
-    unknown = set(section) - _PLATFORM_FIELD_KEYS[platform]
-    if unknown:
-        raise DeclarationMappingError(
-            f"{_PLATFORM_NAMES[platform]} 字段非法：{sorted(unknown)}"
-            f"（合法子键：{sorted(_PLATFORM_FIELD_KEYS[platform])}）"
-        )
-
-
-def _declaration_item(
-    payload: dict[str, Any],
-    defaults_map: dict[str, dict],
-) -> dict[str, Any]:
-    platform = payload.get("type")
-    account_list = payload.get("accountList", [])
-    platform_fields = payload.get("platformFields") or payload.get("platform_fields")
-    _validate_platform_fields(platform_fields, platform)
-    accounts_with_defaults = [
-        {"filePath": file_path, "default_platform_fields": defaults_map.get(file_path)}
-        for file_path in account_list
+def _read_publish_account_rows(db_path: Path) -> list[dict[str, Any]]:
+    """读取 normalization 所需的官方账号快照输入。"""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, type, filePath, userName, status, default_platform_fields
+            FROM user_info
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "type": row[1],
+            "filePath": row[2],
+            "userName": row[3],
+            "status": row[4],
+            "default_platform_fields": row[5],
+        }
+        for row in rows
     ]
-    merged = _merge_platform_fields(platform_fields, accounts_with_defaults)
-    if not merged:
-        return {"platform": platform}
-
-    resolved = resolve_platform_fields(merged)
-    selected = select_for_platform(resolved, platform)
-    pending_key = _PENDING_PLATFORM_NAMES.get(platform)
-    if not pending_key or not selected:
-        return {"platform": platform}
-    # pending item 的平台字段与 wrapper 消费契约保持一致，避免把扁平
-    # {platform, declaration} 误当作含 douyin/tencent 子键的对象。
-    return {"platform": platform, pending_key: selected}
 
 
 def register_declaration_hooks(app: Flask, db_path: Path) -> None:
@@ -152,19 +88,20 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
             items = [payload]
 
         try:
-            if not all(isinstance(item, dict) for item in items):
-                raise DeclarationMappingError("发布请求中的每个 item 必须是 object")
-            defaults_map = _load_account_defaults_map(db_path)
-            set_pending_declarations(
-                [_declaration_item(item, defaults_map) for item in items]
+            normalized = normalize_publish_payloads(
+                items, _read_publish_account_rows(db_path)
             )
-        except DeclarationMappingError as err:
+            g.posthub_normalized_batch = normalized
+            set_pending_effective_items(normalized.effective)
+        except (NormalizationError, sqlite3.Error) as err:
+            set_pending_effective_items([])
             set_pending_declarations([])
             return jsonify({"code": 400, "msg": str(err), "data": None}), 400
         return None
 
     @app.teardown_request
     def clear_posthub_declarations(_error):
+        set_pending_effective_items([])
         set_pending_declarations([])
 
     app.extensions[_HOOK_MARKER] = True

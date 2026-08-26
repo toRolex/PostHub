@@ -28,11 +28,15 @@ from flask import has_request_context, request
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
 from uploader.tencent_uploader.main import TencentVideo as _OriginalTencentVideo
 
+from posthub.declarations import resolve_platform_fields, select_for_platform
+from posthub.publish_adapter import EffectiveBatchItem, PublishExecutionAdapter
+
 # 在安装 wrapper 前保存官方函数。保存到模块级而不是从被替换的模块属性回调，
 # 可避免小红书 wrapper 自递归，也让三家 wrapper 都委托官方执行循环。
 _ORIGINAL_POST_VIDEO_DOUYIN = _post_video_mod.post_video_DouYin
 _ORIGINAL_POST_VIDEO_TENCENT = _post_video_mod.post_video_tencent
 _ORIGINAL_POST_VIDEO_XHS = _post_video_mod.post_video_xhs
+_ORIGINAL_POST_VIDEO_KS = _post_video_mod.post_video_ks
 
 _local = threading.local()
 _MISSING = object()
@@ -55,6 +59,55 @@ def set_pending_declarations(items: list[dict]) -> None:
     q = _queue()
     q.clear()
     q.extend(items)
+
+
+def _effective_queue() -> deque[EffectiveBatchItem]:
+    q = getattr(_local, "effective_queue", None)
+    if q is None:
+        q = deque()
+        _local.effective_queue = q
+    return q
+
+
+def set_pending_effective_items(
+    items: list[EffectiveBatchItem] | tuple[EffectiveBatchItem, ...],
+) -> None:
+    """替换当前请求的账号粒度 effective item 队列。"""
+    q = _effective_queue()
+    q.clear()
+    q.extend(items)
+
+
+def _pop_effective_group(platform: int) -> list[EffectiveBatchItem]:
+    """按官方路由一次调用对应的 source item 取出账号拆分结果。"""
+    q = _effective_queue()
+    first_index = next(
+        (index for index, item in enumerate(q) if item.platform_type == platform),
+        None,
+    )
+    if first_index is None:
+        return []
+    source_index = q[first_index].source_index
+    group: list[EffectiveBatchItem] = []
+    for index in range(len(q) - 1, -1, -1):
+        item = q[index]
+        if item.platform_type == platform and item.source_index == source_index:
+            group.insert(0, item)
+            del q[index]
+    return group
+
+
+def _declaration_item_for_effective(item: EffectiveBatchItem) -> dict[str, Any]:
+    """把 effective 内部枚举转为 wrapper 消费的官方中文字段。"""
+    fields = item.effective.get("platformFields")
+    if not fields:
+        return {"platform": item.platform_type}
+    resolved = resolve_platform_fields(fields)
+    selected = select_for_platform(resolved, item.platform_type)
+    pending_key = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}.get(item.platform_type)
+    if not pending_key or not selected:
+        return {"platform": item.platform_type}
+    return {"platform": item.platform_type, pending_key: selected}
 
 
 def _pop_for(platform: int) -> dict | None:
@@ -159,6 +212,81 @@ def _normalize_douyin_tail(
     return thumbnail_path, productLink, productTitle
 
 
+def _invoke_douyin_command(command: dict[str, Any]) -> None:
+    """将一个 effective command 映射到官方抖音函数；不复制官方发布循环。"""
+    _ORIGINAL_POST_VIDEO_DOUYIN(
+        command["title"],
+        command["fileList"],
+        command["tags"],
+        command["accountList"],
+        command.get("category"),
+        command.get("enableTimer", False),
+        command.get("videosPerDay", 1),
+        command.get("dailyTimes"),
+        command.get("startDays", 0),
+        command.get("thumbnail", ""),
+        command.get("productLink", ""),
+        command.get("productTitle", ""),
+    )
+
+
+def _invoke_tencent_command(command: dict[str, Any]) -> None:
+    """将一个 effective command 映射到官方视频号函数。"""
+    _ORIGINAL_POST_VIDEO_TENCENT(
+        command["title"],
+        command["fileList"],
+        command["tags"],
+        command["accountList"],
+        command.get("category"),
+        command.get("enableTimer", False),
+        command.get("videosPerDay", 1),
+        command.get("dailyTimes"),
+        command.get("startDays", 0),
+        command.get("isDraft", False),
+    )
+
+
+def _invoke_xhs_command(command: dict[str, Any]) -> None:
+    """将一个 effective command 映射到官方小红书函数。"""
+    _ORIGINAL_POST_VIDEO_XHS(
+        command["title"],
+        command["fileList"],
+        command["tags"],
+        command["accountList"],
+        command.get("category"),
+        command.get("enableTimer", False),
+        command.get("videosPerDay", 1),
+        command.get("dailyTimes"),
+        command.get("startDays", 0),
+    )
+
+
+def _invoke_ks_command(command: dict[str, Any]) -> None:
+    """将一个 effective command 映射到官方快手函数。"""
+    _ORIGINAL_POST_VIDEO_KS(
+        command["title"],
+        command["fileList"],
+        command["tags"],
+        command["accountList"],
+        command.get("category"),
+        command.get("enableTimer", False),
+        command.get("videosPerDay", 1),
+        command.get("dailyTimes"),
+        command.get("startDays", 0),
+    )
+
+
+def _execute_effective_group(
+    items: list[EffectiveBatchItem],
+    invoke: Any,
+) -> None:
+    """把账号粒度命令交给官方函数，适配器不承担官方内部遍历。"""
+    adapter = PublishExecutionAdapter(invoke)
+    for item in items:
+        with _declaration_context(_declaration_item_for_effective(item)):
+            adapter.execute_item(item)
+
+
 def _inject_declaration_to_douyin(
     title: str,
     files: list[str],
@@ -174,6 +302,11 @@ def _inject_declaration_to_douyin(
     productTitle: str = "",
 ) -> None:
     """委托官方抖音发布函数，并通过官方类构造函数注入声明。"""
+    effective_group = _pop_effective_group(3)
+    if effective_group:
+        _execute_effective_group(effective_group, _invoke_douyin_command)
+        return None
+
     thumbnail_path, productLink, productTitle = _normalize_douyin_tail(
         thumbnail_path, productLink, productTitle
     )
@@ -207,6 +340,11 @@ def _inject_declaration_to_tencent(
     is_draft: bool = False,
 ) -> None:
     """委托官方视频号发布函数，并通过明确 DOM seam 应用声明。"""
+    effective_group = _pop_effective_group(2)
+    if effective_group:
+        _execute_effective_group(effective_group, _invoke_tencent_command)
+        return None
+
     with _declaration_context(_pop_for(2)):
         return _ORIGINAL_POST_VIDEO_TENCENT(
             title,
@@ -234,6 +372,11 @@ def _inject_declaration_to_xhs(
     start_days: int = 0,
 ) -> None:
     """委托官方小红书发布函数，避免替换后回调自身造成递归。"""
+    effective_group = _pop_effective_group(1)
+    if effective_group:
+        _execute_effective_group(effective_group, _invoke_xhs_command)
+        return None
+
     with _declaration_context(_pop_for(1)):
         return _ORIGINAL_POST_VIDEO_XHS(
             title,
@@ -248,6 +391,35 @@ def _inject_declaration_to_xhs(
         )
 
 
+def _inject_effective_to_ks(
+    title: str,
+    files: list[str],
+    tags: list[str] | None,
+    account_file: list[str],
+    category: Any = "生活",
+    enableTimer: bool = False,
+    videos_per_day: int = 1,
+    daily_times: Any = None,
+    start_days: int = 0,
+) -> None:
+    """快手无声明字段，也通过同一 effective 执行入口。"""
+    effective_group = _pop_effective_group(4)
+    if effective_group:
+        _execute_effective_group(effective_group, _invoke_ks_command)
+        return None
+    return _ORIGINAL_POST_VIDEO_KS(
+        title,
+        files,
+        tags,
+        account_file,
+        category,
+        enableTimer,
+        videos_per_day,
+        daily_times,
+        start_days,
+    )
+
+
 _INSTALLED = False
 
 
@@ -260,6 +432,7 @@ def install() -> None:
     _post_video_mod.post_video_DouYin = _inject_declaration_to_douyin
     _post_video_mod.post_video_tencent = _inject_declaration_to_tencent
     _post_video_mod.post_video_xhs = _inject_declaration_to_xhs
+    _post_video_mod.post_video_ks = _inject_effective_to_ks
     _post_video_mod.DouYinVideo = _DouYinVideoWithDeclaration
     _post_video_mod.TencentVideo = _TencentVideoWithDeclaration
 
@@ -270,4 +443,5 @@ def install() -> None:
     _sb.post_video_DouYin = _inject_declaration_to_douyin
     _sb.post_video_tencent = _inject_declaration_to_tencent
     _sb.post_video_xhs = _inject_declaration_to_xhs
+    _sb.post_video_ks = _inject_effective_to_ks
     _INSTALLED = True
