@@ -33,3 +33,10 @@
 
 - Planner 扫描 issue #81–#100 的 `ready-for-agent` 开放项并构建 DAG。
 - 每轮完成后更新本文件，记录依赖解锁、分支、测试、merge、issue 状态及任何 Deviations。
+
+### Planner 结果（2026-08-27）
+
+- 范围内 #81–#100 共 20 个 open `ready-for-agent` issue，均纳入 DAG；范围外无未关闭依赖。
+- 首轮仅 #81 无阻塞；后续依赖链为：#81 → #82 →（#83、#84、#85、#87）→ #86/#88/#90 等，最终由 #100 gate 汇总验收。
+- 判定类 ticket：#100（`kind: gate`）。
+- 确定性分支：每个 issue 使用 `afk/issue-{N}`。
