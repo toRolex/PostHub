@@ -16,7 +16,11 @@ PostHub 最初按 ADR-0001 设计为「任务 + SQLite + 自研状态机/调度�
 2. **界面层 = 自研 Tauri + React**：以官方 `sau_frontend` 的功能为**对照标准**，用现有 React 技术栈（Vue → React 迁移早已落地，ADR-0003 前提不变）重构为 Tauri 桌面 app；功能范围与官方 GUI 对齐，不新增不必要功能。**不常驻托盘**：点击窗口关闭即退出应用（与托盘常驻相反的交互语义，用户明确要求）。
 3. **官方前端（`sau_frontend`）/ 官方后端（`sau_backend`）保留不动**：均作为上游仓库（git 依赖 / venv 内）的组成部分，PostHub 不 fork、不修改；桌面壳打包时引入或随依赖安装，运行时由 PostHub 启动官方后端进程。
 4. **登录态语义回归官方**：账号登录态 = 官方 `cookiesFile/*.json`（storage_state 格式），经官方 `/login` 扫码生成、`/getValidAccounts` 校验、`/postVideo` 消费。**CDP 接管账号 Chrome 的模型废除**；账号之间不再需要独立调试端口 / 独立 user-data-dir。
-5. **前端 ↔ 后端的 seam = 官方 HTTP + SSE 接口**：自研前端对接官方后端的 HTTP 接口（`/upload`、`/uploadCookie`、`/login`(SSE)、`/getValidAccounts`、`/postVideo`、`/postVideoBatch`、`/deleteFile`、`/deleteAccount`、`/getFiles`、`/getAccounts` 等），不新增自研后端。
+5. **前端 ↔ 后端的执行 seam = 官方 HTTP + SSE 接口**：自研前端对接官方后端的 HTTP 接口（`/upload`、`/uploadCookie`、`/login`(SSE)、`/getValidAccounts`、`/postVideo`、`/postVideoBatch`、`/deleteFile`、`/deleteAccount`、`/getFiles`、`/getAccounts` 等）。不新增通用自研发布后端；官方没有且桌面产品确实需要的能力，可由独立 PostHub-owned 组合入口以受限本机扩展方式注册。
+
+### 边界修订（由 ADR-0009 supersede）
+
+“没有自研后端/状态机”是旧阶段对**通用发布执行引擎**的否定，不禁止组合层存在。PostHub-owned 组合入口可以负责幂等注册扩展路由、官方数据库生命周期、HTTP seam 适配和受限本机 batch runner/history；它不能复制官方发布执行、成为通用 scheduler，或定义独立重试/限速/并发/定时真源。
 
 ## 与旧 ADR 的 Supersede 关系
 
@@ -33,7 +37,7 @@ PostHub 最初按 ADR-0001 设计为「任务 + SQLite + 自研状态机/调度�
 - **依赖变化**：保留官方仓库依赖（patchright、Flask、CORS 等）；移除自研 daemon 专用依赖（如 `sqlite` 自研表迁移代码、CDP seam 相关）。
 - **前端变化**：现有 Tauri + React 工程重写对齐官方功能页（发布、账号、文件、定时、批量、cookie 导入导出），会话/状态管理对接官方 HTTP+SSE。
 - **测试变化**：删除自研引擎单测；新增对「官方后端接口契约」的适配层测试与打包可运行性冒烟测试。
-- **领域文档**：CONTEXT.md 术语同步调整（见随附 ADR 配套的 CONTEXT 更新）：「唯一注入面 / 唯一 seam / CDP 接管 / 账号 Account（独立调试端口）”等旧表述退场。
+- **领域文档**：CONTEXT.md 术语同步调整（见随附 ADR 配套的 CONTEXT 更新）：「唯一注入面 / 唯一 seam / CDP 接管 / 账号 Account（独立调试端口）”等旧表述退场；PostHub-owned 组合入口与受限本机扩展边界见 ADR-0009。
 - **行为不变保证**：发布走官方动机的原生链路（自起浏览器 + storage_state），视频号不再受 CDP 抑制影响。
 
 ## 待确认 / 未决项
