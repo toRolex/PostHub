@@ -22,14 +22,14 @@ import asyncio
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import myUtils.postVideo as _post_video_mod
-from conf import BASE_DIR
 from uploader.douyin_uploader.main import DouYinVideo
 from uploader.tencent_uploader.main import TencentVideo
 from utils.files_times import generate_schedule_time_next_day
 
+from conf import BASE_DIR
 
 # ─────────────────────────── thread-local 声明队列 ───────────────────────────
 #
@@ -189,19 +189,22 @@ def _inject_declaration_to_xhs(
 # ─────────────────────────── 绑定（一次性 import 时执行） ───────────────────────────
 
 
-def install() -> None:
-    """用包装函数替换 `myUtils.postVideo` 三个目标函数。
+_INSTALLED = False
 
-    使用 `setattr` 覆盖模块属性，sau_backend.py 顶部
-    `from myUtils.postVideo import post_video_DouYin` 等已经持有原引用——必须
-    同步更新模块级符号。PostHub 自身 `run_backend.py` 在 import sau_backend
-    前调用本函数，确保替换在 sau_backend 解析 import 时已生效。
-    """
-    setattr(_post_video_mod, "post_video_DouYin", _inject_declaration_to_douyin)
-    setattr(_post_video_mod, "post_video_tencent", _inject_declaration_to_tencent)
-    setattr(_post_video_mod, "post_video_xhs", _inject_declaration_to_xhs)
+
+def install() -> None:
+    """用包装函数替换上游发布函数；重复组合时保持幂等。"""
+    global _INSTALLED
+    if _INSTALLED:
+        return
+
+    _post_video_mod.post_video_DouYin = _inject_declaration_to_douyin
+    _post_video_mod.post_video_tencent = _inject_declaration_to_tencent
+    _post_video_mod.post_video_xhs = _inject_declaration_to_xhs
     # 同步到 sau_backend 模块符号（其 from-import 已固化为局部引用）
     import sau_backend as _sb
+
     _sb.post_video_DouYin = _inject_declaration_to_douyin
     _sb.post_video_tencent = _inject_declaration_to_tencent
     _sb.post_video_xhs = _inject_declaration_to_xhs
+    _INSTALLED = True
