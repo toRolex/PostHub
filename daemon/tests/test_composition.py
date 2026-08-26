@@ -34,8 +34,13 @@ def test_repeated_composition_is_idempotent_and_preserves_official_http_seam(
     }
 
     second = compose_official_backend(db_path=db_path)
+    repeated_route_counts = {
+        path: _rule_count(second, path)
+        for path in route_counts
+    }
 
     assert second is first
+    assert repeated_route_counts == route_counts
     assert route_counts["/getAccountDefaults"] == 1
     assert route_counts["/updateAccountDefaults"] == 1
     assert route_counts["/getAccounts"] == 1
