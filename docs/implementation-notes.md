@@ -445,3 +445,12 @@
 - 定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `14 passed in 2.32s`；`cd web && pnpm test -- --run src/stores/runs.test.ts src/components/AppShell.test.ts` 实际全量运行 → `20 files / 201 tests passed`（既有 jsdom stderr）。
 - 复核后全量：`cd daemon && uv run pytest -q` → `9 failed, 131 passed`，失败全部为已恢复的 #88 scheduled HH:MM 旧 generator 回归；本轮不修该问题。`pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` 通过；issue85 Python ruff check/format 通过。
 - 已保留 `src-tauri` 不变；桌面窗口关闭继续按 ADR-0007 终止 daemon，页面刷新/关闭发布页不触发 worker 停止。
+
+### AFK Merger 本轮收口（2026-08-27）
+
+- 冲突解决：`docs/implementation-notes.md` 逐侧保留 #87 的合并/HH:MM generator 兼容/测试记录，以及 #85 accepted-run 设计、`98273b7`/`efb80b7`、生命周期与恢复修复、fail-closed/lease 修复和最终验证；仅删除冲突标记，未回退业务语义。
+- 拓扑收口：#84 已由既有 `f782083` 合入 develop，本轮未重复 merge；#87 已由 `2d25baf` 合入并由 `274c9db` 验证；当前 #85 已完成 `git merge afk/issue-85 --no-edit`，生成 `46b585e`。
+- #85 合并后 daemon：`cd daemon && uv run pytest -q` → `154 passed in 3.64s`。
+- #85 合并后 web：`cd web && pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.13s`）；仅有既有 jsdom navigation stderr。
+- #85 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
+- 下一步：提交本轮中文 summarizing commit，随后验证并关闭 #84/#85/#87，清理三个 issue worktree；不关闭父 issue #80。
