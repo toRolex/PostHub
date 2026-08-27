@@ -74,6 +74,7 @@ class RunStore:
                     submitted_json TEXT NOT NULL,
                     effective_json TEXT NOT NULL,
                     error TEXT,
+                    diagnostics_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -89,6 +90,10 @@ class RunStore:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_owner TEXT")
             if "lease_until" not in columns:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_until TEXT")
+            if "diagnostics_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE run_items ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '[]'"
+                )
 
     def create_run(self, items: Iterable[EffectiveBatchItem]) -> str:
         effective_items = list(items)
@@ -241,6 +246,35 @@ class RunStore:
             )
             return updated.rowcount == 1
 
+    def record_item_diagnostics(
+        self,
+        run_id: str,
+        item_id: str,
+        *,
+        owner_token: str,
+        diagnostics: Iterable[Mapping[str, Any]],
+    ) -> bool:
+        """持久化当前 worker 采集的 DOM warning/debug 诊断。"""
+        if not owner_token:
+            raise ValueError("worker owner token 不能为空")
+        payload = [dict(item) for item in diagnostics]
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE run_items
+                SET diagnostics_json = ?, updated_at = ?
+                WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    _now(),
+                    item_id,
+                    run_id,
+                    owner_token,
+                ),
+            )
+            return updated.rowcount == 1
+
     def finish_item(
         self,
         run_id: str,
@@ -294,7 +328,8 @@ class RunStore:
                 return None
             items = conn.execute(
                 """
-                SELECT id, ordinal, status, error, submitted_json, effective_json
+                SELECT id, ordinal, status, error, submitted_json, effective_json,
+                       diagnostics_json
                 FROM run_items WHERE run_id = ? ORDER BY ordinal
                 """,
                 (run_id,),
@@ -321,6 +356,7 @@ class RunStore:
                     "itemId": item["id"],
                     "status": item["status"],
                     "error": item["error"],
+                    "diagnostics": json.loads(item["diagnostics_json"] or "[]"),
                     "submitted": json.loads(item["submitted_json"]),
                     # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
                     "effective": json.loads(item["effective_json"]),
@@ -437,11 +473,25 @@ class RunWorker:
             )
             heartbeat.start()
         error: str | None = None
+        from posthub.uploader_wrapper import (
+            clear_declaration_diagnostics,
+            get_declaration_diagnostics,
+        )
+
+        clear_declaration_diagnostics()
         try:
             self.uploader(effective)
         except Exception as exc:  # noqa: BLE001 - item 必须落终态
             error = str(exc)
         finally:
+            diagnostics = get_declaration_diagnostics()
+            if diagnostics:
+                self.store.record_item_diagnostics(
+                    run_id,
+                    item_id,
+                    owner_token=self._owner_token,
+                    diagnostics=diagnostics,
+                )
             finished.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)

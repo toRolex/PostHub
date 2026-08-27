@@ -590,3 +590,37 @@
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - 本轮未发现新的业务 concern；仅保留既有 jsdom navigation stderr。下一步提交本轮中文 summarizing commit，关闭 #86/#88/#90 并清理对应 worktrees。
 
+## Issue #91：贯通视频号内容声明 DOM wrapper
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-91` 的 `afk/issue-91` 分支实现；基线为 `develop`，不 push、PR、merge、关闭 issue、reset、rebase、amend。
+- 先读取 #90 声明 context、`uploader_wrapper`、`runs`、现有 wrapper/fixture/详情/测试，确认视频号官方 DOM 入口和 PostHub-owned seam；不修改或 fork 官方 uploader。
+- 严格 TDD：先锁定视频号 `no_label`、`ai_generated` stub page 成功路径、双 selector 任一命中、入口未渲染/候选缺失/双 selector 未命中显式 warning/fail-closed、warning/debug screenshot 可查询、item 隔离及真实账号 selector/最终显示值记录。
+- 保持 `platform_fields.wechat` 分键，不混入 XHS/retry；优先复用现有 run/item 日志与详情查询 seam，确保 DOM 异常 finally 清理。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已确认目标 worktree 分支为 `afk/issue-91`，HEAD 与 `develop` 同为 `8b65a6b`，初始工作树干净；已有项目约定 implementation notes 位于 `docs/implementation-notes.md`，本节追加维护。
+- 已完成前置调研派发，等待只读结果；下一步读取相关源码和 fixture 后，先新增失败测试并记录实际 Red 输出。
+
+### 验证
+
+- 尚未开始。
+
+### 下一步
+
+- 建立视频号 DOM wrapper 的最小 fake page/账号日志测试，先验证 no_label 与 ai_generated stub 成功路径及所有 fail-closed warning/detail 约束。
+- Red：新增 stub page 的 6 个视频号 DOM/诊断测试；首轮因 pytest 环境无 async 插件失败，改为项目现有同步 pytest 约定后，继续暴露 helper 无 account/debug/diagnostics seam。
+- Green（DOM seam）：`uploader_wrapper.py` 增加「内容声明」/「添加声明」双入口 selector fallback，支持 `no_label → 无需标注` 与 `ai_generated → 含AI生成内容`，候选/入口未渲染/双 selector 未命中/点击异常均 warning + debug screenshot + 显式抛错；成功诊断记录真实账号、命中 selector、最终显示值。
+- Green（item 诊断）：`RunStore.run_items` 增加迁移安全的 `diagnostics_json`，`get_run()` 返回 item diagnostics；`RunWorker` 在每个 item 前清理 wrapper 诊断、执行后持久化 warning/debug 信息，避免跨 item 泄漏。视频号定向与 runs 相关测试 → `69 passed`。
+- 最终验证：`cd daemon && uv run pytest -q` → `174 passed`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `4 files already formatted`。
+- 最终验证：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- 最终验证：Tauri 首次因忽略的 `src-tauri/resources/{daemon,bin,browser}` 缺失失败；补齐本地空目录后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未纳入 Git。
+- API 契约：`web/src/api/official.ts` 增加可选 `RunItemDiagnostic` 类型，兼容旧 daemon；详情 payload 的 `diagnostics` 包含 warning、selector、账号、最终显示值和 screenshot 路径。
+- 官方源码边界：未修改 `daemon/sau_backend.py` 或官方 `uploader/*`；未混入 XHS/retry；未 push、PR、merge、关闭 issue、reset、rebase、amend。
+
