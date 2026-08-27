@@ -312,38 +312,6 @@ def test_schedule_adapter_rejects_non_boolean_timestamp_slot() -> None:
         )
 
 
-def test_schedule_adapter_converts_normalized_whole_hour_to_legacy_generator(
-    monkeypatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_generate(*args: Any, **kwargs: Any) -> list[datetime]:
-        captured.update(kwargs)
-        return []
-
-    monkeypatch.setattr(
-        uploader_wrapper, "_ORIGINAL_GENERATE_SCHEDULE_TIME", fake_generate
-    )
-    uploader_wrapper._generate_schedule_with_start_days(
-        1, 1, ["10:00"], timestamps=False, start_days=1
-    )
-
-    assert captured["daily_times"] == [10]
-
-
-def test_schedule_adapter_rejects_non_whole_normalized_time(monkeypatch) -> None:
-    monkeypatch.setattr(
-        uploader_wrapper,
-        "_ORIGINAL_GENERATE_SCHEDULE_TIME",
-        lambda **_kwargs: [],
-    )
-
-    with pytest.raises(ValueError, match="整点"):
-        uploader_wrapper._generate_schedule_with_start_days(
-            1, 1, ["10:30"], timestamps=False, start_days=1
-        )
-
-
 def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items(
     monkeypatch,
 ) -> None:

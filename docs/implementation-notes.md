@@ -406,3 +406,13 @@
 - `src-tauri` 本轮未修改，按条件未运行 cargo test；关闭窗口仍由现有 ADR-0007 进程树清理终止 daemon。
 - 官方副本校验：`shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `sau_backend.py` 或 `uploader/*`。
 - 下一步：提交中文 commit 并确保工作树干净。
+
+### Issue #85 协调复核补丁（2026-08-27）
+
+- 复核发现三项遗漏：claim 后 stop 在 uploader 前直接返回会留下 running lease；`refresh()` 对 stale localStorage runId 的 404 只报错、不回退 latest；completed run 仍被 AppShell 每 5 秒轮询。
+- Scope 修正：上一提交中为让全量测试通过而加入的 `uploader_wrapper.py` HH:MM 旧 generator 适配属于 #88，不纳入 #85；本轮撤回该两文件改动，保留 #85 accepted-run 修复。恢复后 #88 的既有 scheduled 回归按原状态保留，不在本轮修补。
+- Red：先补 claim 后 stop 必须安全 requeue、stale pointer refresh 必须 fallback latest、completed 状态停止轮询及空异常仍为 failed 回归；定向测试分别暴露 lease 泄漏、latest 不回退与空字符串假成功。
+- Green：新增 owner 校验的 `release_item`，stop 在进入 uploader 前释放自身 claim；`finish_item` 用 `error is not None` 判定失败；refresh 的 run 查询失败回退 latest 并清理空指针；AppShell 仅对未完成 run 轮询。
+- 定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `14 passed in 2.32s`；`cd web && pnpm test -- --run src/stores/runs.test.ts src/components/AppShell.test.ts` 实际全量运行 → `20 files / 201 tests passed`（既有 jsdom stderr）。
+- 复核后全量：`cd daemon && uv run pytest -q` → `9 failed, 131 passed`，失败全部为已恢复的 #88 scheduled HH:MM 旧 generator 回归；本轮不修该问题。`pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` 通过；issue85 Python ruff check/format 通过。
+- 已保留 `src-tauri` 不变；桌面窗口关闭继续按 ADR-0007 终止 daemon，页面刷新/关闭发布页不触发 worker 停止。

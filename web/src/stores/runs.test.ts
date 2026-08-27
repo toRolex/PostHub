@@ -119,4 +119,19 @@ describe("run store（查询 API 是生命周期事实来源）", () => {
     expect(useRunStore.getState().runId).toBe("run-1");
     expect(useRunStore.getState().status).toBe("completed");
   });
+
+  it("stale localStorage runId 查询失败时 refresh 会回退 latest", async () => {
+    localStorage.setItem(LATEST_RUN_ID_KEY, JSON.stringify("stale-run"));
+    const getRun = vi
+      .spyOn(officialApi, "getRun")
+      .mockRejectedValue(new Error("run 不存在"));
+    vi.spyOn(officialApi, "getLatestRun").mockResolvedValue(SNAPSHOT);
+
+    await useRunStore.getState().refresh("http://127.0.0.1:5409");
+
+    expect(getRun).toHaveBeenCalledWith("http://127.0.0.1:5409", "stale-run");
+    expect(useRunStore.getState().runId).toBe("run-1");
+    expect(useRunStore.getState().status).toBe("completed");
+    expect(JSON.parse(localStorage.getItem(LATEST_RUN_ID_KEY)!)).toBe("run-1");
+  });
 });

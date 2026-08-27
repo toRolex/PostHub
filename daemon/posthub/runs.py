@@ -187,6 +187,59 @@ class RunStore:
             )
             return row["run_id"], row["id"], json.loads(row["effective_json"])
 
+    def release_item(self, run_id: str, item_id: str, *, owner_token: str) -> bool:
+        """在进入外部执行前安全释放 worker 自己领取的 item。"""
+        if not owner_token:
+            raise ValueError("worker owner token 不能为空")
+        now = _now()
+        with self._lock, self._connect() as conn:
+            released = conn.execute(
+                """
+                UPDATE run_items
+                SET status = 'pending', lease_owner = NULL, lease_until = NULL, updated_at = ?
+                WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (now, item_id, run_id, owner_token),
+            )
+            if released.rowcount != 1:
+                return False
+            conn.execute(
+                """
+                UPDATE runs SET status = 'pending', updated_at = ?
+                WHERE id = ? AND status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id AND run_items.status = 'running'
+                  )
+                """,
+                (now, run_id),
+            )
+            return True
+
+    def renew_lease(
+        self,
+        run_id: str,
+        item_id: str,
+        *,
+        owner_token: str,
+        lease_seconds: float,
+    ) -> bool:
+        """在阻塞 uploader 执行期间续租，避免过期后被另一 worker 重复领取。"""
+        if not owner_token:
+            raise ValueError("worker owner token 不能为空")
+        now = _now()
+        lease_until = _lease_until(lease_seconds)
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE run_items
+                SET lease_until = ?, updated_at = ?
+                WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (lease_until, now, item_id, run_id, owner_token),
+            )
+            return updated.rowcount == 1
+
     def finish_item(
         self,
         run_id: str,
@@ -199,7 +252,7 @@ class RunStore:
         if not owner_token:
             raise ValueError("worker owner token 不能为空")
         now = _now()
-        status = "failed" if error else "success"
+        status = "failed" if error is not None else "success"
         with self._lock, self._connect() as conn:
             updated = conn.execute(
                 """
@@ -330,18 +383,50 @@ class RunWorker:
                 self._stop.wait(0.01)
                 continue
             run_id, item_id, effective = claimed
-            if self.step_delay > 0:
-                self._stop.wait(self.step_delay)
-            if self._stop.is_set():
+            if self.step_delay > 0 and self._stop.wait(self.step_delay):
+                self.store.release_item(run_id, item_id, owner_token=self._owner_token)
                 return
-            error: str | None = None
-            try:
-                self.uploader(effective)
-            except Exception as exc:  # noqa: BLE001 - item 必须落终态
-                error = str(exc)
+            if self._stop.is_set():
+                self.store.release_item(run_id, item_id, owner_token=self._owner_token)
+                return
+            error = self._execute_with_lease_heartbeat(run_id, item_id, effective)
             self.store.finish_item(
                 run_id, item_id, owner_token=self._owner_token, error=error
             )
+
+    def _execute_with_lease_heartbeat(
+        self, run_id: str, item_id: str, effective: Mapping[str, Any]
+    ) -> str | None:
+        """执行可能阻塞的 uploader，同时持续续租当前 item。"""
+        finished = threading.Event()
+        heartbeat: threading.Thread | None = None
+        if self.lease_seconds > 0:
+            interval = max(0.01, min(self.lease_seconds / 3, 1.0))
+
+            def renew() -> None:
+                while not finished.wait(interval):
+                    if not self.store.renew_lease(
+                        run_id,
+                        item_id,
+                        owner_token=self._owner_token,
+                        lease_seconds=self.lease_seconds,
+                    ):
+                        return
+
+            heartbeat = threading.Thread(
+                target=renew, name="posthub-run-lease", daemon=True
+            )
+            heartbeat.start()
+        error: str | None = None
+        try:
+            self.uploader(effective)
+        except Exception as exc:  # noqa: BLE001 - item 必须落终态
+            error = str(exc)
+        finally:
+            finished.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=1.0)
+        return error
 
 
 def _read_publish_accounts(db_path: Path) -> list[dict[str, Any]]:

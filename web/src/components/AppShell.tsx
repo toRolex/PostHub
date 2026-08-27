@@ -36,6 +36,10 @@ async function loadDaemonUrl(): Promise<string> {
   }
 }
 
+export function shouldRefreshRun(status: "pending" | "running" | "completed" | null): boolean {
+  return status !== "completed";
+}
+
 export function runStatusMeta(status: "pending" | "running" | "completed" | null) {
   if (status === "pending") {
     return { dot: "bg-meta", text: "text-fg-2", label: "最近运行 待执行" };
@@ -167,10 +171,11 @@ export function AppShell() {
       () => void useDaemonStore.getState().probeDaemon(),
       pollIntervalMs,
     );
-    const runTimer = window.setInterval(
-      () => void useRunStore.getState().refresh(useDaemonStore.getState().url),
-      pollIntervalMs,
-    );
+    const runTimer = window.setInterval(() => {
+      if (shouldRefreshRun(useRunStore.getState().status)) {
+        void useRunStore.getState().refresh(useDaemonStore.getState().url);
+      }
+    }, pollIntervalMs);
     return () => {
       disposed = true;
       window.clearInterval(healthTimer);

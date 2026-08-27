@@ -280,6 +280,139 @@ def test_worker_restart_recovers_expired_running_item(tmp_path: Path) -> None:
     assert store.get_run(run_id)["items"][0]["status"] == "success"
 
 
+def test_empty_error_is_still_failed_not_success(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner-a")
+    assert claimed is not None
+    _, item_id, _ = claimed
+
+    assert store.finish_item(run_id, item_id, owner_token="owner-a", error="")
+    item = store.get_run(run_id)["items"][0]
+    assert item["status"] == "failed"
+    assert item["error"] == ""
+
+
+def test_stop_after_claim_requeues_before_uploader_and_allows_restart(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    calls: list[dict] = []
+    first = RunWorker(
+        store,
+        uploader=lambda effective: calls.append(effective),
+        step_delay=1,
+    )
+    first.start()
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if store.get_run(run_id)["status"] == "running":
+                break
+            time.sleep(0.01)
+        assert store.get_run(run_id)["status"] == "running"
+        first.stop()
+    finally:
+        first.stop()
+
+    snapshot = store.get_run(run_id)
+    assert snapshot["status"] == "pending"
+    assert snapshot["items"][0]["status"] == "pending"
+    assert calls == []
+
+    second = RunWorker(store, uploader=lambda effective: calls.append(effective))
+    second.start()
+    try:
+        wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        second.stop()
+
+    assert calls == [normalized.effective[0].effective]
+
+
+def test_blocked_uploader_renews_lease_before_another_worker_can_claim(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    entered = threading.Event()
+    release = threading.Event()
+    first_calls: list[dict] = []
+    second_calls: list[dict] = []
+
+    def blocked_uploader(effective: dict) -> None:
+        entered.set()
+        release.wait(1)
+        first_calls.append(effective)
+
+    first = RunWorker(
+        store,
+        uploader=blocked_uploader,
+        lease_seconds=0.12,
+        stop_timeout=0.01,
+    )
+    second = RunWorker(
+        store,
+        uploader=lambda effective: second_calls.append(effective),
+        lease_seconds=0.12,
+    )
+    first.start()
+    try:
+        assert entered.wait(1)
+        time.sleep(0.35)
+        second.start()
+        time.sleep(0.05)
+        assert second_calls == []
+        release.set()
+        wait_for_status_from_store(store, run_id, "completed")
+        assert first_calls == [normalized.effective[0].effective]
+        assert second_calls == []
+    finally:
+        release.set()
+        first.stop()
+        second.stop()
+
+
 def test_workers_do_not_recover_active_owner_and_finish_checks_owner(
     tmp_path: Path,
 ) -> None:

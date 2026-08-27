@@ -46,6 +46,14 @@ function readRunId(): string | null {
   }
 }
 
+function clearRunId(): void {
+  try {
+    localStorage.removeItem(LATEST_RUN_ID_KEY);
+  } catch {
+    // localStorage 不可用时仍保持本次内存态。
+  }
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -76,6 +84,7 @@ export const useRunStore = create<RunState>()((set, get) => {
       const snapshot = await officialApi.getLatestRun(base);
       if (!canCommit(requestId, version)) return;
       if (!snapshot) {
+        clearRunId();
         set({ runId: null, status: null, snapshot: null, error: "" });
         return;
       }
@@ -115,7 +124,9 @@ export const useRunStore = create<RunState>()((set, get) => {
         if (!canCommit(requestId, version)) return;
         applySnapshot(snapshot);
       } catch (error) {
-        if (canCommit(requestId, version)) set({ error: messageOf(error) });
+        if (!canCommit(requestId, version)) return;
+        // 本地指针可能指向已清理的旧 run；查询失败时回退持久化 latest。
+        await fetchLatest(base, requestId, version);
       }
     },
 
@@ -137,6 +148,7 @@ export const useRunStore = create<RunState>()((set, get) => {
         }
         if (!canCommit(requestId, version)) return;
         if (!snapshot) {
+          clearRunId();
           set({ runId: null, status: null, snapshot: null, error: "" });
           return;
         }
