@@ -12,7 +12,7 @@ import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
 import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
-import type { Platform } from "../../api/types";
+import type { Platform, PlatformFields } from "../../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../../api/platformNames";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
@@ -250,6 +250,15 @@ export function BatchPublishSection() {
   );
 
   const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
+  const accountDefaults = useMemo<Record<string, PlatformFields>>(() => {
+    const defaults: Record<string, PlatformFields> = {};
+    for (const account of accounts) {
+      if (account.defaultPlatformFields) {
+        defaults[account.cookieFile] = account.defaultPlatformFields;
+      }
+    }
+    return defaults;
+  }, [accounts]);
   const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
     useBatchPublishStore.getState();
 
@@ -667,6 +676,7 @@ export function BatchPublishSection() {
       <BatchPreviewDialog
         open={previewOpen}
         items={items}
+        accountDefaults={accountDefaults}
         results={itemResults}
         onConfirm={() => void handleConfirmPreview()}
         onCancel={closePreview}

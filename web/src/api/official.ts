@@ -235,6 +235,8 @@ export interface RunItemSnapshot {
   itemId: string;
   status: RunItemStatus;
   error: string | null;
+  /** 首次受理时冻结的 effective 请求；旧 daemon 可能不返回该字段。 */
+  effective?: PostVideoRequest;
 }
 
 export interface RunSnapshot {

@@ -454,3 +454,34 @@
 - #85 合并后 web：`cd web && pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.13s`）；仅有既有 jsdom navigation stderr。
 - #85 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
 - 下一步：提交本轮中文 summarizing commit，随后验证并关闭 #84/#85/#87，清理三个 issue worktree；不关闭父 issue #80。
+
+## Issue #90：贯通抖音内容声明三态
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-90` 的 `afk/issue-90` 分支实现；不修改官方 `daemon/sau_backend.py` 或 `uploader/*`，不 push、PR、merge、关闭 issue、reset、rebase、amend。
+- 以既有 #84 canonical declaration context、#85 accepted-run 与 #87 wrapper 为边界，先补三态/快照/详情/预览/构造器回归，再逐个垂直切片实现。
+- 三态语义固定为：任务空字段不覆盖账号默认；`no_need` 明确覆盖默认；其它合法抖音英文枚举保存英文值并由 wrapper 映射中文文案。首次受理时将 effective 快照写入 run item，后续账号默认变更不得影响详情或执行。
+
+### 预确认 seams
+
+- `normalize_publish_payloads`：任务覆盖与账号默认合并的唯一 effective producer。
+- `_declaration_context` 与抖音 uploader class wrapper：构造器读取当前 item 的中文文案，成功/异常 finally 恢复线程上下文。
+- `RunStore.get_run` / `/postRuns/{runId}`：返回持久化 effective item 详情；前端 `BatchPreviewDialog` 与运行状态区消费该详情。
+
+### 实现进展
+
+- 已读取 `CONTEXT.md`、ADR-0008/0009、#84/#85/#87 实现与测试、抖音声明映射、批量预览、run store/API/store；确认 normalization 已具备三态合并基础，但 run detail 丢弃 effective，preview 不显示最终有效声明，且尚无 fake constructor 文案回归。
+- 已保留前置代理留下的未提交 TDD 改动：新增三态 normalization、fake DouYin constructor、run detail 快照与前端 preview/domain 回归；当前继续在同一 worktree 收口，不等待外部调研。
+- 定向验证：daemon `tests/test_publish_adapter.py tests/test_runs.py` → `73 passed`；web 声明/预览定向文件随 Vitest 实际全量配置运行 → `20 files / 204 tests passed`。
+- 全量验证：daemon → `159 passed`；web → `20 files / 204 tests passed`；`pnpm run build` 通过。
+- Tauri 首次 `cargo test --all-targets` 因仓库忽略的 `src-tauri/resources/daemon` 不存在而失败；按既有项目验证约定补齐本地空 `resources/{daemon,bin,browser}` 目录后重跑通过（lib `17 passed`，bin `0 tests`），空目录未纳入 Git。
+- Runtime verify：临时 `POSTHUB_BASE_DIR` 启动真实 `uv run python run_backend.py`，HTTP `/postRuns` 三次受理（空字段继承 `marketing`、显式 `no_need`、具体 `fictional`）均返回 200；详情 effective 分别保留英文枚举。受理后将账号默认改为 `ai_generated`，首个 run detail 仍为 `marketing`；worker 未注入生产执行器，按 fail-closed 记录为 failed，未触碰真实平台。
+- lint：相关 Python `ruff check` 通过；`ruff format --check` 通过；官方 `daemon/sau_backend.py` SHA-256 保持 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`。
+- 最终验证：daemon `uv run pytest -q` → `159 passed`；web `pnpm test -- --run` → `20 files / 204 tests passed`；`pnpm run build` 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 tests`。
+- 下一步：提交中文语义原子 commit。
+
+### Deviations
+
+- Tauri 首次测试因仓库忽略的资源目录缺失失败；仅补齐本地空 `resources/{daemon,bin,browser}` 后通过，空目录未纳入 Git。
+- web 测试保留既有 jsdom `navigation (except hash changes)` stderr，不影响通过。

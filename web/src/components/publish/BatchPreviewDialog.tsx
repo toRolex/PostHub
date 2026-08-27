@@ -14,6 +14,10 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import { PLATFORM_NAMES } from "../../api/platformNames";
 import type { Platform } from "../../api/types";
 import {
+  resolveDouyinDeclaration,
+  type PlatformFields,
+} from "../../domain/declarations";
+import {
   buildBatchItemRefs,
   keyOf,
   wechatScheduledCountsByCookie,
@@ -43,27 +47,49 @@ export interface PreviewRow {
   mode: BatchItem["mode"];
   timeOfDay?: string;
   startDays?: number;
+  /** 抖音最终有效声明；任务空值已在此处按账号默认解析。 */
+  declaration?: {
+    value: string | undefined;
+    label: string;
+  };
 }
 
 /**
  * 把 BatchItem[] 展开为预览行（每账号一行）。
  * 纯函数，便于不挂 DOM 直接单测。
  */
-export function buildPreviewRows(items: BatchItem[]): PreviewRow[] {
-  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => ({
-    itemKey: keyOf(item.filePath, cookie),
-    fileName: item.filePath,
-    platform,
-    accountCookie: cookie,
-    mode: item.mode,
-    timeOfDay: item.timeOfDay,
-    startDays: item.startDays,
-  }));
+export function buildPreviewRows(
+  items: BatchItem[],
+  accountDefaults: Record<string, PlatformFields> = {},
+): PreviewRow[] {
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => {
+    const declaration =
+      platform === "douyin"
+        ? resolveDouyinDeclaration(
+            item.platformFields?.douyin,
+            accountDefaults[cookie]?.douyin,
+          )
+        : undefined;
+    return {
+      itemKey: keyOf(item.filePath, cookie),
+      fileName: item.filePath,
+      platform,
+      accountCookie: cookie,
+      mode: item.mode,
+      timeOfDay: item.timeOfDay,
+      startDays: item.startDays,
+      declaration: declaration?.value
+        ? { value: declaration.value, label: declaration.label }
+        : declaration,
+    };
+  });
 }
 
 interface BatchPreviewDialogProps {
   open: boolean;
   items: BatchItem[];
+  /** 按 cookie 文件名索引的账号默认声明，用于计算预览 effective 值。 */
+  accountDefaults?: Record<string, PlatformFields>;
   /** 提交反馈（用于在 Dialog 内展示）；可缺省。 */
   results?: BatchItemResult[] | null;
   onConfirm: () => void;
@@ -76,11 +102,12 @@ interface BatchPreviewDialogProps {
 export function BatchPreviewDialog({
   open,
   items,
+  accountDefaults,
   results,
   onConfirm,
   onCancel,
 }: BatchPreviewDialogProps) {
-  const rows = buildPreviewRows(items);
+  const rows = buildPreviewRows(items, accountDefaults);
   const resultsByKey = new Map<string, BatchItemResult>();
   if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
@@ -107,6 +134,7 @@ export function BatchPreviewDialog({
               <tr>
                 <th className="px-3 py-2 text-left font-medium">视频</th>
                 <th className="px-3 py-2 text-left font-medium">平台 / 账号</th>
+                <th className="px-3 py-2 text-left font-medium">最终声明</th>
                 <th className="px-3 py-2 text-left font-medium">模式</th>
                 <th className="px-3 py-2 text-left font-medium">时刻</th>
                 <th className="px-3 py-2 text-left font-medium">起始日</th>
@@ -133,6 +161,13 @@ export function BatchPreviewDialog({
                           />
                         )}
                       </div>
+                    </td>
+                    <td className="px-3 py-2 text-fg-2">
+                      {r.declaration
+                        ? r.declaration.value
+                          ? `${r.declaration.value} · ${r.declaration.label}`
+                          : r.declaration.label
+                        : "—"}
                     </td>
                     <td className="px-3 py-2 text-fg-2">
                       {r.mode === "immediate" ? "立即" : "定时"}

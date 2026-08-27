@@ -69,6 +69,30 @@ const WECHAT_SET = new Set<string>(WECHAT_DECLARATIONS.map((o) => o.value));
 const DOUYIN_SET = new Set<string>(DOUYIN_DECLARATIONS.map((o) => o.value));
 const XHS_SET = new Set<string>(XIAOHONGSHU_SOURCES.map((o) => o.value));
 
+export interface ResolvedDouyinDeclaration {
+  /** 最终生效的稳定英文枚举；undefined 表示账号也未设置。 */
+  value: DouyinDeclaration | undefined;
+  /** 面向用户的上游中文文案；无值时保留“账号默认”语义。 */
+  label: string;
+}
+
+/**
+ * 解析抖音任务声明三态：任务值优先，其次账号默认，最后保留未设置。
+ * `no_need` 是普通的显式值，因此会明确覆盖账号默认。
+ */
+export function resolveDouyinDeclaration(
+  task: { declaration?: DouyinDeclaration } | undefined,
+  accountDefault: { declaration?: DouyinDeclaration } | undefined,
+): ResolvedDouyinDeclaration {
+  const value = task?.declaration ?? accountDefault?.declaration;
+  return {
+    value,
+    label: value
+      ? DOUYIN_DECLARATIONS.find((option) => option.value === value)?.label ?? value
+      : "账号默认",
+  };
+}
+
 /** 槽位 → 候选 ui 列表（badge 文案展示复用 + registry 单一来源）。 */
 const PLATFORM_OPTIONS: Record<string, readonly DeclarationOption<string>[]> = {
   wechat: WECHAT_DECLARATIONS,
