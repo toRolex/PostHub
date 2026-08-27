@@ -51,10 +51,10 @@ def _queue() -> deque:
 
 
 def set_pending_declarations(items: list[dict]) -> None:
-    """替换当前线程队列。
+    """替换迁移期兼容队列；新声明项使用 canonical shape。
 
-    每项形如 ``{"platform": 2, "tencent": {"declaration": "无需标注"}}``，
-    平台字段放在与平台名一致的子键下。空 list 表示本请求没有声明。
+    新项形如 ``{"platform": 2, "fields": {"declaration": "无需标注"}}``；
+    `_fields_for()` 仍读取旧平台嵌套和旧 flat fixture。空 list 表示本请求没有声明。
     """
     q = _queue()
     q.clear()
@@ -117,13 +117,12 @@ def _declaration_item_for_effective(item: EffectiveBatchItem) -> dict[str, Any]:
     """把 effective 内部枚举转为 wrapper 消费的官方中文字段。"""
     fields = item.effective.get("platformFields")
     if not fields:
-        return {"platform": item.platform_type}
+        return {"platform": item.platform_type, "fields": {}}
     resolved = resolve_platform_fields(fields)
     selected = select_for_platform(resolved, item.platform_type)
-    pending_key = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}.get(item.platform_type)
-    if not pending_key or not selected:
-        return {"platform": item.platform_type}
-    return {"platform": item.platform_type, pending_key: selected}
+    if not selected:
+        return {"platform": item.platform_type, "fields": {}}
+    return {"platform": item.platform_type, "fields": selected}
 
 
 def _pop_for(platform: int) -> dict | None:
@@ -137,8 +136,17 @@ def _pop_for(platform: int) -> dict | None:
 
 
 def _fields_for(item: dict | None, platform: int) -> dict[str, Any]:
-    """读取组合层声明契约，并兼容旧的扁平项以便安全升级。"""
+    """读取 canonical 声明，并兼容迁移期旧平台嵌套/flat shape。"""
     if not item:
+        return {}
+
+    if "fields" in item:
+        if item.get("platform") != platform:
+            return {}
+        fields = item["fields"]
+        return fields if isinstance(fields, dict) else {}
+
+    if item.get("platform") is not None and item.get("platform") != platform:
         return {}
     key = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}.get(platform)
     fields = item.get(key) if key else None

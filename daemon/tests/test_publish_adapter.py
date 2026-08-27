@@ -525,6 +525,174 @@ def test_normalization_revalidates_account_snapshot_value_objects() -> None:
         normalize_publish_payloads([payload], [malformed_snapshot])
 
 
+def test_declaration_producer_emits_canonical_platform_and_fields_shape() -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "canonical 声明",
+        "tags": [],
+        "platformFields": {"douyin": {"declaration": "no_need"}},
+    }
+    item = normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0]
+
+    assert uploader_wrapper._declaration_item_for_effective(item) == {
+        "platform": 3,
+        "fields": {"declaration": "无需添加自主声明"},
+    }
+
+
+def test_declaration_producer_keeps_empty_fields_canonical_without_declaration() -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "无声明",
+        "tags": [],
+    }
+    accounts = deepcopy(ACCOUNT_FIXTURES)
+    accounts[2]["default_platform_fields"] = None
+    item = normalize_publish_payloads([payload], accounts).effective[0]
+
+    assert uploader_wrapper._declaration_item_for_effective(item) == {
+        "platform": 3,
+        "fields": {},
+    }
+
+
+def test_declaration_consumer_reads_canonical_fields() -> None:
+    item = {"platform": 3, "fields": {"declaration": "无需添加自主声明"}}
+
+    assert uploader_wrapper._fields_for(item, 3) == {
+        "declaration": "无需添加自主声明"
+    }
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        (
+            {"platform": 3, "douyin": {"declaration": "无需添加自主声明"}},
+            {"declaration": "无需添加自主声明"},
+        ),
+        (
+            {"platform": 3, "declaration": "无需添加自主声明"},
+            {"declaration": "无需添加自主声明"},
+        ),
+    ],
+)
+def test_declaration_consumer_keeps_legacy_shapes_readable(
+    item: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    assert uploader_wrapper._fields_for(item, 3) == expected
+
+
+@pytest.mark.parametrize("error_type", [None, RuntimeError, TimeoutError])
+def test_declaration_context_clears_after_success_exception_or_timeout(
+    error_type: type[BaseException] | None,
+) -> None:
+    first = {"platform": 3, "fields": {"declaration": "抖音声明"}}
+    second = {"platform": 2, "fields": {"declaration": "视频号声明"}}
+
+    if error_type is None:
+        with uploader_wrapper._declaration_context(first):
+            assert uploader_wrapper._active_fields(3) == {
+                "declaration": "抖音声明"
+            }
+    else:
+        with pytest.raises(error_type), uploader_wrapper._declaration_context(first):
+            assert uploader_wrapper._active_fields(3) == {"declaration": "抖音声明"}
+            raise error_type("item stopped")
+
+    assert not hasattr(uploader_wrapper._local, "active")
+    with uploader_wrapper._declaration_context(second):
+        assert uploader_wrapper._active_fields(2) == {"declaration": "视频号声明"}
+        assert uploader_wrapper._active_fields(3) == {}
+    assert not hasattr(uploader_wrapper._local, "active")
+
+
+def test_effective_items_use_isolated_context_for_platform_and_declaration() -> None:
+    payloads = [
+        {
+            "fileList": ["douyin.mp4"],
+            "accountList": ["douyin.json"],
+            "type": 3,
+            "title": "抖音 item",
+            "tags": [],
+            "platformFields": {"douyin": {"declaration": "no_need"}},
+        },
+        {
+            "fileList": ["wechat.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号 item",
+            "tags": [],
+            "platformFields": {"wechat": {"declaration": "marketing"}},
+        },
+    ]
+    items = [
+        normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0]
+        for payload in payloads
+    ]
+    observed: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+
+    def invoke(command: dict[str, Any]) -> None:
+        observed.append(
+            (
+                command["type"],
+                uploader_wrapper._active_fields(3).copy(),
+                uploader_wrapper._active_fields(2).copy(),
+            )
+        )
+
+    uploader_wrapper._execute_effective_group(items, invoke)
+
+    assert observed == [
+        (3, {"declaration": "无需添加自主声明"}, {}),
+        (2, {}, {"declaration": "内容包含营销广告"}),
+    ]
+    assert not hasattr(uploader_wrapper._local, "active")
+
+
+def test_effective_item_failure_clears_context_before_next_item() -> None:
+    first_payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "失败 item",
+        "tags": [],
+        "platformFields": {"douyin": {"declaration": "no_need"}},
+    }
+    second_payload = {
+        "fileList": ["wechat.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "后续 item",
+        "tags": [],
+        "platformFields": {"wechat": {"declaration": "marketing"}},
+    }
+    first = normalize_publish_payloads([first_payload], ACCOUNT_FIXTURES).effective[0]
+    second = normalize_publish_payloads([second_payload], ACCOUNT_FIXTURES).effective[0]
+
+    def fail(_command: dict[str, Any]) -> None:
+        assert uploader_wrapper._active_fields(3) == {
+            "declaration": "无需添加自主声明"
+        }
+        raise TimeoutError("item timeout")
+
+    with pytest.raises(TimeoutError, match="timeout"):
+        uploader_wrapper._execute_effective_group([first], fail)
+    assert not hasattr(uploader_wrapper._local, "active")
+
+    observed: list[dict[str, Any]] = []
+    uploader_wrapper._execute_effective_group(
+        [second],
+        lambda _command: observed.append(uploader_wrapper._active_fields(2).copy()),
+    )
+    assert observed == [{"declaration": "内容包含营销广告"}]
+    assert not hasattr(uploader_wrapper._local, "active")
+
+
 def test_wrapper_fails_closed_without_effective_items_in_publish_request() -> None:
     app = Flask(__name__)
     app.testing = True

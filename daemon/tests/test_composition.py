@@ -177,7 +177,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         assert tencent_response.status_code == 200
 
         # 官方 batch 抖音调用省略 thumbnail_path；wrapper 应补齐默认尾参数，
-        # 同时保持嵌套声明 payload 可被消费。
+        # 同时消费 canonical 声明 payload。
         douyin_response = client.post(
             "/postVideoBatch",
             json=[

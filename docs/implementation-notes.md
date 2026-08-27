@@ -193,3 +193,46 @@
 - 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
 - 本轮未修改 `daemon/sau_backend.py`、官方 `uploader/*`、`web/` 或 `src-tauri/` 业务代码；未 push、未建 PR。
 - 收尾：`wt remove afk/issue-82 -D --foreground` 已清理 issue 82 worktree 与本地分支；`gh issue close 82 --comment '实现已合并到 develop，完成 normalization / adapter 与 fail-closed 验收。'` 后 `gh issue view 82 --json state` 返回 `CLOSED`。
+
+## Issue #84：扩展内容声明 context 为 canonical shape
+
+### 目标与计划
+
+- 仅修改 PostHub-owned 声明 wrapper/context seam，不触碰官方 `daemon/sau_backend.py` 或官方 `uploader/*`，不提前实现 #90/#91/#92。
+- 先为 canonical producer `{platform, fields}`、canonical/legacy consumer 双读、item 级 context 的 finally 清理及连续 item 隔离补失败测试，再做最小实现。
+- 保留外部 `platformFields` 按平台分键契约、英文枚举到官方中文文案映射，以及 normalization 的 fail-closed 边界。
+- 完成后执行 daemon 全量 pytest、web 全量测试与 build，并记录实际输出；不 push、不建 PR、不 merge、不关闭 issue。
+
+### 当前基线与调研结论
+
+- issue 82 已将 `EffectiveBatchItem` 与执行 adapter 合入当前基线；当前 `_declaration_item_for_effective()` 仍产出平台名嵌套 shape，`_fields_for()` 尚不读取 canonical `fields`。
+- 现有 `_declaration_context()` 已有 `try/finally` 的恢复语义，需补齐 canonical payload 与连续不同平台/声明的回归覆盖。
+- 旧兼容形状包括 `{platform, <platform-name>: fields}` 与 `{platform, field...}`；canonical 只在内部 wrapper context 使用，外部 `platformFields` 不变。
+- 无声明也采用 canonical shape `{"platform": type, "fields": {}}`；不扩展 origin、XHS source 等既有 fail-closed 执行边界。
+
+### 实现进展
+
+- 已完成只读调研：读取 `CONTEXT.md`、ADR-0008/0009、issue 计划、相关 prototype/research、声明映射、wrapper、normalization、composition 及现有测试；未修改官方源码。
+- Red（producer 垂直切片）：新增 `test_declaration_producer_emits_canonical_platform_and_fields_shape`，`cd daemon && uv run pytest tests/test_publish_adapter.py -q` → `1 failed, 26 passed`；失败确认当前 producer 仍输出平台名嵌套 shape。
+- Green（producer）：`_declaration_item_for_effective()` 改为始终产出 `{"platform": type, "fields": selected}`，无声明使用空 `fields`；同一批定向测试 → `27 passed`。
+- Red（consumer 垂直切片）：新增 `test_declaration_consumer_reads_canonical_fields`，定向测试 → `1 failed, 27 passed`；失败确认 `_fields_for()` 尚未读取 canonical `fields`。
+- Green（consumer）：`_fields_for()` 先读并校验 canonical `platform/fields`，再兼容旧平台嵌套与旧 flat shape；平台不匹配或 canonical fields 非 object 返回空字典；定向测试 → `28 passed`。
+- Green（迁移 fixture）：新增旧平台嵌套与旧 flat shape 双读回归，定向测试 → `30 passed`。
+- Green（空声明）：新增无任务/账号默认声明时的 canonical 空 `fields` 回归；首次误用带账号默认的 fixture 得到错误预期，改为显式清空该账号默认后重跑 → `34 passed`。
+- Green（context 生命周期）：新增成功、异常、内建超时异常后的 finally 清理，以及随后不同平台声明可独立读取的回归；定向测试 → `34 passed`。
+- Green（连续 item）：新增混合平台 effective item 执行隔离与首项超时后下一项独立读取回归；声明/组合定向测试 → `38 passed`，相关 ruff → `All checks passed`。
+- 重构：更新迁移队列与组合测试注释，明确新 producer 只写 canonical shape，旧嵌套/flat 仅作兼容 fixture。
+- Runtime verify：隔离启动组合 Flask 服务 `127.0.0.1:5419`，GET `/getAccounts` 返回 `200`；通过 HTTP POST `/postVideo` 驱动真实组合入口，返回 `200`，服务端 fake 官方 seam 观察到 active fields 为 `{'declaration': '无需添加自主声明'}`；验证服务已停止。
+
+### 最终验证
+
+- `cd daemon && uv run pytest -q` → `81 passed in 1.92s`。
+- `cd daemon && uv run --with ruff ruff check posthub/uploader_wrapper.py tests/test_publish_adapter.py tests/test_composition.py` → `All checks passed!`。
+- `cd web && pnpm test -- --run` → `16 files / 171 tests passed`；仅有既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过，Vite `2.07s`。
+- `shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`，官方文件未改；未修改官方 `uploader/*`，未修改 web 业务代码。
+- `git diff --check` 通过；仅有本 issue 的 wrapper、测试与 implementation notes 变更，准备提交中文语义原子 commit。
+
+### Deviations
+
+- 暂无。
