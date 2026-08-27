@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from posthub.declarations import (
@@ -332,7 +332,9 @@ def generate_douyin_publish_datetimes(
         or start_days < 0
     ):
         raise ValueError("start_days 必须是非负整数")
-    current = datetime.today() if now is None else now
+    current = (
+        datetime.now(tz=UTC).astimezone().replace(tzinfo=None) if now is None else now
+    )
     if not isinstance(current, datetime) or current.tzinfo is not None:
         raise ValueError("now 必须是本地 naive datetime")
 

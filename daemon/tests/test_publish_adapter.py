@@ -882,7 +882,9 @@ def test_wrapper_fails_closed_without_effective_items_in_publish_request() -> No
     assert calls == []
 
 
-def test_douyin_timer_effective_snapshot_keeps_minute_and_absolute_local_datetime() -> None:
+def test_douyin_timer_effective_snapshot_keeps_minute_and_absolute_local_datetime() -> (
+    None
+):
     payload = {
         "fileList": ["douyin.mp4"],
         "accountList": ["douyin.json"],

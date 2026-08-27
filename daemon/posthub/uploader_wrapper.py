@@ -140,9 +140,7 @@ def _generate_schedule_with_start_days(
         if any(value.tzinfo is not None for value in schedule):
             raise ValueError("publishDatetimes 必须是本地 naive datetime")
         return (
-            [int(value.timestamp()) for value in schedule]
-            if timestamps
-            else schedule
+            [int(value.timestamp()) for value in schedule] if timestamps else schedule
         )
 
     return _ORIGINAL_GENERATE_SCHEDULE_TIME(

@@ -704,7 +704,9 @@ def test_douyin_wrapper_reuses_effective_absolute_datetime_snapshot(
         "default_platform_fields": None,
     }
     item = normalize_publish_payloads(
-        [payload], [account], now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None)
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
     ).effective[0]
     calls: list[datetime] = []
     original_class = uploader_wrapper._OriginalDouYinVideo
@@ -718,7 +720,9 @@ def test_douyin_wrapper_reuses_effective_absolute_datetime_snapshot(
         return None
 
     monkeypatch.setattr(original_class, "__init__", fake_init)
-    monkeypatch.setattr(original_class, "douyin_upload_video", fake_upload, raising=False)
+    monkeypatch.setattr(
+        original_class, "douyin_upload_video", fake_upload, raising=False
+    )
     uploader_wrapper.set_pending_effective_items([item])
     try:
         uploader_wrapper._inject_declaration_to_douyin(
@@ -763,7 +767,9 @@ def test_run_detail_keeps_submitted_and_effective_timer_snapshots(tmp_path) -> N
         "default_platform_fields": None,
     }
     normalized = normalize_publish_payloads(
-        [payload], [account], now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None)
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
     )
     detail = RunStore(tmp_path / "runs.db")
     run_id = detail.create_run(normalized.effective)

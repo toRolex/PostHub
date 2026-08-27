@@ -560,7 +560,9 @@ def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payloa
         "default_platform_fields": None,
     }
     normalized = normalize_publish_payloads(
-        [immediate, timer], [account], now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None)
+        [immediate, timer],
+        [account],
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
     )
     store = RunStore(tmp_path / "runs.db")
     run_id = store.create_run(normalized.effective)
