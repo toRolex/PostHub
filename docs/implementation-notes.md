@@ -230,3 +230,12 @@
 - `cd daemon && uv run pytest -q` → `72 passed`；涉及 Python 文件 `ruff check` 与 `ruff format --check` 均通过。
 - `cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
 - 未 push、未建 PR、未 merge、未关闭 issue；待提交中文语义原子 commit。
+
+### Issue #83 Merger 执行记录（2026-08-27）
+
+- 合并前确认：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop` 分支为 `develop`，工作树干净；仅执行 `git merge afk/issue-83 --no-edit`，未使用 squash、`-X`、push 或 PR。
+- 合并结果：该分支基于当前 develop，按命令 fast-forward 至 `96bbd48`，无冲突；#83 的 HH:MM 领域契约、双读单写 normalization、前端 timer/domain/store/view/test 与文档记录均保留。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `72 passed in 2.29s`；涉及 Python 文件 `ruff check` → `All checks passed`，`ruff format --check` → `2 files already formatted`。
+- 合并后 web：`pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.03s`）；仅有既有 jsdom navigation stderr。
+- 合并后 Tauri：`cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+- 下一步：提交本次 Merger 笔记后，按顺序合并 #84；#83 worktree 与 issue 待全部本轮成功后依用户流程清理/关闭。
