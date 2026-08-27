@@ -217,7 +217,7 @@
 - Green：在 `uploader_wrapper.py` 保存官方函数/生成器引用，运行时适配官方旧生成器为关键字 `start_days`，并给四个平台 uploader class 显式注入 `publish_strategy`（日期非 0 为 `scheduled`，立即路径为 `immediate`）；effective command 改为全关键字映射，抖音封面/商品尾参保持独立命名。
 - Green：小红书新增薄 class wrapper，并以请求级文件/账号循环上下文把官方错误传入的完整 `publish_datetimes` 列表选择为当前文件日期；相同文件名也按外层文件 index 处理；未复制官方文件/账号遍历循环。
 - Green：`publish_date=None` 保守映射为 immediate，避免无日期值被错误标记 scheduled。
-- Green 测试：scheduled 定向契约扩至 HTTP 单发/batch 四平台、XHS 多文件/重复文件名、generator 关键字 seam，共 `18 passed`（关键三文件共 `44 passed`）；daemon 全量 `87 passed`。
+- Green 测试：scheduled 定向契约扩至 HTTP 单发/batch 四平台、XHS 多文件/重复文件名、generator 关键字 seam，共 `16 passed`（关键三文件共 `44 passed`）；daemon 全量 `87 passed`。
 
 ### 验证
 
@@ -227,3 +227,14 @@
 - Runtime probe：同一 socket 对非法浮点 `startDays` 返回 JSON 400（明确指出 startDays），`/postVideoBatch` 非数组返回 JSON 400；均未进入 fake 发布。
 - Web：`cd web && pnpm test -- --run` → 16 files / 171 tests passed（仅既有 jsdom navigation stderr）；`pnpm run build` → tsc 与 Vite build 通过。
 - Tauri：补齐本地空 `src-tauri/resources/{daemon,bin,browser}` 目录后 `cargo test --all-targets` → lib 17 passed、bin 0 tests；空目录未进入 Git。
+
+### Reviewer 复核（2026-08-27）
+
+- 已按要求完整读取 `git diff develop..HEAD`；实现提交为 `7abe1bc`，未修改 `daemon/sau_backend.py` 或官方 `uploader/*`。
+- 实测 `cd daemon && uv run pytest -q` → `87 passed in 1.67s`；scheduled 定向测试实际为 `16 passed`，修正上方误记的 `18 passed`。
+- 相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `6 files already formatted`；全量 lint/format 仍包含基线 `conf.py`、官方 `sau_backend.py` 等既有问题。
+- 初步发现定时生成 wrapper 直接把 HH:MM 字符串交给上游仅支持整数小时的生成器，会在 scheduled 请求中抛 `TypeError`；本 issue 只修复现有整点契约，未复制官方时间生成或擅自丢分钟，改为对误落 `timestamps` 位置的非 boolean/int 值显式拒绝，避免静默当成 `startDays`。#83 的 HH:MM 平台精度适配仍需后续独立 seam。
+- 精炼：XHS 日期列表不足素材数时不再复用末项日期，改为 fail-closed；补充相同文件名双账号 index、立即路径四平台显式 `immediate`、boolean `timestamps` 保真和错误类型边界测试。定向测试当前 `23 passed`。
+- 复验：`cd daemon && uv run pytest -q` → `94 passed in 1.64s`；相关 3 个 Python 文件 `ruff check` → `All checks passed!`，`ruff format --check` → `3 files already formatted`。
+- HH:MM 结论：当前 #87 官方整数小时契约不会把 HH:MM 误当 `startDays`；误落 `timestamps` 槽位的非 boolean/int 已显式拒绝。当前前端/daemon 仍由 #83 负责 HH:MM 双读单写与平台精度适配，本轮不复制官方时间生成。
+- Runtime verify：在临时数据库、fake uploader 和 `127.0.0.1` Werkzeug socket 上实际发送四平台 `/postVideo` 与 `/postVideoBatch`，8/8 返回 200；服务端记录四个平台均为 `publish_strategy=scheduled`、`2026-08-30T10:00:00`，抖音三尾参完整、视频号 `category=7/is_draft=True`。数组 body、浮点 `startDays`、HH:MM（当前整数小时契约）分别返回 400，未进入 fake 发布。

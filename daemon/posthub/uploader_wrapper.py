@@ -84,6 +84,11 @@ def _generate_schedule_with_start_days(
     原始实现；不复制官方文件/账号遍历或浏览器发布循环。
     """
     if not isinstance(timestamps, bool):
+        if not isinstance(timestamps, int):
+            raise TypeError(
+                "timestamps 必须是 boolean；旧入口位置上的 start_days 必须是整数"
+            )
+        # 官方旧入口把 start_days 错放在 timestamps 的第四个位置。
         start_days = timestamps
         timestamps = False
     return _ORIGINAL_GENERATE_SCHEDULE_TIME(
@@ -127,15 +132,21 @@ def _select_xhs_publish_date(
         return args, kwargs
 
     schedule = getattr(_local, "xhs_schedule", None)
+    if not publish_date:
+        raise ValueError("小红书 scheduled 缺少可用的发布时间列表")
+
     if schedule is None:
         index = 0
     else:
+        if len(publish_date) < schedule["file_count"]:
+            raise ValueError(
+                "小红书 scheduled 发布时间数量少于素材数量，拒绝复用末项日期"
+            )
         index = schedule["call_count"] // schedule["account_count"]
         schedule["call_count"] += 1
-    if not publish_date:
-        selected = 0
-    else:
-        selected = publish_date[min(index, len(publish_date) - 1)]
+    if index >= len(publish_date):
+        raise ValueError("小红书 scheduled 发布时间索引超出素材范围")
+    selected = publish_date[index]
 
     if "publish_date" in kwargs:
         updated_kwargs = dict(kwargs)

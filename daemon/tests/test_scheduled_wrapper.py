@@ -14,6 +14,58 @@ from posthub.composition import compose_posthub_backend
 
 
 @pytest.mark.parametrize(
+    ("wrapper_name", "class_name", "extra"),
+    [
+        ("_inject_declaration_to_xhs", "XiaoHongShuVideo", {}),
+        ("_inject_declaration_to_tencent", "TencentVideo", {"is_draft": True}),
+        ("_inject_declaration_to_douyin", "DouYinVideo", {}),
+        ("_inject_effective_to_ks", "KSVideo", {}),
+    ],
+)
+def test_immediate_wrappers_explicitly_pass_immediate_strategy(
+    monkeypatch, wrapper_name: str, class_name: str, extra: dict[str, Any]
+) -> None:
+    """立即路径也必须显式传 immediate，不得被日期适配误标 scheduled。"""
+    uploader_wrapper.install()
+    original_class = getattr(uploader_wrapper, f"_Original{class_name}")
+    calls: list[dict[str, Any]] = []
+
+    def fake_init(self, *args: Any, **kwargs: Any) -> None:
+        calls.append(
+            {
+                "publish_date": args[3],
+                "publish_strategy": kwargs.get("publish_strategy"),
+            }
+        )
+        self.publish_date = args[3]
+        self.publish_strategy = kwargs.get("publish_strategy")
+
+    async def fake_main(self) -> None:
+        return None
+
+    monkeypatch.setattr(original_class, "__init__", fake_init)
+    monkeypatch.setattr(original_class, "main", fake_main, raising=False)
+    monkeypatch.setattr(original_class, "douyin_upload_video", fake_main, raising=False)
+
+    uploader_wrapper.set_pending_effective_items([])
+    uploader_wrapper.set_pending_declarations([])
+    getattr(uploader_wrapper, wrapper_name)(
+        "标题",
+        ["video.mp4"],
+        ["tag"],
+        ["account.json"],
+        category=7,
+        enableTimer=False,
+        videos_per_day=1,
+        daily_times=[10],
+        start_days=2,
+        **extra,
+    )
+
+    assert calls == [{"publish_date": 0, "publish_strategy": "immediate"}]
+
+
+@pytest.mark.parametrize(
     ("platform", "class_name", "wrapper_name", "extra"),
     [
         (1, "XiaoHongShuVideo", "_inject_declaration_to_xhs", {}),
@@ -141,7 +193,7 @@ def test_xhs_scheduled_wrapper_preserves_duplicate_file_indices(monkeypatch) -> 
     dates: list[Any] = []
 
     def fake_init(self, *args: Any, **kwargs: Any) -> None:
-        dates.append(args[3])
+        dates.append((args[3], args[4]))
         self.publish_date = args[3]
         self.publish_strategy = kwargs.get("publish_strategy")
 
@@ -155,7 +207,7 @@ def test_xhs_scheduled_wrapper_preserves_duplicate_file_indices(monkeypatch) -> 
         "标题",
         ["same.mp4", "same.mp4"],
         [],
-        ["account.json"],
+        ["first.json", "second.json"],
         category=7,
         enableTimer=True,
         videos_per_day=2,
@@ -163,7 +215,29 @@ def test_xhs_scheduled_wrapper_preserves_duplicate_file_indices(monkeypatch) -> 
         start_days=1,
     )
 
-    assert [value.hour for value in dates] == [8, 10]
+    assert [(value.hour, account.name) for value, account in dates] == [
+        (8, "first.json"),
+        (8, "second.json"),
+        (10, "first.json"),
+        (10, "second.json"),
+    ]
+
+
+def test_xhs_scheduled_wrapper_rejects_short_date_list() -> None:
+    """日期数量不足时不得静默复用最后一项日期。"""
+    with (
+        uploader_wrapper._xhs_file_context(
+            ["first.mp4", "second.mp4"], ["account.json"]
+        ),
+        pytest.raises(ValueError, match="少于素材"),
+    ):
+        uploader_wrapper._XiaoHongShuVideoWithStrategy(
+            "标题",
+            "first.mp4",
+            [],
+            [datetime(2030, 1, 1, 10, tzinfo=UTC)],
+            "account.json",
+        )
 
 
 def test_schedule_adapter_passes_start_days_as_named_argument(monkeypatch) -> None:
@@ -201,6 +275,41 @@ def test_schedule_adapter_passes_start_days_as_named_argument(monkeypatch) -> No
         "timestamps": False,
         "start_days": 2,
     }
+
+
+def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
+    captured: list[tuple[bool, int]] = []
+
+    def fake_generate(
+        total_videos: int,
+        *,
+        videos_per_day: int,
+        daily_times: list[int],
+        timestamps: bool,
+        start_days: int,
+    ) -> list[datetime]:
+        captured.append((timestamps, start_days))
+        return []
+
+    monkeypatch.setattr(
+        uploader_wrapper, "_ORIGINAL_GENERATE_SCHEDULE_TIME", fake_generate
+    )
+    uploader_wrapper._generate_schedule_with_start_days(
+        1, 1, [10], timestamps=False, start_days=2
+    )
+    uploader_wrapper._generate_schedule_with_start_days(
+        1, 1, [10], timestamps=True, start_days=2
+    )
+
+    assert captured == [(False, 2), (True, 2)]
+
+
+def test_schedule_adapter_rejects_non_boolean_timestamp_slot() -> None:
+    """HH:MM 等误落 timestamps 位置时不得静默当成 startDays。"""
+    with pytest.raises(TypeError, match="timestamps"):
+        uploader_wrapper._generate_schedule_with_start_days(
+            1, 1, [10], timestamps="10:30"
+        )
 
 
 def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items(
