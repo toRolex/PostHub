@@ -502,3 +502,11 @@
 - Tauri：首次 cargo test 因本地打包占位目录 `src-tauri/resources/{daemon,bin,browser}` 缺失而失败；补建未跟踪空目录后 `cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`，目录未进入 Git。
 - 验证偏差：无业务偏离；Tauri 仅补本地空资源目录以满足现有构建脚本，不改变提交内容。
 
+### Issue #86 Merger 执行记录（2026-08-27）
+
+- 按要求执行 `git merge afk/issue-86 --no-edit`，业务文件自动合并；唯一冲突为 `docs/implementation-notes.md`。已逐侧读取并保留 develop 的 stale #85 判断/本轮计划与 #86 的完整目标、实现、验证记录，生成 merge commit `118c331`；未使用 `-X`，未回退 #85/#87 已合入能力。
+- daemon：`cd daemon && uv run pytest -q` → `155 passed in 4.18s`。
+- web：`pnpm test -- --run` → `20 files / 206 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.09s`）；仅有既有 jsdom navigation stderr。
+- Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- #86 业务内容与验证均通过；下一步清理无独特业务改动的 stale #85，并合入 #88。
+
