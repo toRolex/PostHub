@@ -183,3 +183,13 @@
 - 本轮实际审查基线为 implementer 提交 `38fd430`；未 reset/rebase/amend，官方 `daemon/sau_backend.py` 与 `uploader/*` 未修改。
 - Runtime verify：临时组合 Flask HTTP 服务接收混合平台 `/postVideoBatch` 返回 200；fake 官方 seam 实际收到抖音双账号两次独立调用，封面/商品参数完整；XHS 不支持声明返回 JSON 400；单发数组畸形 body 返回 JSON 400，均未产生对应 fake 调用。
 - 修补后最终验证：`cd daemon && uv run pytest -q` → `71 passed in 1.70s`；相关 Python `ruff check` 与 `ruff format --check` → 全部通过；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`，`pnpm run build` 通过；`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+
+### Issue #82 Merger 执行记录（2026-08-27）
+
+- 合并前先将 develop worktree 中既有 #81 R0 复核 notes 单独提交为 `f5ed591 chore: 记录 #81 复核`；随后按唯一允许命令执行 `git merge afk/issue-82 --no-edit`。
+- 合并唯一冲突为 `docs/implementation-notes.md`；已逐侧读取并保留 #81 R0/准备记录与 #82 全部实现、审查、偏离和验证记录，生成 merge commit `9ed2dd8`；未使用 `-X ours/theirs`，未修改业务代码。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `71 passed in 2.23s`。
+- 合并后 web：`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.59s`）；测试仅输出既有 jsdom navigation stderr。
+- 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+- 本轮未修改 `daemon/sau_backend.py`、官方 `uploader/*`、`web/` 或 `src-tauri/` 业务代码；未 push、未建 PR。
+- 收尾：`wt remove afk/issue-82 -D --foreground` 已清理 issue 82 worktree 与本地分支；`gh issue close 82 --comment '实现已合并到 develop，完成 normalization / adapter 与 fail-closed 验收。'` 后 `gh issue view 82 --json state` 返回 `CLOSED`。
