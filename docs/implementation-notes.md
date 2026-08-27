@@ -376,3 +376,12 @@
 - Runtime verify：临时数据库启动真实组合 Flask socket，HTTP 发送四平台 `/postVideo` 与 `/postVideoBatch`，8/8 返回 200；fake uploader 实际记录全部 `publish_strategy=scheduled`、`2026-08-29 10:30:00`，抖音封面/商品链接/商品标题与视频号 `category=7/is_draft=True` 均在正确参数位置；无 `TypeError`/`ValueError`/500。
 - 顾问复核发现前端仍在 `official.ts` 将 HH:MM 截为整点，属于分钟丢失的 P1；按 TDD 先移植/补齐 #83 已确认的前端 HH:MM 回归测试，`cd web && pnpm test -- --run` 为 `11 failed, 164 passed`，失败集中于时间规范化、store 迁移、batch 校验与 API 请求格式。
 - Green：补齐前端时间值对象、单视频/批量 API 与 store 的 HH:MM 双读单写，旧整数仅读取时转为 `HH:MM`；矩阵提交不再 floor 分钟。`cd web && pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → tsc 与 Vite 均通过。daemon 复验 → `101 passed`。
+
+### Issue #87 Merger 执行记录（2026-08-27）
+
+- `git merge afk/issue-87 --no-edit` 发生两个冲突：`daemon/posthub/publish_adapter.py` 的 HH:MM 文档注释与 `docs/implementation-notes.md` 的并行记录；已逐侧读取，保留 #83 的单写 HH:MM 语义、#87 的分钟兼容实现/测试及双方历史，未使用 `-X`，未改无关业务。
+- 合并提交：`2d25baf`（`Merge branch 'afk/issue-87' into develop`）；包含修复提交 `3540e90`、边界校验 `a280b50`、测试提交 `dda9a96` 的新增内容，旧实现合并 `2484e15` 已作为祖先保留。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `140 passed in 2.21s`。
+- 合并后 web：`cd web && pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.03s`）；仅有既有 jsdom navigation stderr。
+- 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`。
+- #87 Reviewer concern 保留：`PublishView` 尚无逐字 HH:MM 输入能力；不影响本轮合并，但需后续处理。
