@@ -454,3 +454,21 @@
 - #85 合并后 web：`cd web && pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.13s`）；仅有既有 jsdom navigation stderr。
 - #85 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
 - 下一步：提交本轮中文 summarizing commit，随后验证并关闭 #84/#85/#87，清理三个 issue worktree；不关闭父 issue #80。
+
+## AFK Merger：#86/#88/#90（2026-08-27）
+
+### 准备与 stale #85 判断
+
+- 目标 worktree `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop` 当前为 `develop` 且干净；根仓库 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub` 的未提交改动不触碰。
+- 已核对分支 tip：`afk/issue-86=830b828`、`afk/issue-88=e1542c4`、`afk/issue-90=e9b9cff`、stale `afk/issue-85=1b574ea`。
+- `git diff develop...afk/issue-85` 仅涉及 `daemon/posthub/uploader_wrapper.py`、`daemon/tests/test_scheduled_wrapper.py` 与本笔记；其业务差异是 HH:MM 转小数小时、分钟保真及边界测试，已被 #88 的 `021e4ac` 分钟级快照/兼容实现及后续提交覆盖；无独特且未丢失的业务改动。因此不合入 stale #85，待记录后用 `wt remove afk/issue-85 -D --foreground` 清理。
+- 为满足 merge 前工作树保护，先提交本节准备记录；随后严格按 `86→88→90` 执行 `git merge <branch> --no-edit`，冲突逐侧读取解决，不使用 `-X`。
+
+### Deviations
+
+- 暂无。
+
+### 执行计划
+
+- 每个实际 merge 后立即运行 daemon `cd daemon && uv run pytest -q`、web `pnpm test -- --run` 与 `pnpm run build`、Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets`；按实际结果追加记录。
+- 全部合入且验证完成后，提交一条中文 summarizing commit；仅关闭 #86/#88/#90，父 #80 保持 OPEN；清理 #85/#86/#88/#90 worktrees，最终核验 issue、`wt list` 与 develop 工作树。
