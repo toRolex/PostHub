@@ -75,6 +75,29 @@ def _ensure_publish_strategy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> N
     )
 
 
+def _legacy_daily_times(daily_times: Any) -> Any:
+    """在旧官方整点 generator 边界转换 HH:MM，拒绝静默丢失分钟。"""
+    if daily_times is None:
+        return None
+    converted: list[Any] = []
+    for value in daily_times:
+        if isinstance(value, int) and not isinstance(value, bool):
+            converted.append(value)
+            continue
+        if not isinstance(value, str):
+            raise TypeError("daily_times 必须是整数小时或 HH:MM 字符串")
+        parts = value.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            raise ValueError(f"daily_times 时刻格式非法：{value!r}")
+        hour, minute = (int(part) for part in parts)
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError(f"daily_times 时刻范围非法：{value!r}")
+        if minute != 0:
+            raise ValueError(f"旧官方 scheduled seam 只支持整点，拒绝 {value!r}")
+        converted.append(hour)
+    return converted
+
+
 def _generate_schedule_with_start_days(
     total_videos: int,
     videos_per_day: int = 1,
@@ -99,7 +122,7 @@ def _generate_schedule_with_start_days(
     return _ORIGINAL_GENERATE_SCHEDULE_TIME(
         total_videos,
         videos_per_day=videos_per_day,
-        daily_times=daily_times,
+        daily_times=_legacy_daily_times(daily_times),
         timestamps=bool(timestamps),
         start_days=start_days,
     )
@@ -407,7 +430,7 @@ def _invoke_douyin_command(command: dict[str, Any]) -> None:
         category=command.get("category"),
         enableTimer=command.get("enableTimer", False),
         videos_per_day=command.get("videosPerDay", 1),
-        daily_times=command.get("dailyTimes"),
+        daily_times=_legacy_daily_times(command.get("dailyTimes")),
         start_days=command.get("startDays", 0),
         thumbnail_path=command.get("thumbnail", ""),
         productLink=command.get("productLink", ""),
@@ -425,7 +448,7 @@ def _invoke_tencent_command(command: dict[str, Any]) -> None:
         category=command.get("category"),
         enableTimer=command.get("enableTimer", False),
         videos_per_day=command.get("videosPerDay", 1),
-        daily_times=command.get("dailyTimes"),
+        daily_times=_legacy_daily_times(command.get("dailyTimes")),
         start_days=command.get("startDays", 0),
         is_draft=command.get("isDraft", False),
     )
@@ -442,7 +465,7 @@ def _invoke_xhs_command(command: dict[str, Any]) -> None:
             category=command.get("category"),
             enableTimer=command.get("enableTimer", False),
             videos_per_day=command.get("videosPerDay", 1),
-            daily_times=command.get("dailyTimes"),
+            daily_times=_legacy_daily_times(command.get("dailyTimes")),
             start_days=command.get("startDays", 0),
         )
 
@@ -457,7 +480,7 @@ def _invoke_ks_command(command: dict[str, Any]) -> None:
         category=command.get("category"),
         enableTimer=command.get("enableTimer", False),
         videos_per_day=command.get("videosPerDay", 1),
-        daily_times=command.get("dailyTimes"),
+        daily_times=_legacy_daily_times(command.get("dailyTimes")),
         start_days=command.get("startDays", 0),
     )
 
@@ -505,7 +528,7 @@ def _inject_declaration_to_douyin(
             category=category,
             enableTimer=enableTimer,
             videos_per_day=videos_per_day,
-            daily_times=daily_times,
+            daily_times=_legacy_daily_times(daily_times),
             start_days=start_days,
             thumbnail_path=thumbnail_path,
             productLink=productLink,
@@ -540,7 +563,7 @@ def _inject_declaration_to_tencent(
             category=category,
             enableTimer=enableTimer,
             videos_per_day=videos_per_day,
-            daily_times=daily_times,
+            daily_times=_legacy_daily_times(daily_times),
             start_days=start_days,
             is_draft=is_draft,
         )
@@ -572,7 +595,7 @@ def _inject_declaration_to_xhs(
             category=category,
             enableTimer=enableTimer,
             videos_per_day=videos_per_day,
-            daily_times=daily_times,
+            daily_times=_legacy_daily_times(daily_times),
             start_days=start_days,
         )
 
@@ -601,7 +624,7 @@ def _inject_effective_to_ks(
         category=category,
         enableTimer=enableTimer,
         videos_per_day=videos_per_day,
-        daily_times=daily_times,
+        daily_times=_legacy_daily_times(daily_times),
         start_days=start_days,
     )
 

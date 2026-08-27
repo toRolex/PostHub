@@ -3,6 +3,7 @@ import { officialApi, buildPostVideoRequest } from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
+import { useRunStore } from "./runs";
 import { withMutation } from "./_withMutation";
 import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
@@ -113,8 +114,8 @@ export interface PublishFormValues {
 
 interface PublishState extends PublishFormValues {
   submitting: boolean;
-  /** 各平台提交结果（成功 / 官方错误消息）。key = 平台。 */
-  results: Partial<Record<Platform, { ok: boolean; msg: string }>>;
+  /** 各平台受理结果（ok 表示请求已受理，不表示 item 已发布成功）。key = 平台。 */
+  results: Partial<Record<Platform, { ok: boolean; msg: string; runId?: string }>>;
   setForm: (patch: PublishPatch) => void;
   setPlatforms: (platforms: Platform[], accounts: Account[]) => void;
   /** 定时设置页：整体写入默认定时配置并持久化到 localStorage。 */
@@ -260,25 +261,33 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
           // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
           const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
           try {
-            await officialApi.postVideo(
-              base,
-              buildPostVideoRequest({
-                platform: p,
-                files: s.selectedFile ? [s.selectedFile] : [],
-                accounts: [cookieFile],
-                title: s.title,
-                caption: s.caption,
-                tags,
-                platformFields: trimmed,
-                timer: {
-                  enableTimer: s.timerEnabled,
-                  videosPerDay: s.videosPerDay,
-                  dailyTimes: s.dailyTimes,
-                  startDays: s.startDays,
-                },
-              }),
-            );
-            results[p] = { ok: true, msg: "发布任务已提交" };
+            const payload = buildPostVideoRequest({
+              platform: p,
+              files: s.selectedFile ? [s.selectedFile] : [],
+              accounts: [cookieFile],
+              title: s.title,
+              caption: s.caption,
+              tags,
+              platformFields: trimmed,
+              timer: {
+                enableTimer: s.timerEnabled,
+                videosPerDay: s.videosPerDay,
+                dailyTimes: s.dailyTimes,
+                startDays: s.startDays,
+              },
+            });
+            if (!s.timerEnabled) {
+              const accepted = await officialApi.acceptRun(base, payload);
+              useRunStore.getState().rememberAcceptedRun(accepted);
+              results[p] = {
+                ok: true,
+                msg: "已受理，后台执行中",
+                runId: accepted.runId,
+              };
+            } else {
+              await officialApi.postVideo(base, payload);
+              results[p] = { ok: true, msg: "发布任务已提交" };
+            }
           } catch (e) {
             results[p] = {
               ok: false,

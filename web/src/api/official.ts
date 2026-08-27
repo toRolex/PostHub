@@ -222,6 +222,30 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export type RunStatus = "pending" | "running" | "completed";
+export type RunItemStatus = "pending" | "running" | "success" | "failed";
+
+export interface AcceptedRun {
+  runId: string;
+  status: "pending" | "running";
+  itemCount: number;
+}
+
+export interface RunItemSnapshot {
+  itemId: string;
+  status: RunItemStatus;
+  error: string | null;
+}
+
+export interface RunSnapshot {
+  runId: string;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  items: RunItemSnapshot[];
+}
+
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
   // 先读文本再解析，避免 `res.json()` 直接抛在非 JSON 响应（如 500 错误页）上，
   // 也避免 `.catch(() => ({}))` 静默吞掉 HTTP 状态——统一走 `body.msg ?? HTTP {status}`。
@@ -368,6 +392,18 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  /** PostHub-owned immediate accepted run：200 仅表示已受理，不表示 item 成功。 */
+  acceptRun: (base: string, payload: PostVideoRequest) =>
+    request<AcceptedRun>(base, "/postRuns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  /** 查询 run/item 的持久化生命周期快照。 */
+  getRun: (base: string, runId: string) =>
+    request<RunSnapshot>(base, `/postRuns/${encodeURIComponent(runId)}`),
+  /** 刷新后读取最近一次受理的 run；空库返回 null。 */
+  getLatestRun: (base: string) => request<RunSnapshot | null>(base, "/postRuns/latest"),
   /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
   postVideoBatch: (base: string, payload: PostVideoRequest[]) =>
     request<null>(base, "/postVideoBatch", {
