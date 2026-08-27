@@ -348,3 +348,11 @@
 - 复验：`cd daemon && uv run pytest -q` → `94 passed in 1.64s`；相关 3 个 Python 文件 `ruff check` → `All checks passed!`，`ruff format --check` → `3 files already formatted`。
 - HH:MM 结论：当前 #87 官方整数小时契约不会把 HH:MM 误当 `startDays`；误落 `timestamps` 槽位的非 boolean/int 已显式拒绝。当前前端/daemon 仍由 #83 负责 HH:MM 双读单写与平台精度适配，本轮不复制官方时间生成。
 - Runtime verify：在临时数据库、fake uploader 和 `127.0.0.1` Werkzeug socket 上实际发送四平台 `/postVideo` 与 `/postVideoBatch`，8/8 返回 200；服务端记录四个平台均为 `publish_strategy=scheduled`、`2026-08-30T10:00:00`，抖音三尾参完整、视频号 `category=7/is_draft=True`。数组 body、浮点 `startDays`、HH:MM（当前整数小时契约）分别返回 400，未进入 fake 发布。
+
+### AFK 恢复收口（2026-08-27）
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop` 的 `develop` 分支操作；开始时工作树干净，未触碰主仓库的用户改动。
+- 已确认 `f782083`（#84 合并提交）是当前 develop 的祖先，HEAD 为其后验证提交 `7c71072`；#84 不重做实现或复审，仅恢复关闭。
+- 已确认 #87 分支含实现提交 `7abe1bc` 与复核提交 `e620dac`；下一步按指定命令合并、完成全量验证、再清理与关闭。
+- 已执行 `git merge afk/issue-87 --no-edit`，唯一冲突为本文件；逐侧保留 develop 的 #83/#84 历史和 #87 的完整记录，生成 merge commit `2484e15`，未使用 `-X`，业务文件自动合并。
+- 合并后 daemon 全量 `uv run pytest -q` 失败：9 项 `test_scheduled_wrapper.py` 失败。#83 normalization 已将 `dailyTimes: [10]` 单写为 `['10:00']`，而 #87 的现有整点 scheduled generator 仍对字符串做整数运算，HTTP 单发/批量四平台返回 500（`unsupported operand type(s) for -: 'str' and 'int'`）。这是跨 #83/#87 的业务契约不兼容，不作实现、复审或修补；按用户要求立即停止，未运行后续 build、未清理 worktree/分支、未提交 recovery notes、未关闭 #84/#87。
