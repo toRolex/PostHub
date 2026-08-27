@@ -156,11 +156,13 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(useBatchPublishStore.getState().dailyTimes).toEqual(["14:00"]);
   });
 
-  it("addDailyTime：重复加同一时刻去重", () => {
+  it("addDailyTime：重复去重、按 HH:MM 排序、非法值不写入", () => {
     const { addDailyTime } = useBatchPublishStore.getState();
-    addDailyTime("10:00");
-    addDailyTime("10:00");
-    expect(useBatchPublishStore.getState().dailyTimes).toEqual(["10:00"]);
+    addDailyTime("14:30");
+    addDailyTime("09:05");
+    addDailyTime("14:30");
+    addDailyTime("24:00");
+    expect(useBatchPublishStore.getState().dailyTimes).toEqual(["09:05", "14:30"]);
   });
 
   it("validate：items 为空 -> '请至少添加一条视频' 错误", () => {
@@ -359,7 +361,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect("videosPerDay" in body[0]).toBe(false);
     expect(body[1].enableTimer).toBe(true);
     expect(body[1].videosPerDay).toBe(1);
-    expect(body[1].dailyTimes).toEqual([10]);
+    expect(body[1].dailyTimes).toEqual(["10:00"]);
     expect(body[1].startDays).toBe(0);
   });
 

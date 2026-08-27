@@ -277,6 +277,18 @@ def test_schedule_adapter_passes_start_days_as_named_argument(monkeypatch) -> No
     }
 
 
+def test_schedule_adapter_supports_hhmm_minutes_without_rounding() -> None:
+    result = uploader_wrapper._generate_schedule_with_start_days(
+        1, 1, ["10:30"], timestamps=False, start_days=0
+    )
+
+    assert len(result) == 1
+    assert result[0].hour == 10
+    assert result[0].minute == 30
+    assert result[0].second == 0
+    assert result[0].microsecond == 0
+
+
 def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
     captured: list[tuple[bool, int]] = []
 
@@ -392,7 +404,7 @@ def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items
         "category": 7,
         "enableTimer": True,
         "videos_per_day": 1,
-        "daily_times": [10],
+        "daily_times": ["10:00"],
         "start_days": 2,
         "thumbnail_path": "cover.jpg",
         "productLink": "https://shop.test/item",
@@ -474,7 +486,7 @@ def test_single_and_batch_effective_commands_match_for_all_platforms(
     assert calls[0]["args"] == ()
     assert calls[0]["kwargs"]["enableTimer"] is True
     assert calls[0]["kwargs"]["videos_per_day"] == 1
-    assert calls[0]["kwargs"]["daily_times"] == [10]
+    assert calls[0]["kwargs"]["daily_times"] == ["10:00"]
     assert calls[0]["kwargs"]["start_days"] == 2
     assert calls[0]["kwargs"]["category"] == 7
     if platform == 2:
@@ -494,8 +506,14 @@ def test_single_and_batch_effective_commands_match_for_all_platforms(
         (4, "KSVideo", "ks.json"),
     ],
 )
+@pytest.mark.parametrize("daily_times", ([10], ["10:30"]))
 def test_timer_http_single_and_batch_use_fake_uploader_contract(
-    monkeypatch, tmp_path, platform: int, class_name: str, account_file: str
+    monkeypatch,
+    tmp_path,
+    platform: int,
+    class_name: str,
+    account_file: str,
+    daily_times: list[int] | list[str],
 ) -> None:
     """现有 timer HTTP seam 对四平台单发/batch 保持同一 scheduled contract。"""
     app = Flask(__name__)
@@ -551,7 +569,7 @@ def test_timer_http_single_and_batch_use_fake_uploader_contract(
         "category": 7,
         "enableTimer": True,
         "videosPerDay": 1,
-        "dailyTimes": [10],
+        "dailyTimes": daily_times,
         "startDays": 1,
         "thumbnail": "cover.jpg",
         "productLink": "https://shop.test/item",
@@ -570,6 +588,8 @@ def test_timer_http_single_and_batch_use_fake_uploader_contract(
     ]
     assert all(isinstance(call["publish_date"], datetime) for call in calls)
     assert all(call["publish_date"].hour == 10 for call in calls)
+    expected_minute = 30 if isinstance(daily_times[0], str) else 0
+    assert all(call["publish_date"].minute == expected_minute for call in calls)
     if platform == 3:
         assert all(
             call["args"][5:8] == ("cover.jpg", "https://shop.test/item", "商品标题")

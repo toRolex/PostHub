@@ -8,6 +8,7 @@ import {
 import {
   buildBatchItemsFromMatrix,
   officialApi,
+  parseHHMMToHour,
 } from "../api/official";
 
 /** 构造一个 body 为 SSE 流的 mock Response（jsdom 支持 ReadableStream）。 */
@@ -376,6 +377,12 @@ describe("officialApi.postVideoBatch（mock fetch）", () => {
 });
 
 describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）", () => {
+  it("旧整点官方降级：最近整点且 30 分钟向后，午夜返回 0 点", () => {
+    expect(parseHHMMToHour("14:29")).toBe(14);
+    expect(parseHHMMToHour("14:30")).toBe(15);
+    expect(parseHHMMToHour("23:30")).toBe(0);
+  });
+
   it("每视频×每账号展开一个 postVideo 项：单视频多平台多账号", () => {
     const body = buildBatchItemsFromMatrix(
       [
@@ -435,14 +442,14 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     expect("videosPerDay" in immediate).toBe(false);
     expect("dailyTimes" in immediate).toBe(false);
     expect("startDays" in immediate).toBe(false);
-    // timer 完整三字段
+    // timer 完整三字段，分钟不得被降级丢失
     expect(timer.enableTimer).toBe(true);
     expect(timer.videosPerDay).toBe(1);
-    expect(timer.dailyTimes).toEqual([10]);
+    expect(timer.dailyTimes).toEqual(["10:00"]);
     expect(timer.startDays).toBe(1);
   });
 
-  it("HH:MM 整点取整：'10:00' -> 10；'14:30' -> 14（按 Math.floor(hour)）", () => {
+  it("HH:MM 映射保留分钟：'10:00' 与 '14:30' 原样下发", () => {
     const body = buildBatchItemsFromMatrix(
       [
         {
@@ -458,10 +465,10 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
       ],
       ["14:30"],
     );
-    expect(body[0].dailyTimes).toEqual([14]);
+    expect(body[0].dailyTimes).toEqual(["14:30"]);
   });
 
-  it("非整点（如 09:01）按整点取整为 9", () => {
+  it("非整点（如 09:01）仍保留分钟", () => {
     const body = buildBatchItemsFromMatrix(
       [
         {
@@ -477,7 +484,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
       ],
       ["09:01"],
     );
-    expect(body[0].dailyTimes).toEqual([9]);
+    expect(body[0].dailyTimes).toEqual(["09:01"]);
   });
 
   it("越界（HH:MM 解析后 >= 24）-> 抛错，不静默丢弃", () => {

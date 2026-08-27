@@ -30,6 +30,7 @@ import { OFFICIAL_PLATFORM_TYPE } from "./types";
 import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
 import { buildBatchItemRefs, type BatchItem } from "../domain/batch";
+import { nearestWholeHour, normalizeDailyTimes, normalizeHHMM } from "../domain/time";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -448,9 +449,8 @@ export const officialApi = {
  * - `type`       平台整型：1 小红书 2 视频号 3 抖音 4 快手。
  * - `tags`       字符串数组（上线器逐项加 # 前缀）。
  * - `enableTimer` 为 false 时立即发布；true 才用到 videosPerDay/dailyTimes/startDays。
- *   @see daemon/.venv/.../utils/files_times.py `generate_schedule_time_next_day`：
- *   dailyTimes 为「整点小时」数组（0-23），videosPerDay 每日条数（<=0 或 > len(dailyTimes) 时官方抛错），
- *   startDays 为起始天数（0 = 明天起）。
+ *   dailyTimes 在 PostHub seam 上统一为 HH:MM 字符串数组，分钟必须保真；
+ *   videosPerDay 每日条数（<=0 或 > len(dailyTimes) 时官方抛错），startDays 为起始天数（0 = 明天起）。
  * - `category=0` 官方会置为 None；typing 上沿用官方默认 LIFESTYLE。
  */
 export interface PostVideoRequest {
@@ -462,7 +462,7 @@ export interface PostVideoRequest {
   category?: number;
   enableTimer?: boolean;
   videosPerDay?: number;
-  dailyTimes?: number[];
+  dailyTimes?: string[];
   startDays?: number;
   thumbnail?: string;
   isDraft?: boolean;
@@ -491,7 +491,7 @@ export function buildPostVideoRequest(input: {
   timer?: {
     enableTimer: boolean;
     videosPerDay: number;
-    dailyTimes: number[];
+    dailyTimes: string[];
     startDays: number;
   };
 }): PostVideoRequest {
@@ -509,7 +509,7 @@ export function buildPostVideoRequest(input: {
   if (input.timer?.enableTimer) {
     body.enableTimer = true;
     body.videosPerDay = input.timer.videosPerDay;
-    body.dailyTimes = input.timer.dailyTimes;
+    body.dailyTimes = normalizeDailyTimes(input.timer.dailyTimes);
     body.startDays = input.timer.startDays;
   }
   // 平台声明：仅当调用方显式传入时透传。后端 `_merge_platform_fields` 会按
@@ -531,21 +531,11 @@ export function mergeTitleWithCaption(title: string, caption?: string): string {
 /* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
 
 /**
- * 把 "HH:MM" 字符串解析为官方整型小时（0-23）。非整点按 Math.floor 取整；
- * 越界（>= 24 或负数 / 非数字）抛错。不静默丢弃（验收硬要求）。
- *
- * 例：parseHHMMToHour("10:00") -> 10；"14:30" -> 14；"24:00" -> 抛错。
+ * 兼容旧官方整点 seam 的降级适配：HH:MM 取最近整点，30 分钟向后；
+ * 新的 PostHub payload 不经过此函数，直接保留 HH:MM。
  */
 export function parseHHMMToHour(hm: string): number {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
-  if (!m) throw new Error(`dailyTimes 格式非法：${hm}（应为 HH:MM）`);
-  const hour = Number(m[1]);
-  if (!Number.isInteger(hour) || hour < 0 || hour >= 24) {
-    throw new Error(`dailyTimes 越界：${hm}（小时应在 0–23）`);
-  }
-  // 分钟字段语义保留（用于将来支持半点等）；当前版本按整点取整，丢弃 minute。
-  void m[2];
-  return Math.floor(hour);
+  return nearestWholeHour(hm).hour;
 }
 
 /**
@@ -560,11 +550,11 @@ export function parseHHMMToHour(hm: string): number {
  * - mode='immediate'：enableTimer: false；严格不带 timer 四字段
  *   （enableTimer/videosPerDay/dailyTimes/startDays 都不在请求体键集合里）。
  * - mode='timer'：enableTimer: true；videosPerDay 硬写 1（不暴露）；dailyTimes
- *   从 item.timeOfDay 解析（按整点取整回官方 0–23 整数）；startDays 透传。
+ *   从 item.timeOfDay 读取并保留分钟；startDays 透传。
  *
  * 校验：
- * - item.timeOfDay 必须命中 dailyTimes 池（防止 UI 与提交语义漂移）。
- * - dailyTimes 越界（HH:MM 解析后 hour >= 24）抛错。
+ * - item.timeOfDay 必须命中规范化后的 dailyTimes 池（防止 UI 与提交语义漂移）。
+ * - dailyTimes 中任一 HH:MM 非法时显式抛错。
  *
  * 命名约定：函数名 buildBatchItemsFromMatrix 沿用 issue #37 PRD 命名。
  */
@@ -572,7 +562,7 @@ export function buildBatchItemsFromMatrix(
   items: BatchItem[],
   dailyTimes: string[],
 ): PostVideoRequest[] {
-  const dailyTimesSet = new Set(dailyTimes);
+  const dailyTimesSet = new Set(normalizeDailyTimes(dailyTimes));
   // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
   return buildBatchItemRefs(items).map(({ item, platform, cookie }) =>
     buildOneMatrixItem(item, platform, cookie, dailyTimesSet),
@@ -614,17 +604,17 @@ function buildOneMatrixItem(
       `mode='timer' 必须提供 startDays 与 timeOfDay（item=${item.filePath}）`,
     );
   }
-  if (!dailyTimesSet.has(item.timeOfDay)) {
+  const timeOfDay = normalizeHHMM(item.timeOfDay);
+  if (!dailyTimesSet.has(timeOfDay)) {
     throw new Error(
       `item.timeOfDay="${item.timeOfDay}" 不在 dailyTimes 池中（${Array.from(dailyTimesSet).join(", ")}）`,
     );
   }
-  const hour = parseHHMMToHour(item.timeOfDay);
   return {
     ...base,
     enableTimer: true,
     videosPerDay: 1,
-    dailyTimes: [hour],
+    dailyTimes: [timeOfDay],
     startDays: item.startDays,
   };
 }

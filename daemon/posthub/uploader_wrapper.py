@@ -17,6 +17,7 @@ seam；本 issue 不复制小红书发布流程或另造执行引擎。
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import deque
 from collections.abc import Iterator
@@ -70,6 +71,30 @@ def _ensure_publish_strategy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> N
     )
 
 
+def _coerce_daily_times_for_official_generator(daily_times: Any) -> Any:
+    """把 HH:MM 适配为官方生成器可计算且不丢分钟的小时值。"""
+    if daily_times is None:
+        return None
+
+    converted: list[int | float] = []
+    for raw in daily_times:
+        if isinstance(raw, bool):
+            raise TypeError("daily_times 时刻必须是 HH:MM 字符串或旧小时整数")
+        if isinstance(raw, int):
+            converted.append(raw)
+            continue
+        if not isinstance(raw, str):
+            raise TypeError("daily_times 时刻必须是 HH:MM 字符串或旧小时整数")
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+        if match is None:
+            raise ValueError(f"daily_times 时刻格式非法：{raw!r}")
+        hour, minute = (int(part) for part in match.groups())
+        if hour > 23 or minute > 59:
+            raise ValueError(f"daily_times 时刻越界：{raw!r}")
+        converted.append(hour + minute / 60)
+    return converted
+
+
 def _generate_schedule_with_start_days(
     total_videos: int,
     videos_per_day: int = 1,
@@ -81,7 +106,8 @@ def _generate_schedule_with_start_days(
 
     官方四个 ``post_video_*`` 入口都以第四个位置参数调用该函数，实际语义
     却是 ``start_days``。PostHub 在运行时只替换这个函数引用，再以关键字调用
-    原始实现；不复制官方文件/账号遍历或浏览器发布循环。
+    原始实现；HH:MM 先转为带分钟的小数小时，避免上游整数减法报错或静默丢分钟。
+    不复制官方文件/账号遍历或浏览器发布循环。
     """
     if not isinstance(timestamps, bool):
         if not isinstance(timestamps, int):
@@ -94,7 +120,7 @@ def _generate_schedule_with_start_days(
     return _ORIGINAL_GENERATE_SCHEDULE_TIME(
         total_videos,
         videos_per_day=videos_per_day,
-        daily_times=daily_times,
+        daily_times=_coerce_daily_times_for_official_generator(daily_times),
         timestamps=bool(timestamps),
         start_days=start_days,
     )

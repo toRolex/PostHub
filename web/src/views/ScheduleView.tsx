@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Clock3, RotateCcw } from "lucide-react";
 import { usePublishStore } from "../stores/publish";
+import { normalizeDailyTimes } from "../domain/time";
 import { useToastStore } from "../stores/toast";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -10,20 +11,18 @@ import { Switch } from "../components/ui/switch";
 const DEFAULT_TIMER = {
   timerEnabled: false,
   videosPerDay: 1,
-  dailyTimes: [10, 14, 20],
+  dailyTimes: ["10:00", "14:00", "20:00"],
   startDays: 0,
 };
 
-/** 时刻输入（整数小时）→ number[]：逗号/空格分隔，丢弃非 0-23 与重复项。 */
-function parseDailyTimes(raw: string): number[] {
-  return Array.from(
-    new Set(
-      raw
-        .split(/[\s,，]+/)
-        .map(Number)
-        .filter((h) => Number.isInteger(h) && h >= 0 && h <= 23),
-    ),
-  ).sort((a, b) => a - b);
+/** 时刻输入（HH:MM）→ string[]：逗号/空格分隔，非法项不写入。 */
+function parseDailyTimes(raw: string): string[] {
+  const values = raw.split(/[\s,，]+/).filter(Boolean);
+  try {
+    return normalizeDailyTimes(values);
+  } catch {
+    return [];
+  }
 }
 
 export function ScheduleView() {
@@ -106,7 +105,7 @@ export function ScheduleView() {
             <Input
               id="schedule-timer-times"
               value={timesText}
-              placeholder="整点小时，空格分隔，如 10 14 20"
+              placeholder="HH:MM，空格分隔，如 10:00 14:30 20:05"
               onChange={(e) => setTimesText(e.target.value)}
             />
             <span className="text-caption text-meta">

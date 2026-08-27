@@ -53,6 +53,34 @@ ACCOUNT_FIXTURES = [
 
 
 @pytest.mark.parametrize(
+    ("daily_times", "expected"),
+    [
+        ([10, 14], ["10:00", "14:00"]),
+        (["14:30", "09:05", "14:30"], ["09:05", "14:30"]),
+    ],
+)
+def test_schedule_daily_times_is_double_read_single_write(
+    daily_times: list[int] | list[str], expected: list[str]
+) -> None:
+    payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "定时",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": daily_times,
+        "startDays": 2,
+    }
+
+    result = normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
+
+    assert result.submitted[0]["dailyTimes"] == daily_times
+    assert result.effective[0].effective["dailyTimes"] == expected
+
+
+@pytest.mark.parametrize(
     ("payload", "expected_type", "expected_fields"),
     [
         (

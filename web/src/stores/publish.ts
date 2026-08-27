@@ -6,6 +6,7 @@ import { useAccountsStore } from "./accounts";
 import { withMutation } from "./_withMutation";
 import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
+import { normalizeDailyTimes } from "../domain/time";
 
 const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   douyin: null,
@@ -15,40 +16,44 @@ const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
 };
 
 /** localStorage 键：发布默认定时配置（「定时设置」页可编辑）。 */
-const TIMER_PREF_KEY = "posthub.timerPref";
+export const TIMER_PREF_KEY = "posthub.timerPref";
 
 export interface TimerPref {
   timerEnabled: boolean;
   videosPerDay: number;
-  dailyTimes: number[];
+  dailyTimes: string[];
   startDays: number;
 }
 
 const DEFAULT_TIMER_PREF: TimerPref = {
   timerEnabled: false,
   videosPerDay: 1,
-  dailyTimes: [10, 14, 20],
+  dailyTimes: ["10:00", "14:00", "20:00"],
   startDays: 0,
 };
 
-/** 读取持久化的默认定时配置；缺失/损坏时回退默认。 */
-function loadTimerPref(): TimerPref {
+/** 读取持久化的默认定时配置；旧 number[] 在读取时迁移为 HH:MM string[]。 */
+export function loadTimerPref(): TimerPref {
   try {
     const raw = localStorage.getItem(TIMER_PREF_KEY);
     if (!raw) return DEFAULT_TIMER_PREF;
     const parsed = JSON.parse(raw) as Partial<TimerPref>;
-    return {
-      timerEnabled: Boolean(parsed.timerEnabled) ?? DEFAULT_TIMER_PREF.timerEnabled,
+    const pref: TimerPref = {
+      timerEnabled:
+        typeof parsed.timerEnabled === "boolean"
+          ? parsed.timerEnabled
+          : DEFAULT_TIMER_PREF.timerEnabled,
       videosPerDay:
         typeof parsed.videosPerDay === "number"
           ? parsed.videosPerDay
           : DEFAULT_TIMER_PREF.videosPerDay,
-      dailyTimes: Array.isArray(parsed.dailyTimes)
-        ? parsed.dailyTimes
-        : DEFAULT_TIMER_PREF.dailyTimes,
+      dailyTimes: normalizeDailyTimes(parsed.dailyTimes),
       startDays:
         typeof parsed.startDays === "number" ? parsed.startDays : DEFAULT_TIMER_PREF.startDays,
     };
+    // 双读单写：旧格式或非规范 string[] 读入后立即落成唯一新格式。
+    saveTimerPref(pref);
+    return pref;
   } catch {
     return DEFAULT_TIMER_PREF;
   }
@@ -98,8 +103,8 @@ export interface PublishFormValues {
   timerEnabled: boolean;
   /** 定时：每日条数（videosPerDay，官方要求 1..len(dailyTimes)）。 */
   videosPerDay: number;
-  /** 定时：每日时刻（dailyTimes，整点小时数组 0-23，官方取 dailyTimes[daily_video_index]）。 */
-  dailyTimes: number[];
+  /** 定时：每日时刻（dailyTimes，HH:MM 字符串数组，分钟保真）。 */
+  dailyTimes: string[];
   /** 定时：起始天（startDays，0 = 明天起）。 */
   startDays: number;
   /** 内容声明按平台分键（issue #43）。空字段视为不覆盖账号默认。 */
@@ -149,7 +154,7 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
       saveTimerPref({
         timerEnabled: s.timerEnabled,
         videosPerDay: s.videosPerDay,
-        dailyTimes: s.dailyTimes,
+        dailyTimes: normalizeDailyTimes(s.dailyTimes),
         startDays: s.startDays,
       });
     }
@@ -157,13 +162,17 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
 
   /** 定时设置页：整体写入默认定时配置并持久化。 */
   setTimerPref: (pref) => {
+    const normalized: TimerPref = {
+      ...pref,
+      dailyTimes: normalizeDailyTimes(pref.dailyTimes),
+    };
     set({
-      timerEnabled: pref.timerEnabled,
-      videosPerDay: pref.videosPerDay,
-      dailyTimes: pref.dailyTimes,
-      startDays: pref.startDays,
+      timerEnabled: normalized.timerEnabled,
+      videosPerDay: normalized.videosPerDay,
+      dailyTimes: normalized.dailyTimes,
+      startDays: normalized.startDays,
     });
-    saveTimerPref(pref);
+    saveTimerPref(normalized);
   },
 
   setPlatforms: (platforms, accounts) => {
@@ -198,23 +207,23 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
     }
     const fieldError = validatePlatformFields(s.platformFields);
     if (fieldError) errors.push(fieldError);
-    // 定时：仅启用时校验，规则与官方 generate_schedule_time_next_day 对齐。
+    // 定时：仅启用时校验；时间值使用本地日内 HH:MM，不带时区。
     if (s.timerEnabled) {
       if (!Number.isInteger(s.videosPerDay) || s.videosPerDay <= 0) {
         errors.push("每日条数需为正整数");
       }
+      let timeCount = 0;
       if (!Array.isArray(s.dailyTimes) || s.dailyTimes.length === 0) {
         errors.push("每日时刻不能为空");
-      } else if (
-        s.dailyTimes.some((h) => !Number.isInteger(h) || h < 0 || h > 23)
-      ) {
-        errors.push("每日时刻须为整点小时（0-23）");
-      } else if (
-        s.videosPerDay > 0 &&
-        s.dailyTimes.length > 0 &&
-        s.videosPerDay > s.dailyTimes.length
-      ) {
-        errors.push(`每日条数不能超过时刻数量（${s.dailyTimes.length}）`);
+      } else {
+        try {
+          timeCount = normalizeDailyTimes(s.dailyTimes).length;
+        } catch {
+          errors.push("每日时刻须为 HH:MM（小时 0-23，分钟 0-59）");
+        }
+      }
+      if (s.videosPerDay > 0 && timeCount > 0 && s.videosPerDay > timeCount) {
+        errors.push(`每日条数不能超过时刻数量（${timeCount}）`);
       }
       if (!Number.isInteger(s.startDays) || s.startDays < 0) {
         errors.push("起始天需为非负整数");

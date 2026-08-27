@@ -265,7 +265,7 @@ export function BatchPublishSection() {
         <div className="mb-2 flex items-center gap-2">
           <span className="text-label font-medium text-fg-2">每日时刻（整批共用）</span>
           <span className="text-caption text-meta">
-            顶部 chip = 定时模式可选时刻池（HH:MM；提交时按整点取整映射回 0–23）
+            顶部 chip = 定时模式可选时刻池（HH:MM；提交时分钟保持）
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
