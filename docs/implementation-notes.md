@@ -356,3 +356,11 @@
 - 已确认 #87 分支含实现提交 `7abe1bc` 与复核提交 `e620dac`；下一步按指定命令合并、完成全量验证、再清理与关闭。
 - 已执行 `git merge afk/issue-87 --no-edit`，唯一冲突为本文件；逐侧保留 develop 的 #83/#84 历史和 #87 的完整记录，生成 merge commit `2484e15`，未使用 `-X`，业务文件自动合并。
 - 合并后 daemon 全量 `uv run pytest -q` 失败：9 项 `test_scheduled_wrapper.py` 失败。#83 normalization 已将 `dailyTimes: [10]` 单写为 `['10:00']`，而 #87 的现有整点 scheduled generator 仍对字符串做整数运算，HTTP 单发/批量四平台返回 500（`unsupported operand type(s) for -: 'str' and 'int'`）。这是跨 #83/#87 的业务契约不兼容，不作实现、复审或修补；按用户要求立即停止，未运行后续 build、未清理 worktree/分支、未提交 recovery notes、未关闭 #84/#87。
+
+### AFK Merger 本轮恢复执行（2026-08-27）
+
+- 路径复核：目标 worktree 确认为 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop`，分支 `develop`，工作树干净；根仓库 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub` 的用户改动保持不动。
+- #84 仅做拓扑核验：`d070a9f` 已是 `develop` 祖先，合并提交为既有 `f782083`，不重复 merge；本轮成功后清理并关闭 #84。
+- #87 按用户指定改用修复后 tip `dda9a96`，包含 `3540e90`、`a280b50` 与边界测试；旧实现合并提交 `2484e15` 已在 develop，本轮必须合并新增提交。
+- #85 tip `98273b7`，包含 accepted run 生命周期/恢复竞态修复 `efb80b7` 与 worker 回收、状态轮询边界测试；本轮必须合并。
+- 执行顺序：先提交本准备记录以满足 Git merge 工作树保护，再逐分支拓扑 merge；每个实际 merge 后立即执行 daemon、web、build、Tauri 全量测试。只做最小冲突解决，不改无关业务；不 push、PR、squash、`-X`，不关闭父 issue #80。
