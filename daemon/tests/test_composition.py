@@ -80,15 +80,15 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     pending_fields: list[dict] = []
     pending_tencent_fields: list[dict] = []
 
-    def fake_xhs(*args):
-        xhs_calls.append(args)
+    def fake_xhs(*args, **kwargs):
+        xhs_calls.append((args, kwargs))
 
-    def fake_tencent(*args):
-        tencent_calls.append(args)
+    def fake_tencent(*args, **kwargs):
+        tencent_calls.append((args, kwargs))
         pending_tencent_fields.append(uploader_wrapper._active_fields(2).copy())
 
-    def fake_douyin(*args):
-        douyin_calls.append(args)
+    def fake_douyin(*args, **kwargs):
+        douyin_calls.append((args, kwargs))
         pending_fields.append(uploader_wrapper._active_fields(3).copy())
 
     monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_XHS", fake_xhs)
@@ -219,11 +219,10 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     assert len(tencent_calls) == 1
     assert len(douyin_calls) == 3
     assert pending_tencent_fields == [{"declaration": "无需标注"}]
-    assert douyin_calls[0][-3:] == (
-        "",
-        "https://example.test/product",
-        "商品",
-    )
+    assert douyin_calls[0][0] == ()
+    assert douyin_calls[0][1]["thumbnail_path"] == ""
+    assert douyin_calls[0][1]["productLink"] == "https://example.test/product"
+    assert douyin_calls[0][1]["productTitle"] == "商品"
     assert douyin_calls[1] == douyin_calls[2]
     assert pending_fields == [
         {"declaration": "无需添加自主声明"},

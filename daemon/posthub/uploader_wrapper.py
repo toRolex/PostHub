@@ -26,20 +26,128 @@ from typing import Any
 import myUtils.postVideo as _post_video_mod
 from flask import has_request_context, request
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
+from uploader.ks_uploader.main import KSVideo as _OriginalKSVideo
 from uploader.tencent_uploader.main import TencentVideo as _OriginalTencentVideo
+from uploader.xiaohongshu_uploader.main import (
+    XiaoHongShuVideo as _OriginalXiaoHongShuVideo,
+)
 
 from posthub.declarations import resolve_platform_fields, select_for_platform
 from posthub.publish_adapter import EffectiveBatchItem, PublishExecutionAdapter
 
 # 在安装 wrapper 前保存官方函数。保存到模块级而不是从被替换的模块属性回调，
-# 可避免小红书 wrapper 自递归，也让三家 wrapper 都委托官方执行循环。
+# 可避免小红书 wrapper 自递归，也让四个平台 wrapper 都委托官方执行循环。
 _ORIGINAL_POST_VIDEO_DOUYIN = _post_video_mod.post_video_DouYin
 _ORIGINAL_POST_VIDEO_TENCENT = _post_video_mod.post_video_tencent
 _ORIGINAL_POST_VIDEO_XHS = _post_video_mod.post_video_xhs
 _ORIGINAL_POST_VIDEO_KS = _post_video_mod.post_video_ks
+_ORIGINAL_GENERATE_SCHEDULE_TIME = _post_video_mod.generate_schedule_time_next_day
+
+_SCHEDULED = "scheduled"
+_IMMEDIATE = "immediate"
 
 _local = threading.local()
 _MISSING = object()
+
+
+def _publish_strategy_for_date(publish_date: Any) -> str:
+    """把官方生成的发布日期显式映射为上传器策略。"""
+    return _SCHEDULED if publish_date is not None and publish_date != 0 else _IMMEDIATE
+
+
+def _publish_date_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """读取官方上传类构造器的发布日期，避免依赖参数位置以外的尾参。"""
+    if "publish_date" in kwargs:
+        return kwargs["publish_date"]
+    return args[3] if len(args) > 3 else 0
+
+
+def _ensure_publish_strategy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """为官方上传类补齐显式策略，不改写调用方已明确给出的策略。"""
+    kwargs.setdefault(
+        "publish_strategy",
+        _publish_strategy_for_date(_publish_date_from_call(args, kwargs)),
+    )
+
+
+def _generate_schedule_with_start_days(
+    total_videos: int,
+    videos_per_day: int = 1,
+    daily_times: Any = None,
+    timestamps: bool | int = False,
+    start_days: int = 0,
+) -> Any:
+    """适配官方旧入口，把误落在 timestamps 位置的 startDays 重新命名传递。
+
+    官方四个 ``post_video_*`` 入口都以第四个位置参数调用该函数，实际语义
+    却是 ``start_days``。PostHub 在运行时只替换这个函数引用，再以关键字调用
+    原始实现；不复制官方文件/账号遍历或浏览器发布循环。
+    """
+    if not isinstance(timestamps, bool):
+        start_days = timestamps
+        timestamps = False
+    return _ORIGINAL_GENERATE_SCHEDULE_TIME(
+        total_videos,
+        videos_per_day=videos_per_day,
+        daily_times=daily_times,
+        timestamps=bool(timestamps),
+        start_days=start_days,
+    )
+
+
+@contextmanager
+def _xhs_file_context(
+    files: list[str] | tuple[str, ...], account_files: list[str] | tuple[str, ...]
+) -> Iterator[None]:
+    """让 XHS class wrapper 按官方文件外层循环选择单项日期。"""
+    previous = getattr(_local, "xhs_schedule", _MISSING)
+    _local.xhs_schedule = {
+        "file_count": len(files),
+        "account_count": max(len(account_files), 1),
+        "call_count": 0,
+    }
+    try:
+        yield
+    finally:
+        if previous is _MISSING:
+            try:
+                del _local.xhs_schedule
+            except AttributeError:
+                pass
+        else:
+            _local.xhs_schedule = previous
+
+
+def _select_xhs_publish_date(
+    args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """修正官方 XHS 将完整日期列表传给每个文件的旧调用。"""
+    publish_date = _publish_date_from_call(args, kwargs)
+    if not isinstance(publish_date, (list, tuple)):
+        return args, kwargs
+
+    schedule = getattr(_local, "xhs_schedule", None)
+    if schedule is None:
+        index = 0
+    else:
+        index = schedule["call_count"] // schedule["account_count"]
+        schedule["call_count"] += 1
+    if not publish_date:
+        selected = 0
+    else:
+        selected = publish_date[min(index, len(publish_date) - 1)]
+
+    if "publish_date" in kwargs:
+        updated_kwargs = dict(kwargs)
+        updated_kwargs["publish_date"] = selected
+        return args, updated_kwargs
+    if len(args) > 3:
+        updated_args = list(args)
+        updated_args[3] = selected
+        return tuple(updated_args), kwargs
+    updated_kwargs = dict(kwargs)
+    updated_kwargs["publish_date"] = selected
+    return args, updated_kwargs
 
 
 def _queue() -> deque:
@@ -181,9 +289,19 @@ class _DouYinVideoWithDeclaration(_OriginalDouYinVideo):
     """只扩展构造参数注入，发布生命周期仍由官方类实现。"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        _ensure_publish_strategy(args, kwargs)
         declaration = _active_fields(3).get("declaration")
         if declaration is not None and "declaration" not in kwargs:
             kwargs["declaration"] = declaration
+        super().__init__(*args, **kwargs)
+
+
+class _XiaoHongShuVideoWithStrategy(_OriginalXiaoHongShuVideo):
+    """小红书 scheduled 薄 wrapper；发布循环仍由官方入口执行。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        args, kwargs = _select_xhs_publish_date(args, kwargs)
+        _ensure_publish_strategy(args, kwargs)
         super().__init__(*args, **kwargs)
 
 
@@ -207,6 +325,7 @@ class _TencentVideoWithDeclaration(_OriginalTencentVideo):
     """保留官方上传生命周期，仅在官方声明步骤后接入 PostHub DOM seam。"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        _ensure_publish_strategy(args, kwargs)
         super().__init__(*args, **kwargs)
         self.posthub_declaration = _active_fields(2).get("declaration")
 
@@ -214,6 +333,14 @@ class _TencentVideoWithDeclaration(_OriginalTencentVideo):
         await super().apply_original_statement(page)
         if self.posthub_declaration:
             await _apply_tencent_content_declaration(page, self.posthub_declaration)
+
+
+class _KSVideoWithStrategy(_OriginalKSVideo):
+    """快手 scheduled 薄 wrapper；发布循环仍由官方入口执行。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        _ensure_publish_strategy(args, kwargs)
+        super().__init__(*args, **kwargs)
 
 
 def _normalize_douyin_tail(
@@ -231,64 +358,65 @@ def _normalize_douyin_tail(
 def _invoke_douyin_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方抖音函数；不复制官方发布循环。"""
     _ORIGINAL_POST_VIDEO_DOUYIN(
-        command["title"],
-        command["fileList"],
-        command["tags"],
-        command["accountList"],
-        command.get("category"),
-        command.get("enableTimer", False),
-        command.get("videosPerDay", 1),
-        command.get("dailyTimes"),
-        command.get("startDays", 0),
-        command.get("thumbnail", ""),
-        command.get("productLink", ""),
-        command.get("productTitle", ""),
+        title=command["title"],
+        files=command["fileList"],
+        tags=command["tags"],
+        account_file=command["accountList"],
+        category=command.get("category"),
+        enableTimer=command.get("enableTimer", False),
+        videos_per_day=command.get("videosPerDay", 1),
+        daily_times=command.get("dailyTimes"),
+        start_days=command.get("startDays", 0),
+        thumbnail_path=command.get("thumbnail", ""),
+        productLink=command.get("productLink", ""),
+        productTitle=command.get("productTitle", ""),
     )
 
 
 def _invoke_tencent_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方视频号函数。"""
     _ORIGINAL_POST_VIDEO_TENCENT(
-        command["title"],
-        command["fileList"],
-        command["tags"],
-        command["accountList"],
-        command.get("category"),
-        command.get("enableTimer", False),
-        command.get("videosPerDay", 1),
-        command.get("dailyTimes"),
-        command.get("startDays", 0),
-        command.get("isDraft", False),
+        title=command["title"],
+        files=command["fileList"],
+        tags=command["tags"],
+        account_file=command["accountList"],
+        category=command.get("category"),
+        enableTimer=command.get("enableTimer", False),
+        videos_per_day=command.get("videosPerDay", 1),
+        daily_times=command.get("dailyTimes"),
+        start_days=command.get("startDays", 0),
+        is_draft=command.get("isDraft", False),
     )
 
 
 def _invoke_xhs_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方小红书函数。"""
-    _ORIGINAL_POST_VIDEO_XHS(
-        command["title"],
-        command["fileList"],
-        command["tags"],
-        command["accountList"],
-        command.get("category"),
-        command.get("enableTimer", False),
-        command.get("videosPerDay", 1),
-        command.get("dailyTimes"),
-        command.get("startDays", 0),
-    )
+    with _xhs_file_context(command["fileList"], command["accountList"]):
+        _ORIGINAL_POST_VIDEO_XHS(
+            title=command["title"],
+            files=command["fileList"],
+            tags=command["tags"],
+            account_file=command["accountList"],
+            category=command.get("category"),
+            enableTimer=command.get("enableTimer", False),
+            videos_per_day=command.get("videosPerDay", 1),
+            daily_times=command.get("dailyTimes"),
+            start_days=command.get("startDays", 0),
+        )
 
 
 def _invoke_ks_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方快手函数。"""
     _ORIGINAL_POST_VIDEO_KS(
-        command["title"],
-        command["fileList"],
-        command["tags"],
-        command["accountList"],
-        command.get("category"),
-        command.get("enableTimer", False),
-        command.get("videosPerDay", 1),
-        command.get("dailyTimes"),
-        command.get("startDays", 0),
+        title=command["title"],
+        files=command["fileList"],
+        tags=command["tags"],
+        account_file=command["accountList"],
+        category=command.get("category"),
+        enableTimer=command.get("enableTimer", False),
+        videos_per_day=command.get("videosPerDay", 1),
+        daily_times=command.get("dailyTimes"),
+        start_days=command.get("startDays", 0),
     )
 
 
@@ -328,18 +456,18 @@ def _inject_declaration_to_douyin(
     )
     with _declaration_context(_pop_for(3)):
         return _ORIGINAL_POST_VIDEO_DOUYIN(
-            title,
-            files,
-            tags,
-            account_file,
-            category,
-            enableTimer,
-            videos_per_day,
-            daily_times,
-            start_days,
-            thumbnail_path,
-            productLink,
-            productTitle,
+            title=title,
+            files=files,
+            tags=tags,
+            account_file=account_file,
+            category=category,
+            enableTimer=enableTimer,
+            videos_per_day=videos_per_day,
+            daily_times=daily_times,
+            start_days=start_days,
+            thumbnail_path=thumbnail_path,
+            productLink=productLink,
+            productTitle=productTitle,
         )
 
 
@@ -363,16 +491,16 @@ def _inject_declaration_to_tencent(
 
     with _declaration_context(_pop_for(2)):
         return _ORIGINAL_POST_VIDEO_TENCENT(
-            title,
-            files,
-            tags,
-            account_file,
-            category,
-            enableTimer,
-            videos_per_day,
-            daily_times,
-            start_days,
-            is_draft,
+            title=title,
+            files=files,
+            tags=tags,
+            account_file=account_file,
+            category=category,
+            enableTimer=enableTimer,
+            videos_per_day=videos_per_day,
+            daily_times=daily_times,
+            start_days=start_days,
+            is_draft=is_draft,
         )
 
 
@@ -393,17 +521,17 @@ def _inject_declaration_to_xhs(
         _execute_effective_group(effective_group, _invoke_xhs_command)
         return None
 
-    with _declaration_context(_pop_for(1)):
+    with _xhs_file_context(files, account_file), _declaration_context(_pop_for(1)):
         return _ORIGINAL_POST_VIDEO_XHS(
-            title,
-            files,
-            tags,
-            account_file,
-            category,
-            enableTimer,
-            videos_per_day,
-            daily_times,
-            start_days,
+            title=title,
+            files=files,
+            tags=tags,
+            account_file=account_file,
+            category=category,
+            enableTimer=enableTimer,
+            videos_per_day=videos_per_day,
+            daily_times=daily_times,
+            start_days=start_days,
         )
 
 
@@ -424,15 +552,15 @@ def _inject_effective_to_ks(
         _execute_effective_group(effective_group, _invoke_ks_command)
         return None
     return _ORIGINAL_POST_VIDEO_KS(
-        title,
-        files,
-        tags,
-        account_file,
-        category,
-        enableTimer,
-        videos_per_day,
-        daily_times,
-        start_days,
+        title=title,
+        files=files,
+        tags=tags,
+        account_file=account_file,
+        category=category,
+        enableTimer=enableTimer,
+        videos_per_day=videos_per_day,
+        daily_times=daily_times,
+        start_days=start_days,
     )
 
 
@@ -449,8 +577,11 @@ def install() -> None:
     _post_video_mod.post_video_tencent = _inject_declaration_to_tencent
     _post_video_mod.post_video_xhs = _inject_declaration_to_xhs
     _post_video_mod.post_video_ks = _inject_effective_to_ks
+    _post_video_mod.generate_schedule_time_next_day = _generate_schedule_with_start_days
     _post_video_mod.DouYinVideo = _DouYinVideoWithDeclaration
     _post_video_mod.TencentVideo = _TencentVideoWithDeclaration
+    _post_video_mod.XiaoHongShuVideo = _XiaoHongShuVideoWithStrategy
+    _post_video_mod.KSVideo = _KSVideoWithStrategy
 
     # sau_backend 使用 from-import，需同步替换其局部函数引用；只改运行时引用，
     # 不改官方副本文件。

@@ -193,3 +193,37 @@
 - 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
 - 本轮未修改 `daemon/sau_backend.py`、官方 `uploader/*`、`web/` 或 `src-tauri/` 业务代码；未 push、未建 PR。
 - 收尾：`wt remove afk/issue-82 -D --foreground` 已清理 issue 82 worktree 与本地分支；`gh issue close 82 --comment '实现已合并到 develop，完成 normalization / adapter 与 fail-closed 验收。'` 后 `gh issue view 82 --json state` 返回 `CLOSED`。
+
+## Issue #87：修复整点 scheduled 发布链路
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-87` 的 `afk/issue-87` 分支工作；不修改官方 `sau_backend.py` 或 `uploader/*`，不 push、建 PR、merge、关闭 issue。
+- 先读取 `CONTEXT.md`、相关 ADR、#82 后的组合/adapter/wrapper 与现有 timer 测试，严格以预确认的 fake official uploader contract 建立红测试。
+- 采用垂直 TDD 切片：四平台 scheduled 单视频/批量公共语义、`publish_strategy=scheduled`、`startDays` 关键字位置、抖音 batch 尾参数、XHS/快手 scheduled wrapper；再做最小重构并全量验证。
+- 接受上游窗口边界与真实账号限制为已知 concern；不新增未经证据确认的平台时间窗口规则。
+
+### Deviations
+
+- 调研复核发现 XHS 仅按 basename 查找日期会让重复素材共享第一项日期；偏离最初的文件名映射计划，改用官方已知的“文件外层、账号内层”调用计数选取 index，保守覆盖重复文件名且仍不复制上游循环。
+
+### 实现进展
+
+- 已确认 issue-87 worktree 分支为 `afk/issue-87` 且初始工作树干净；已有笔记按项目约定继续追加在本文件。
+- 已调用 TDD skill；已确认官方 `myUtils.postVideo` 四个入口都把 `start_days` 以第四个位置参数传给 `generate_schedule_time_next_day(..., timestamps=False, start_days=0)`，从而会把非零 `startDays` 错当成 `timestamps`；四个平台上传类均支持 `publish_strategy`，但四个官方入口未显式转发该策略，默认退回 immediate。
+- 已确认官方 batch 抖音入口少传 `thumbnail_path`，造成 `productLink/productTitle` 尾参数左移；#82 wrapper 的 effective 路径已覆盖部分情形，但需用单发/批量同一 fake contract 锁定所有字段。
+- 计划：新增四平台 fake uploader contract 测试，观察 wrapper 传给官方上传类的命名 `publish_strategy`、`start_days` 与平台专属参数；再以运行时类/时间生成适配最小修补，保留官方文件/账号遍历循环。
+- Red：新增 `daemon/tests/test_scheduled_wrapper.py`，覆盖四平台 scheduled 类构造、`start_days=2` 不得生成 timestamps、抖音封面/商品尾参及单发/batch effective 命令一致；首轮结果 `5 failed`（XHS/快手缺原始类别名，抖音/视频号策略未注入，且测试契约暴露待修复的 timer 路径）。
+- Green：在 `uploader_wrapper.py` 保存官方函数/生成器引用，运行时适配官方旧生成器为关键字 `start_days`，并给四个平台 uploader class 显式注入 `publish_strategy`（日期非 0 为 `scheduled`，立即路径为 `immediate`）；effective command 改为全关键字映射，抖音封面/商品尾参保持独立命名。
+- Green：小红书新增薄 class wrapper，并以请求级文件/账号循环上下文把官方错误传入的完整 `publish_datetimes` 列表选择为当前文件日期；相同文件名也按外层文件 index 处理；未复制官方文件/账号遍历循环。
+- Green：`publish_date=None` 保守映射为 immediate，避免无日期值被错误标记 scheduled。
+- Green 测试：scheduled 定向契约扩至 HTTP 单发/batch 四平台、XHS 多文件/重复文件名、generator 关键字 seam，共 `18 passed`（关键三文件共 `44 passed`）；daemon 全量 `87 passed`。
+
+### 验证
+
+- `cd daemon && uv run pytest -q` → `87 passed`。
+- 相关 Python `uv run --with ruff ruff check ...` 与 `ruff format --check ...` → 全部通过。
+- Runtime verify：通过临时数据库启动真实组合 Flask socket（Werkzeug，随机本机端口），HTTP 驱动四平台 `/postVideo` 与 `/postVideoBatch`；fake uploader class 实际观察到 `publish_strategy=scheduled`、`startDays=1` 生成 `datetime`，抖音收到完整封面/商品尾参，视频号 category/isDraft 保持正确；8/8 请求 200。
+- Runtime probe：同一 socket 对非法浮点 `startDays` 返回 JSON 400（明确指出 startDays），`/postVideoBatch` 非数组返回 JSON 400；均未进入 fake 发布。
+- Web：`cd web && pnpm test -- --run` → 16 files / 171 tests passed（仅既有 jsdom navigation stderr）；`pnpm run build` → tsc 与 Vite build 通过。
+- Tauri：补齐本地空 `src-tauri/resources/{daemon,bin,browser}` 目录后 `cargo test --all-targets` → lib 17 passed、bin 0 tests；空目录未进入 Git。
