@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -99,6 +100,50 @@ def test_accept_immediate_item_returns_run_id_and_accepted_only(
         }
     assert "runs" not in tables
     assert "run_items" not in tables
+
+
+def test_accept_immediate_batch_creates_one_run_with_all_effective_items(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    payload = [immediate_payload(), {**immediate_payload(), "title": "第二个 item"}]
+
+    with app.test_client() as client:
+        response = client.post("/postRuns", json=payload)
+        assert response.status_code == 200
+        accepted = response.get_json()["data"]
+        assert accepted["itemCount"] == 2
+        run_id = accepted["runId"]
+        completed = wait_for_status(client, run_id, "completed")
+
+    assert len(completed["items"]) == 2
+    assert completed["summary"] == {
+        "itemCount": 2,
+        "pendingCount": 0,
+        "runningCount": 0,
+        "successCount": 0,
+        "failedCount": 2,
+        "completedCount": 2,
+    }
+
+    run_db = _official_db.parent / "posthub-runs.db"
+    with sqlite3.connect(run_db) as conn:
+        persisted = conn.execute(
+            """
+            SELECT ordinal, submitted_json, effective_json
+            FROM run_items WHERE run_id = ? ORDER BY ordinal
+            """,
+            (run_id,),
+        ).fetchall()
+    assert [row[0] for row in persisted] == [0, 1]
+    assert [json.loads(row[1])["title"] for row in persisted] == [
+        "立即 item",
+        "第二个 item",
+    ]
+    assert [json.loads(row[2])["accountList"] for row in persisted] == [
+        ["douyin.json"],
+        ["douyin.json"],
+    ]
 
 
 def test_query_observes_item_lifecycle_and_fail_closed_completed_run(

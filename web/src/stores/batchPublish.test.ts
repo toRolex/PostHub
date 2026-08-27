@@ -5,6 +5,7 @@ import {
   useBatchPublishStore,
 } from "./batchPublish";
 import { useDaemonStore } from "./daemon";
+import { useRunStore, initialRunState } from "./runs";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
@@ -14,6 +15,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
   beforeEach(() => {
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
     useBatchPublishStore.setState(initialBatchPublishState);
+    useRunStore.setState(initialRunState);
   });
 
   afterEach(() => {
@@ -35,6 +37,21 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     const s = useBatchPublishStore.getState();
     expect(s.items).toHaveLength(1);
     expect(s.items[0].filePath).toBe("a.mp4");
+  });
+
+  it("addItem：相同 filePath 幂等，不重复加入", () => {
+    const { addItem } = useBatchPublishStore.getState();
+    const item = {
+      filePath: "a.mp4",
+      title: "A",
+      caption: "",
+      tags: "",
+      accountCookiesByPlatform: {},
+      mode: "immediate" as const,
+    };
+    addItem(item);
+    addItem({ ...item, title: "重复 A" });
+    expect(useBatchPublishStore.getState().items).toEqual([item]);
   });
 
   it("removeItem：按 filePath 移除；多条时仅移一条", () => {
@@ -218,7 +235,11 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
 
   it("submit 成功：每视频×每账号展开，请求体严格对应；itemResults 按 item 索引", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ code: 200, msg: null, data: null }),
+      jsonResponse({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-many", status: "pending", itemCount: 2 },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -234,17 +255,18 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
 
     await useBatchPublishStore.getState().submit();
 
-    // 一次 POST /postVideoBatch
+    // 多账号 immediate 只发一次 accepted /postRuns，payload 保留两个 effective 候选项
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:9999/postRuns");
     expect(init.method).toBe("POST");
     const body = JSON.parse(init.body as string);
-    // 一个 item × 2 账号 = 2 个 postVideo 项
     expect(body).toHaveLength(2);
     expect(body[0].fileList).toEqual(["a.mp4"]);
     expect(body[0].accountList).toEqual(["douyin_a.json"]);
     expect(body[1].accountList).toEqual(["douyin_b.json"]);
     expect(body[0].enableTimer).toBe(false);
+    expect(useRunStore.getState().runId).toBe("run-many");
 
     // itemResults 按 item 索引（不是按 Platform）
     const s = useBatchPublishStore.getState();
@@ -254,7 +276,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
       platform: "douyin",
       mode: "immediate",
       ok: true,
-      msg: "批量发布任务已提交",
+      msg: "已受理，后台执行中",
     });
     expect(s.itemResults![1].ok).toBe(true);
   });
@@ -263,7 +285,11 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     // 旧实现以 Platform 作 key，矩阵模式下 2 账号会被覆盖为 1 项（丢反馈）。
     // 新实现以 item index 作 key，每账号一项独立反馈。
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ code: 200, msg: null, data: null }),
+      jsonResponse({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-two", status: "pending", itemCount: 2 },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 

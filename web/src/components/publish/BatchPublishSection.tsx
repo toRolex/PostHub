@@ -96,6 +96,28 @@ export function summarizeDailyTimes(dailyTimes: string[]): string[] {
   return Array.from(new Set(dailyTimes)).sort();
 }
 
+/** 切换候选素材选择；返回新集合，避免把 Set 原地变更带入 React state。 */
+export function toggleBatchSelection(
+  selected: ReadonlySet<string>,
+  filePath: string,
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(filePath)) next.delete(filePath);
+  else next.add(filePath);
+  return next;
+}
+
+/** 对仍可加入的素材执行全选/取消全选；忽略已从候选列表消失的旧选择。 */
+export function selectAllBatchFiles(
+  availablePaths: readonly string[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  const available = new Set(availablePaths);
+  const current = new Set([...selected].filter((path) => available.has(path)));
+  if (current.size === available.size) return new Set();
+  return available;
+}
+
 /** 单条 BatchItem 的「内容声明」编辑块（issue #43）。仅在 item 已勾选至少一个非快手平台时渲染。 */
 function BatchItemDeclarationBlock({
   item,
@@ -194,7 +216,10 @@ export function BatchPublishSection() {
 
   // 当前勾选但未入 items 的素材 → 「加入批量」入口
   const itemsByPath = useMemo(() => new Set(items.map((i) => i.filePath)), [items]);
-  const availableToAdd = videos.filter((v) => !itemsByPath.has(v.file_path));
+  const availableToAdd = useMemo(
+    () => videos.filter((v) => !itemsByPath.has(v.file_path)),
+    [videos, itemsByPath],
+  );
 
   // 整批错误聚合 + 每 item 错误（对 domain 结构化错误按 filePath 分组重排版）
   const allErrors = useBatchPublishStore.getState().validate();
@@ -211,6 +236,18 @@ export function BatchPublishSection() {
 
   // 每行折叠/展开状态（key = filePath）
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const availablePaths = useMemo(
+    () => availableToAdd.map((file) => file.file_path),
+    [availableToAdd],
+  );
+  useEffect(() => {
+    setSelectedPaths((selected) =>
+      new Set([...selected].filter((path) => availablePaths.includes(path))),
+    );
+  }, [availablePaths]);
+  const allAvailableSelected =
+    availablePaths.length > 0 && selectedPaths.size === availablePaths.length;
   const expandedAll =
     items.length > 0 && items.every((i) => expandedMap[i.filePath]);
   const collapsedAll =
@@ -302,14 +339,52 @@ export function BatchPublishSection() {
       {/* 视频加入批量入口 */}
       {availableToAdd.length > 0 && (
         <div className="mb-4 rounded-lg border border-border-soft bg-bg px-4 py-3">
-          <p className="mb-2 text-label font-medium text-fg-2">添加视频到批量</p>
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-label font-medium text-fg-2">添加视频到批量</p>
+            <span className="text-caption text-meta">已选 {selectedPaths.size}</span>
+            <button
+              type="button"
+              className="ml-auto text-caption font-medium text-accent-ink hover:underline"
+              onClick={() => setSelectedPaths(selectAllBatchFiles(availablePaths, selectedPaths))}
+            >
+              {allAvailableSelected ? "取消全选" : `全选（共 ${availableToAdd.length} 个素材）`}
+            </button>
+          </div>
           <div className="flex max-h-40 flex-col gap-1 overflow-y-auto pr-1">
-            {availableToAdd.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                className="flex items-center gap-2 rounded-md border border-border-soft px-3 py-1.5 text-label transition-colors hover:bg-surface-warm"
-                onClick={() =>
+            {availableToAdd.map((f) => {
+              const selected = selectedPaths.has(f.file_path);
+              return (
+                <label
+                  key={f.id}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-label transition-colors hover:bg-surface-warm",
+                    selected ? "border-accent bg-accent-tint" : "border-border-soft",
+                  )}
+                >
+                  <Checkbox
+                    checked={selected}
+                    onChange={() =>
+                      setSelectedPaths((current) =>
+                        toggleBatchSelection(current, f.file_path),
+                      )
+                    }
+                    aria-label={`选择素材 ${f.filename}`}
+                  />
+                  <Plus className="size-3 text-meta" aria-hidden="true" />
+                  <span className="min-w-0 truncate font-medium text-fg">{f.filename}</span>
+                  <span className="ml-auto text-caption text-meta">{f.filesize} MB</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={selectedPaths.size === 0}
+              onClick={() => {
+                for (const f of availableToAdd) {
+                  if (!selectedPaths.has(f.file_path)) continue;
                   useBatchPublishStore.getState().addItem({
                     filePath: f.file_path,
                     title: f.filename ?? "",
@@ -317,14 +392,14 @@ export function BatchPublishSection() {
                     tags: "",
                     accountCookiesByPlatform: {},
                     mode: "immediate",
-                  })
+                  });
                 }
-              >
-                <Plus className="size-3 text-meta" />
-                <span className="min-w-0 truncate font-medium text-fg">{f.filename}</span>
-                <span className="ml-auto text-caption text-meta">{f.filesize} MB</span>
-              </button>
-            ))}
+                setSelectedPaths(new Set());
+              }}
+            >
+              <Plus className="size-4" />
+              加入所选（{selectedPaths.size}）
+            </Button>
           </div>
         </div>
       )}

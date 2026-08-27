@@ -454,3 +454,35 @@
 - #85 合并后 web：`cd web && pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.13s`）；仅有既有 jsdom navigation stderr。
 - #85 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
 - 下一步：提交本轮中文 summarizing commit，随后验证并关闭 #84/#85/#87，清理三个 issue worktree；不关闭父 issue #80。
+
+## Issue #86：支持多素材 immediate 提交与运行汇总
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-86` 的 `afk/issue-86` 分支工作，基线为当前 `develop`；不 reset/rebase/amend，不 push、PR、merge、关闭 issue。
+- 先以既有 FileView/BatchPublishSection、batch domain/store、`/postRuns` API/store、RunStore/worker 测试为事实来源，补齐素材多选交互、单次 accepted batch payload、后端真实 effective item 汇总与刷新恢复的失败测试。
+- 最小实现：候选素材多选只存在发布区段本地 state；accepted run 扩展为 object/array payload 并统一走已有 normalization；RunSnapshot 由后端返回总数与成功/失败/进行中汇总，顶部只渲染后端事实；不引入 scheduled/retry/409。
+
+### 调研结论
+
+- `BatchPublishSection` 当前候选素材逐项按钮加入，`availableToAdd` 已按 `filePath` 去重；`FileView` 是纯素材管理页，不与 batch store 共享加入动作。
+- `RunStore` 当前只返回 `items`，`/postRuns` 只接受 object，`accept_run` 使用单 item normalization；因此多素材 immediate 必须在已有 accepted-run route 上接受 object 或 array，并由 `normalize_publish_payloads` 展开账号粒度后一次 `create_run`。
+- `BatchPublishStore.submit` 当前总是调用官方 `/postVideoBatch`，需要对全 immediate 矩阵改为一次 `acceptRun`；timer 路径保留现有官方 batch 语义，避免混入后续 issue。
+- 原型 `docs/prototypes/posthub-app.html`、`docs/prototypes/posthub-app-variants.html` 及历史 `prototype/batch-multiselect-entry` 均指向复选框 + 全选条 + 计数 +「加入所选（N）」方案；加入后清空选择且不自动滚动/额外 toast。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已完成初始只读盘点并记录；下一步先新增 web/daemon 失败测试，确认多选、批量 accepted payload 与后端汇总缺口。
+- Red：先新增 accepted `/postRuns` 数组 payload、批量 immediate 一次 run、多素材选择 helper、后端 summary 的回归；现有实现下 web 批量测试暴露仍按旧 `/postVideoBatch` 断言，daemon 新批量测试在 summary 缺失前先确认路由需支持数组。
+- Green：`acceptRun` 支持单 object/非空数组；后端用统一 `normalize_publish_payloads` 展开实际 effective item 后持久化，并由 `run_items` 计算 `itemCount/pendingCount/runningCount/successCount/failedCount/completedCount`；批量 store 对全 immediate 一次调用 `/postRuns` 并记入既有 run store，timer/混合模式保留 `/postVideoBatch`。
+- Green：批量候选素材改为复选框、全选/取消全选、已选计数和「加入所选（N）」；加入按候选稳定顺序写入、自动清空选择，`addItem` 按 filePath 幂等防重复，不引入 toast/滚动。
+- Green：RunState 保存 accepted itemCount，查询快照保存后端 summary；AppShell 顶部进度显示 `完成 completedCount/itemCount`，不从浏览器 items 合成。
+- 定向验证：daemon `tests/test_runs.py` → `15 passed`；web 定向命令实际运行全量 → `20 files / 205 tests passed`。
+- 最终验证：`cd daemon && uv run pytest -q` → `155 passed`；`cd web && pnpm test -- --run` → `20 files / 206 tests passed`；`pnpm run build` → tsc 与 Vite build 通过；daemon changed files `ruff check` 与 `ruff format --check` 通过。
+- Runtime verify：以临时 `POSTHUB_BASE_DIR` 启动真实 daemon；`GET /getAccounts` 返回 `code=200`，合法两 item 数组 `POST /postRuns` 返回 `200`、`itemCount=2`、同一 `runId`，随后查询返回 `summary.itemCount=2`、`completedCount=2`、两个 `failed`；空数组和缺失账号分别返回 JSON 400，未误报成功。进程已停止，临时数据已清理。
+- Tauri：首次 cargo test 因本地打包占位目录 `src-tauri/resources/{daemon,bin,browser}` 缺失而失败；补建未跟踪空目录后 `cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`，目录未进入 Git。
+- 验证偏差：无业务偏离；Tauri 仅补本地空资源目录以满足现有构建脚本，不改变提交内容。

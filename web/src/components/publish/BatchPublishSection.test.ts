@@ -8,7 +8,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { summarizeItem, summarizeDailyTimes } from "./BatchPublishSection";
+import {
+  summarizeItem,
+  summarizeDailyTimes,
+  toggleBatchSelection,
+  selectAllBatchFiles,
+} from "./BatchPublishSection";
 import type { BatchItem } from "../../domain/batch";
 
 function mkItem(over: Partial<BatchItem>): BatchItem {
@@ -79,6 +84,24 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
     );
     expect(s.accountSummary).toBe("1 账号 / 1 平台");
     expect(s.timeOfDayLabel).toBe("10:00");
+  });
+});
+
+describe("BatchPublishSection · 多素材选择", () => {
+  it("切换素材选择并支持全选/取消全选", () => {
+    const selected = toggleBatchSelection(new Set<string>(), "a.mp4");
+    expect(selected).toEqual(new Set(["a.mp4"]));
+    expect(toggleBatchSelection(selected, "a.mp4")).toEqual(new Set());
+
+    const all = selectAllBatchFiles(["a.mp4", "b.mp4"], new Set());
+    expect(all).toEqual(new Set(["a.mp4", "b.mp4"]));
+    expect(selectAllBatchFiles(["a.mp4", "b.mp4"], all)).toEqual(new Set());
+  });
+
+  it("全选只作用于仍可加入的素材，已加入素材不重复", () => {
+    const available = ["a.mp4", "c.mp4"];
+    const selected = selectAllBatchFiles(available, new Set(["a.mp4", "b.mp4"]));
+    expect(selected).toEqual(new Set(["a.mp4", "c.mp4"]));
   });
 });
 

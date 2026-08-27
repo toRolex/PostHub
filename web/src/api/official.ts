@@ -231,6 +231,15 @@ export interface AcceptedRun {
   itemCount: number;
 }
 
+export interface RunSummary {
+  itemCount: number;
+  pendingCount: number;
+  runningCount: number;
+  successCount: number;
+  failedCount: number;
+  completedCount: number;
+}
+
 export interface RunItemSnapshot {
   itemId: string;
   status: RunItemStatus;
@@ -243,6 +252,8 @@ export interface RunSnapshot {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** 后端按持久化 run_items 聚合的事实汇总。 */
+  summary: RunSummary;
   items: RunItemSnapshot[];
 }
 
@@ -392,8 +403,8 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  /** PostHub-owned immediate accepted run：200 仅表示已受理，不表示 item 成功。 */
-  acceptRun: (base: string, payload: PostVideoRequest) =>
+  /** PostHub-owned immediate accepted run：一次可受理一个或多个 item；200 仅表示已受理。 */
+  acceptRun: (base: string, payload: PostVideoRequest | PostVideoRequest[]) =>
     request<AcceptedRun>(base, "/postRuns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
