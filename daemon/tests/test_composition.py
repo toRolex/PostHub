@@ -87,6 +87,28 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         assert client.get("/getFiles").status_code == 200
         assert client.get("/getAccountDefaults").status_code == 200
         assert client.post("/postVideo", json={}).status_code == 400
+        malformed_single = client.post("/postVideo", json=["not-an-item"])
+        assert malformed_single.status_code == 400
+        assert "item" in malformed_single.get_json()["msg"]
+        malformed_batch = client.post(
+            "/postVideoBatch",
+            json=[
+                {
+                    "fileList": ["a.mp4"],
+                    "accountList": ["a.json"],
+                    "type": 3,
+                    "title": "valid",
+                },
+                {
+                    "fileList": [],
+                    "accountList": ["a.json"],
+                    "type": 3,
+                    "title": "invalid",
+                },
+            ],
+        )
+        assert malformed_batch.status_code == 400
+        assert douyin_calls == []
 
         # 小红书走真实 wrapper 入口；若递归或签名错误，这里不会返回 200。
         xhs_response = client.post(

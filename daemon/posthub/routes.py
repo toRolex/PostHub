@@ -77,14 +77,19 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
         if request.endpoint not in {"postVideo", "postVideoBatch"}:
             return None
 
+        # 每个发布请求从空队列开始；即使请求体形状错误，也不能继承同线程
+        # 上一请求的 effective item。
+        set_pending_effective_items([])
+        set_pending_declarations([])
         payload = request.get_json(silent=True)
         if request.endpoint == "postVideoBatch":
             if not isinstance(payload, list):
+                # 保留官方 batch envelope 的既有错误契约；该请求不会进入发布函数。
                 return None
             items = payload
         else:
-            if not isinstance(payload, dict):
-                return None
+            # 单发 envelope 也交给统一 normalization，避免官方 data.get 对
+            # list/scalar 产生 500，并确保畸形输入在任何发布副作用前结束。
             items = [payload]
 
         try:

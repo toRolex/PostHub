@@ -6,7 +6,9 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+from flask import Flask
 
+from posthub import uploader_wrapper
 from posthub.publish_adapter import (
     AccountSnapshot,
     NormalizationError,
@@ -438,3 +440,55 @@ def test_normalization_ignores_unrelated_malformed_account_rows() -> None:
     assert [item.account_snapshot.file_path for item in result.effective] == [
         "target.json"
     ]
+
+
+def test_normalization_revalidates_account_snapshot_value_objects() -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "校验值对象",
+        "tags": [],
+    }
+    malformed_snapshot = AccountSnapshot(
+        account_id=True,
+        platform_type=3,
+        file_path="douyin.json",
+        user_name="账号",
+        status=1,
+        default_platform_fields={},
+    )
+
+    with pytest.raises(NormalizationError, match="账号快照缺少合法 id"):
+        normalize_publish_payloads([payload], [malformed_snapshot])
+
+
+def test_wrapper_fails_closed_without_effective_items_in_publish_request() -> None:
+    app = Flask(__name__)
+    app.testing = True
+    calls: list[tuple[Any, ...]] = []
+
+    def fake_official(*args: Any) -> None:
+        calls.append(args)
+
+    uploader_wrapper.set_pending_effective_items([])
+    original = uploader_wrapper._ORIGINAL_POST_VIDEO_DOUYIN
+    uploader_wrapper._ORIGINAL_POST_VIDEO_DOUYIN = fake_official
+    try:
+
+        def post_video() -> str:
+            uploader_wrapper._inject_declaration_to_douyin(
+                "标题", ["video.mp4"], [], ["douyin.json"]
+            )
+            return "ok"
+
+        app.add_url_rule(
+            "/postVideo", endpoint="postVideo", view_func=post_video, methods=["POST"]
+        )
+        with pytest.raises(RuntimeError, match="effective"):
+            app.test_client().post("/postVideo")
+    finally:
+        uploader_wrapper._ORIGINAL_POST_VIDEO_DOUYIN = original
+        uploader_wrapper.set_pending_effective_items([])
+
+    assert calls == []

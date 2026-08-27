@@ -165,32 +165,27 @@ def _normalize_account(
     raw: AccountSnapshot | Mapping[str, Any], index: int
 ) -> AccountSnapshot:
     if isinstance(raw, AccountSnapshot):
-        fields = _validate_platform_fields(
-            raw.default_platform_fields, index, "账号默认声明"
+        account_id = raw.account_id
+        platform_type = raw.platform_type
+        file_path = raw.file_path
+        user_name = raw.user_name
+        status = raw.status
+        default_fields: Any = raw.default_platform_fields
+    else:
+        account = _as_mapping(raw, index, "账号")
+        account_id = account.get("id")
+        platform_type = account.get("type", account.get("platform_type"))
+        file_path = account.get("filePath", account.get("file_path"))
+        user_name = account.get("userName", account.get("user_name", ""))
+        status = account.get("status")
+        default_fields = account.get(
+            "default_platform_fields", account.get("defaultPlatformFields")
         )
-        return AccountSnapshot(
-            account_id=raw.account_id,
-            platform_type=raw.platform_type,
-            file_path=raw.file_path,
-            user_name=raw.user_name,
-            status=raw.status,
-            default_platform_fields=fields,
-        )
-
-    account = _as_mapping(raw, index, "账号")
-    account_id = account.get("id")
-    platform_type = account.get("type", account.get("platform_type"))
-    file_path = account.get("filePath", account.get("file_path"))
-    user_name = account.get("userName", account.get("user_name", ""))
-    status = account.get("status")
-    default_fields = account.get(
-        "default_platform_fields", account.get("defaultPlatformFields")
-    )
-    if isinstance(default_fields, str):
-        try:
-            default_fields = json.loads(default_fields)
-        except (TypeError, ValueError) as err:
-            raise NormalizationError("账号默认声明不是合法 JSON") from err
+        if isinstance(default_fields, str):
+            try:
+                default_fields = json.loads(default_fields)
+            except (TypeError, ValueError) as err:
+                raise NormalizationError("账号默认声明不是合法 JSON") from err
 
     if isinstance(account_id, bool) or not isinstance(account_id, int):
         raise NormalizationError("账号快照缺少合法 id")

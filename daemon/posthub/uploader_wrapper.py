@@ -97,6 +97,22 @@ def _pop_effective_group(platform: int) -> list[EffectiveBatchItem]:
     return group
 
 
+def _is_official_publish_request() -> bool:
+    """判断当前调用是否来自官方发布路由，供兼容 fallback 设安全边界。"""
+    return has_request_context() and request.endpoint in {
+        "postVideo",
+        "postVideoBatch",
+    }
+
+
+def _pop_effective_group_for_request(platform: int) -> list[EffectiveBatchItem]:
+    """HTTP 发布请求缺 effective 时拒绝直调，避免绕过 normalization。"""
+    group = _pop_effective_group(platform)
+    if not group and _is_official_publish_request():
+        raise RuntimeError("官方发布请求缺少规范化 effective item")
+    return group
+
+
 def _declaration_item_for_effective(item: EffectiveBatchItem) -> dict[str, Any]:
     """把 effective 内部枚举转为 wrapper 消费的官方中文字段。"""
     fields = item.effective.get("platformFields")
@@ -302,7 +318,7 @@ def _inject_declaration_to_douyin(
     productTitle: str = "",
 ) -> None:
     """委托官方抖音发布函数，并通过官方类构造函数注入声明。"""
-    effective_group = _pop_effective_group(3)
+    effective_group = _pop_effective_group_for_request(3)
     if effective_group:
         _execute_effective_group(effective_group, _invoke_douyin_command)
         return None
@@ -340,7 +356,7 @@ def _inject_declaration_to_tencent(
     is_draft: bool = False,
 ) -> None:
     """委托官方视频号发布函数，并通过明确 DOM seam 应用声明。"""
-    effective_group = _pop_effective_group(2)
+    effective_group = _pop_effective_group_for_request(2)
     if effective_group:
         _execute_effective_group(effective_group, _invoke_tencent_command)
         return None
@@ -372,7 +388,7 @@ def _inject_declaration_to_xhs(
     start_days: int = 0,
 ) -> None:
     """委托官方小红书发布函数，避免替换后回调自身造成递归。"""
-    effective_group = _pop_effective_group(1)
+    effective_group = _pop_effective_group_for_request(1)
     if effective_group:
         _execute_effective_group(effective_group, _invoke_xhs_command)
         return None
@@ -403,7 +419,7 @@ def _inject_effective_to_ks(
     start_days: int = 0,
 ) -> None:
     """快手无声明字段，也通过同一 effective 执行入口。"""
-    effective_group = _pop_effective_group(4)
+    effective_group = _pop_effective_group_for_request(4)
     if effective_group:
         _execute_effective_group(effective_group, _invoke_ks_command)
         return None
