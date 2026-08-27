@@ -114,3 +114,72 @@
 - 已按要求在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop` 检查 `develop` 状态与最近 8 条提交；当前仅有本文件的 #81 R0 复核笔记未提交。
 - 为不丢失既有复核记录且满足 Git merge 的工作树保护，先将该纯中文 notes 改动单独提交；不修改业务逻辑、不触碰主仓库。
 - 下一步：在该笔记提交后执行唯一允许的 `git merge afk/issue-82 --no-edit`；若 `docs/implementation-notes.md` 冲突，逐侧读取并保留 #81 与 #82 的全部有价值记录。
+
+### 冲突解决记录（2026-08-27）
+
+- `git merge afk/issue-82 --no-edit` 唯一冲突为本文件；原因是 develop 的 #81 R0/准备记录与 issue 82 分支的 #82 记录均从同一末尾追加。
+- 已分别读取 ours 与 theirs，保留 #81 R0 复核、#82 合并准备及 #82 全部目标/实现/验证/审查记录；仅移除冲突标记，未改动业务实现。
+
+## Issue #82：统一 EffectiveBatchItem normalization 与发布执行 adapter
+
+### 目标与计划
+
+- 先以现有官方 `/postVideo`、`/postVideoBatch` 请求结构和前端单视频/矩阵批量模型为事实来源，确定唯一 normalization + execution seam。
+- TDD 先覆盖纯 normalization：平台/素材/账号/字段结构校验、账号拆分、账号快照、账号默认声明合并，以及 submitted/effective 双 payload。
+- 再覆盖四平台 immediate/scheduled、封面、商品、草稿、分类字段 fixtures；确保无效输入在调用官方 HTTP/函数前失败。
+- 将单视频与旧批量入口收敛到同一 adapter，adapter 只委托官方 HTTP seam，不复制官方发布循环、不引入自研 scheduler。
+- 跑 daemon、web、Tauri 全量验证；按语义原子提交中文 commit，不 push、不建 PR、不关闭 issue。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已确认 issue 82 worktree `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-82`，基线为 issue 81 合并后的 `18e708f`，工作树初始干净。
+- 已读取 `CONTEXT.md`、ADR-0001/0006/0009、`daemon/README.md` 及组合、声明、wrapper、官方请求和前端单视频/批量相邻测试。
+- 现有事实：官方请求字段为 `fileList/accountList/type/title/tags/category/enableTimer/videosPerDay/dailyTimes/startDays/thumbnail/isDraft/productLink/productTitle`；账号默认声明目前仅在 daemon hook 合并，前端单视频与批量各自构造请求，尚无 EffectiveBatchItem 公共入口。
+- 下一步：先新增单一公共 adapter 的失败测试，再按垂直切片实现。
+- Red：新增 `daemon/tests/test_publish_adapter.py`，首轮 `cd daemon && uv run pytest tests/test_publish_adapter.py -q` 因 `posthub.publish_adapter` 尚不存在而在收集阶段失败（`ModuleNotFoundError`），确认测试先行。
+- 原地重试先保留并审查全部 partial diff；初始 adapter + composition 定向测试为 `13 passed`，daemon 全量为 `56 passed`。
+- Green：新增 `posthub.publish_adapter`，以官方请求体为输入，先整批结构校验，再按账号拆分，冻结官方 `user_info` 账号快照，按单账号合并默认声明与任务覆盖，产出原始 submitted 与账号粒度 effective payload。
+- Green：官方 `/postVideo` 与 `/postVideoBatch` 的 before-request hook 共用 normalization；wrapper 按 source item 取出 effective 账号组，逐项委托捕获的官方平台函数，未复制上游文件/账号/定时循环；快手也接入同一 effective seam。
+- Red→Green 补强：为不可 hash 的平台类型、浮点平台类型、声明/source 非字符串及 origin 非布尔新增 6 个失败用例；初次为 `6 failed, 12 passed`，最小类型守卫后为 `18 passed`，避免畸形 JSON 从 400 漏成 500。
+- HTTP 运行态验证：在临时数据库和 fake uploader 下启动组合后端；单视频双账号产生 2 条账号粒度官方调用；完全相同 scheduled payload 经 `/postVideo` 与 `/postVideoBatch` 产生逐参数相同调用；非法平台、空素材、批次后项空账号均返回 400，官方调用总数保持 4，无新增发布副作用。
+
+### 最终验证记录
+
+- `cd daemon && uv run pytest -q` → `62 passed in 1.43s`。
+- 相关 Python：`uv run --with ruff ruff check ...` → `All checks passed`；`ruff format --check ...` → `5 files already formatted`。
+- `cd web && pnpm test -- --run` → `16 files / 171 tests passed`；仅有既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过，Vite `1.72s`。
+- `cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`。
+
+### Deviations
+
+- Cargo 测试继续只创建本地空 `src-tauri/resources/{daemon,bin,browser}` 目录以满足 Tauri 构建配置；目录为空且未进入 git，不引入打包资源产物。
+
+### 收口复核（2026-08-27）
+
+- 复核发现无关账号坏行会被全表 normalization 阻断；保守修补为按本次请求的 `(type, filePath)` 过滤账号，目标路径的畸形类型仍进入校验并返回明确错误，无关坏 `default_platform_fields` / `filePath` 行忽略。
+- 新增回归：无关账号默认声明不是合法 JSON 时，目标账号仍能生成 effective item；相关定向测试 `20 passed`，ruff check/format 均通过。
+- 实际全量复验：`cd daemon && uv run pytest -q` → `63 passed in 1.68s`；web `pnpm test -- --run` → `16 files / 171 tests passed`，`pnpm run build` 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+
+### 审查与精炼（2026-08-27）
+
+- 审查目标：不 reset/rebase/amend implementer 提交 `ccbb1f7`，只在 issue 82 worktree 直接修补验收缺口；继续禁止修改官方源码、复制官方发布循环、跨请求复用状态。
+- 复核重点：目标账号过滤与严格校验、submitted/effective 深拷贝隔离、单发/旧批量共用 normalization 与官方函数 seam、四平台字段保真、异常在发布副作用前返回。
+- 初步检查发现：前置校验虽覆盖 normalization，但官方 route 仍各自读取并执行；需要把官方 `/postVideo` 与 `/postVideoBatch` 的实际调用统一收敛到 adapter seam，且确保官方 kwargs/参数位置（抖音封面/商品、视频号草稿）不被改写或丢失。
+- 计划：先以当前官方包签名和 route 行为建立失败回归，再做最小职责调整；每个修改阶段补记录，并运行 daemon、相关 ruff、web、Tauri 全量验收后提交 `refine:`。
+- 基线复验：`cd daemon && uv run pytest tests/test_publish_adapter.py tests/test_composition.py -q` → `20 passed`；当前未提交改动仅为测试导入与本笔记，均保留。
+- 进一步核对官方签名：抖音函数仍要求 `thumbnail_path/productLink/productTitle` 尾参数，视频号草稿位于 `is_draft`；当前 wrapper 已有账号粒度调用映射，但路由仍直接解析原始请求，未把“规范化结果到官方命令”的职责显式收口到公共 adapter。
+- Red（本轮）：新增三个边界回归，分别验证 dataclass 账号快照也必须重校验、发布请求中 effective 队列缺失时 wrapper 必须 fail-closed、`/postVideo` 非 object body 必须在官方函数前返回 400；运行定向测试得到 `3 failed, 19 passed`。
+- Green（本轮）：统一复用 mapping 校验逻辑重验证 `AccountSnapshot` 值对象；发布请求开始先清空线程队列，单发畸形 envelope 交给 normalization，wrapper 在官方发布上下文缺 effective 时抛错而不直调；定向测试 `22 passed`。
+- Runtime verify：临时启动组合 Flask 服务并通过 HTTP 驱动 `/postVideo`、`/postVideoBatch`；相同 scheduled/封面/商品/草稿 payload 均返回 200，fake official seam 各收到两条完全相同的账号粒度参数；`/postVideo` 数组畸形 body 返回 400（`item 必须是 object`），未产生 fake 调用。
+- 跨包全量复验：`cd daemon && uv run pytest -q` → `65 passed in 1.65s`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`，`pnpm run build` 通过；`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+- Red（本轮审查）：新增回归锁定 XHS `source/origin` 与视频号 `origin` 不得在无可靠执行 seam 时静默丢弃，以及同一 Flask app 不得静默切换不同 `db_path`；定向测试得到 `5 failed, 22 passed`。
+- Green（本轮审查）：normalization 对目标平台无可靠执行 seam 的声明字段 fail-closed（XHS `source/origin`、视频号 `origin`），默认字段的 `null` 不再进入 effective；组合入口同一 app 换用不同数据库路径直接拒绝；定向测试 `28 passed`，相关 ruff check/format 均通过。
+- Deviations：未直接补写 XHS/Tencent UI 自动化 seam；当前上游无法可靠表达 XHS `source/origin`，且视频号上游会无视 `origin=False` 仍尝试原创。按保守策略拒绝这些字段，避免 HTTP 200 后静默错发。
+- 本轮实际审查基线为 implementer 提交 `38fd430`；未 reset/rebase/amend，官方 `daemon/sau_backend.py` 与 `uploader/*` 未修改。
+- Runtime verify：临时组合 Flask HTTP 服务接收混合平台 `/postVideoBatch` 返回 200；fake 官方 seam 实际收到抖音双账号两次独立调用，封面/商品参数完整；XHS 不支持声明返回 JSON 400；单发数组畸形 body 返回 JSON 400，均未产生对应 fake 调用。
+- 修补后最终验证：`cd daemon && uv run pytest -q` → `71 passed in 1.70s`；相关 Python `ruff check` 与 `ruff format --check` → 全部通过；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`，`pnpm run build` 通过；`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。

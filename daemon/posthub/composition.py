@@ -47,11 +47,17 @@ def _configure_official_base_dir(base_dir: Path) -> None:
 
 def compose_posthub_backend(app: Any, db_path: Path | str) -> Any:
     """在指定 Flask 应用上一次性组合 PostHub-owned 生命周期与路由。"""
+    path = Path(db_path).resolve()
     existing = getattr(app, "extensions", {}).get(_COMPOSITION_MARKER)
     if existing is not None:
+        existing_path = existing.get("db_path")
+        if existing_path != path:
+            raise ValueError(
+                "同一 Flask app 不允许组合到不同数据库；"
+                f"已绑定 {existing_path}，请求 {path}"
+            )
         return app
 
-    path = Path(db_path).resolve()
     _configure_official_base_dir(path.parent.parent)
     db_init.ensure_db(db_path=path)
     install_uploader_wrapper()
