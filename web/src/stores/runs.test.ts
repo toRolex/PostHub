@@ -8,6 +8,14 @@ const SNAPSHOT = {
   createdAt: "2026-08-27T00:00:00.000+00:00",
   updatedAt: "2026-08-27T00:00:00.100+00:00",
   completedAt: "2026-08-27T00:00:00.100+00:00",
+  summary: {
+    itemCount: 1,
+    pendingCount: 0,
+    runningCount: 0,
+    successCount: 1,
+    failedCount: 0,
+    completedCount: 1,
+  },
   items: [{ itemId: "item-1", status: "success" as const, error: null }],
 };
 

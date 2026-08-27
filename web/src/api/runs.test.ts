@@ -37,6 +37,26 @@ describe("accepted run API", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(PAYLOAD);
   });
 
+  it("acceptRun 支持一次提交多个 immediate item，原样发送数组", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-many", status: "pending", itemCount: 3 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = [PAYLOAD, { ...PAYLOAD, fileList: ["second.mp4"] }];
+
+    await expect(officialApi.acceptRun("http://127.0.0.1:5409", payload)).resolves.toEqual({
+      runId: "run-many",
+      status: "pending",
+      itemCount: 3,
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(payload);
+  });
+
   it("getRun 与 getLatestRun 返回查询 API 的事实状态", async () => {
     const snapshot = {
       runId: "run-1",
@@ -44,6 +64,14 @@ describe("accepted run API", () => {
       createdAt: "2026-08-27T00:00:00.000+00:00",
       updatedAt: "2026-08-27T00:00:00.100+00:00",
       completedAt: "2026-08-27T00:00:00.100+00:00",
+      summary: {
+        itemCount: 1,
+        pendingCount: 0,
+        runningCount: 0,
+        successCount: 1,
+        failedCount: 0,
+        completedCount: 1,
+      },
       items: [{ itemId: "item-1", status: "success", error: null }],
     };
     const fetchMock = vi

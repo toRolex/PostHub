@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from flask import Flask, jsonify, request
 from posthub.publish_adapter import (
     EffectiveBatchItem,
     NormalizationError,
-    normalize_publish_payload,
+    normalize_publish_payloads,
 )
 
 _RUN_ROUTE_MARKER = "_posthub_run_routes_registered"
@@ -298,12 +299,23 @@ class RunStore:
                 """,
                 (run_id,),
             ).fetchall()
+        counts = Counter(item["status"] for item in items)
+        item_count = len(items)
         return {
             "runId": run["id"],
             "status": run["status"],
             "createdAt": run["created_at"],
             "updatedAt": run["updated_at"],
             "completedAt": run["completed_at"],
+            # 汇总直接从持久化 run_items 计算，前端不需要根据本地提交列表猜测进度。
+            "summary": {
+                "itemCount": item_count,
+                "pendingCount": counts["pending"],
+                "runningCount": counts["running"],
+                "successCount": counts["success"],
+                "failedCount": counts["failed"],
+                "completedCount": counts["success"] + counts["failed"],
+            },
             "items": [
                 {"itemId": item["id"], "status": item["status"], "error": item["error"]}
                 for item in items
@@ -466,17 +478,25 @@ def register_run_routes(
     @app.post("/posthub/runs")
     def accept_run():
         payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
+        if isinstance(payload, dict):
+            payloads = [payload]
+        elif isinstance(payload, list) and payload:
+            payloads = payload
+        else:
             return jsonify(
-                {"code": 400, "msg": "item 必须是 object", "data": None}
+                {"code": 400, "msg": "item 必须是 object 或非空数组", "data": None}
             ), 400
-        if payload.get("enableTimer", False):
+        if any(not isinstance(item, dict) for item in payloads):
+            return jsonify(
+                {"code": 400, "msg": "每个 item 必须是 object", "data": None}
+            ), 400
+        if any(item.get("enableTimer", False) for item in payloads):
             return jsonify(
                 {"code": 400, "msg": "accepted run 只支持 immediate item", "data": None}
             ), 400
         try:
-            normalized = normalize_publish_payload(
-                payload, _read_publish_accounts(official_db_path)
+            normalized = normalize_publish_payloads(
+                payloads, _read_publish_accounts(official_db_path)
             )
             run_id = store.create_run(normalized.effective)
         except (NormalizationError, sqlite3.Error) as err:

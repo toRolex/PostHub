@@ -4,6 +4,7 @@ import {
   type AcceptedRun,
   type RunSnapshot,
   type RunStatus,
+  type RunSummary,
 } from "../api/official";
 
 export const LATEST_RUN_ID_KEY = "posthub.latestRunId";
@@ -11,6 +12,9 @@ export const LATEST_RUN_ID_KEY = "posthub.latestRunId";
 export interface RunState {
   runId: string | null;
   status: RunStatus | null;
+  /** accepted 响应中的后端 item 总数；查询快照到达后由 summary 覆盖。 */
+  itemCount: number | null;
+  summary: RunSummary | null;
   snapshot: RunSnapshot | null;
   error: string;
   rememberAcceptedRun: (accepted: AcceptedRun) => void;
@@ -24,6 +28,8 @@ export const initialRunState: Omit<
 > = {
   runId: null,
   status: null,
+  itemCount: null,
+  summary: null,
   snapshot: null,
   error: "",
 };
@@ -70,6 +76,8 @@ export const useRunStore = create<RunState>()((set, get) => {
     set({
       runId: snapshot.runId,
       status: snapshot.status,
+      itemCount: snapshot.summary.itemCount,
+      summary: snapshot.summary,
       snapshot,
       error: "",
     });
@@ -85,7 +93,7 @@ export const useRunStore = create<RunState>()((set, get) => {
       if (!canCommit(requestId, version)) return;
       if (!snapshot) {
         clearRunId();
-        set({ runId: null, status: null, snapshot: null, error: "" });
+        set({ runId: null, status: null, itemCount: null, summary: null, snapshot: null, error: "" });
         return;
       }
       applySnapshot(snapshot);
@@ -105,6 +113,8 @@ export const useRunStore = create<RunState>()((set, get) => {
       set({
         runId: accepted.runId,
         status: accepted.status,
+        itemCount: accepted.itemCount,
+        summary: null,
         snapshot: null,
         error: "",
       });
@@ -149,7 +159,7 @@ export const useRunStore = create<RunState>()((set, get) => {
         if (!canCommit(requestId, version)) return;
         if (!snapshot) {
           clearRunId();
-          set({ runId: null, status: null, snapshot: null, error: "" });
+          set({ runId: null, status: null, itemCount: null, summary: null, snapshot: null, error: "" });
           return;
         }
         applySnapshot(snapshot);

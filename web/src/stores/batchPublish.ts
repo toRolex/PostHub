@@ -9,6 +9,7 @@ import {
   type BatchItemResult,
 } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
+import { useRunStore } from "./runs";
 import { withMutation } from "./_withMutation";
 import { normalizeHHMM } from "../domain/time";
 
@@ -106,7 +107,11 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
   ...initialBatchPublishState,
 
   addItem: (item) =>
-    set((s) => ({ items: [...s.items, item] })),
+    set((s) =>
+      s.items.some((existing) => existing.filePath === item.filePath)
+        ? s
+        : { items: [...s.items, item] },
+    ),
 
   removeItem: (filePath) =>
     set((s) => ({ items: s.items.filter((i) => i.filePath !== filePath) })),
@@ -195,6 +200,13 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
     await withMutation(
       set,
       async () => {
+        if (s.items.every((item) => item.mode === "immediate")) {
+          const accepted = await officialApi.acceptRun(base, request);
+          useRunStore.getState().rememberAcceptedRun(accepted);
+          const itemResults = expandItemResults(s.items, true, "已受理，后台执行中");
+          set({ itemResults });
+          return;
+        }
         await officialApi.postVideoBatch(base, request);
         const itemResults = expandItemResults(s.items, true, "批量发布任务已提交");
         set({ itemResults });

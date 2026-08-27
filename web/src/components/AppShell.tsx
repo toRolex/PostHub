@@ -4,6 +4,7 @@ import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useRunStore } from "../stores/runs";
+import type { RunSummary } from "../api/official";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -40,6 +41,15 @@ export function shouldRefreshRun(status: "pending" | "running" | "completed" | n
   return status !== "completed";
 }
 
+export function runProgressLabel(
+  summary: RunSummary | null,
+  acceptedItemCount: number | null,
+): string | null {
+  if (summary) return `完成 ${summary.completedCount}/${summary.itemCount}`;
+  if (acceptedItemCount !== null) return `完成 0/${acceptedItemCount}`;
+  return null;
+}
+
 export function runStatusMeta(status: "pending" | "running" | "completed" | null) {
   if (status === "pending") {
     return { dot: "bg-meta", text: "text-fg-2", label: "最近运行 待执行" };
@@ -62,14 +72,24 @@ function Topbar() {
   const connected = useDaemonStore((s) => s.connected);
   const runStatus = useRunStore((s) => s.status);
   const runId = useRunStore((s) => s.runId);
+  const runSummary = useRunStore((s) => s.summary);
+  const acceptedItemCount = useRunStore((s) => s.itemCount);
   const daemonMeta = connected
     ? { dot: "bg-success", text: "text-success-deep", label: "守护进程 已连通" }
     : { dot: "bg-danger", text: "text-danger-deep", label: "守护进程 未连接" };
   const runMeta = runStatusMeta(runStatus);
+  const progress = runProgressLabel(runSummary, acceptedItemCount);
   return (
     <header className="flex h-11 shrink-0 items-center gap-4 border-b border-border-soft bg-bg px-4">
       <Status meta={daemonMeta} />
-      {runMeta && <Status meta={runMeta} />}
+      {runMeta && (
+        <Status
+          meta={{
+            ...runMeta,
+            label: progress ? `${runMeta.label} · ${progress}` : runMeta.label,
+          }}
+        />
+      )}
       {runId && <span className="ml-auto font-mono text-caption text-meta">run {runId.slice(0, 8)}</span>}
     </header>
   );
