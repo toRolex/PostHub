@@ -304,6 +304,11 @@ def _normalize_daily_times(value: Any, index: int) -> list[str]:
     return sorted(normalized)
 
 
+def _local_naive_now() -> datetime:
+    """读取一次机器本地时钟，供同一受理批次复用。"""
+    return datetime.now(tz=UTC).astimezone().replace(tzinfo=None)
+
+
 def generate_douyin_publish_datetimes(
     total_videos: int,
     videos_per_day: int,
@@ -332,9 +337,7 @@ def generate_douyin_publish_datetimes(
         or start_days < 0
     ):
         raise ValueError("start_days 必须是非负整数")
-    current = (
-        datetime.now(tz=UTC).astimezone().replace(tzinfo=None) if now is None else now
-    )
+    current = _local_naive_now() if now is None else now
     if not isinstance(current, datetime) or current.tzinfo is not None:
         raise ValueError("now 必须是本地 naive datetime")
 
@@ -524,6 +527,7 @@ def normalize_publish_payloads(
         raise NormalizationError("发布 item 不能为空")
 
     submitted: list[dict[str, Any]] = []
+    snapshot_now = now
     prepared: list[
         tuple[
             int,
@@ -582,6 +586,8 @@ def normalize_publish_payloads(
             command["fileList"] = list(files)
             command["accountList"] = [snapshot.file_path]
             if platform_type == 3 and command.get("enableTimer"):
+                if snapshot_now is None:
+                    snapshot_now = _local_naive_now()
                 command["publishDatetimes"] = [
                     value.isoformat(timespec="seconds")
                     for value in generate_douyin_publish_datetimes(
@@ -589,7 +595,7 @@ def normalize_publish_payloads(
                         command["videosPerDay"],
                         command["dailyTimes"],
                         command["startDays"],
-                        now=now,
+                        now=snapshot_now,
                     )
                 ]
             if selected_fields:

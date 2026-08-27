@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from flask import Flask
 
-from posthub import uploader_wrapper
+from posthub import publish_adapter, uploader_wrapper
 from posthub.publish_adapter import (
     AccountSnapshot,
     NormalizationError,
@@ -948,4 +948,55 @@ def test_douyin_timer_minute_boundaries_and_mixed_immediate_timer_are_stable() -
         "2026-08-28T23:29:00",
         "2026-08-28T23:30:00",
         "2026-08-28T23:59:00",
+    ]
+
+
+def test_douyin_batch_freezes_local_date_once_across_effective_accounts(
+    monkeypatch,
+) -> None:
+    payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin-a.json", "douyin-b.json"],
+        "type": 3,
+        "title": "跨午夜",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["00:05"],
+        "startDays": 0,
+    }
+    accounts = [
+        {
+            "id": 31,
+            "type": 3,
+            "filePath": "douyin-a.json",
+            "userName": "抖音 A",
+            "status": 1,
+            "default_platform_fields": None,
+        },
+        {
+            "id": 32,
+            "type": 3,
+            "filePath": "douyin-b.json",
+            "userName": "抖音 B",
+            "status": 1,
+            "default_platform_fields": None,
+        },
+    ]
+    clock_reads: list[datetime] = []
+
+    def fake_local_now() -> datetime:
+        clock_reads.append(
+            datetime(2026, 8, 27, 23, 59, tzinfo=UTC).replace(tzinfo=None)
+        )
+        return clock_reads[-1]
+
+    monkeypatch.setattr(publish_adapter, "_local_naive_now", fake_local_now)
+
+    result = normalize_publish_payloads([payload], accounts)
+
+    assert len(clock_reads) == 1
+    assert [item.effective["publishDatetimes"] for item in result.effective] == [
+        ["2026-08-28T00:05:00"],
+        ["2026-08-28T00:05:00"],
     ]

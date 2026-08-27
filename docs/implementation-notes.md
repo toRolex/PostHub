@@ -479,3 +479,4 @@
 - 验证完成：`cd daemon && uv run pytest -q` → `159 passed`；`cd web && pnpm test -- --run` → `20 files / 202 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过；涉及 Python 文件 `uv run --with ruff ruff check` 与 `ruff format --check` 均通过。web 测试仅有既有 jsdom navigation stderr。
 - Runtime verify：启动真实组合 Flask socket `127.0.0.1:5428`，HTTP `/postVideo` 与 `/postVideoBatch` 均返回 `200`；fake 抖音 uploader 两次收到同一 `2026-08-29T14:37:00` naive datetime 与 `scheduled` 策略；数组 body 探针返回 JSON `400`，未进入发布 seam。服务已停止并清理临时数据。
 - Deviations：为让 detail 与 fake uploader 共享同一冻结时刻，新增 PostHub-owned `publishDatetimes` 到抖音 timer effective（submitted 仍保留原始 HH:MM）；这是必要的执行快照，不修改官方代码，也不承担新的 scheduler。
+- Reviewer 修复：`now=None` 时同一批多个 effective item 曾逐项读取本地时钟，跨午夜可能得到不同日期；现于首次抖音 timer item 冻结一次本地 naive 时钟，并补多账号跨午夜回归。
