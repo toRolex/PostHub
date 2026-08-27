@@ -239,3 +239,56 @@
 - 合并后 web：`pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.03s`）；仅有既有 jsdom navigation stderr。
 - 合并后 Tauri：`cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
 - 下一步：提交本次 Merger 笔记后，按顺序合并 #84；#83 worktree 与 issue 待全部本轮成功后依用户流程清理/关闭。
+## Issue #84：扩展内容声明 context 为 canonical shape
+
+### 目标与计划
+
+- 仅修改 PostHub-owned 声明 wrapper/context seam，不触碰官方 `daemon/sau_backend.py` 或官方 `uploader/*`，不提前实现 #90/#91/#92。
+- 先为 canonical producer `{platform, fields}`、canonical/legacy consumer 双读、item 级 context 的 finally 清理及连续 item 隔离补失败测试，再做最小实现。
+- 保留外部 `platformFields` 按平台分键契约、英文枚举到官方中文文案映射，以及 normalization 的 fail-closed 边界。
+- 完成后执行 daemon 全量 pytest、web 全量测试与 build，并记录实际输出；不 push、不建 PR、不 merge、不关闭 issue。
+
+### 当前基线与调研结论
+
+- issue 82 已将 `EffectiveBatchItem` 与执行 adapter 合入当前基线；当前 `_declaration_item_for_effective()` 仍产出平台名嵌套 shape，`_fields_for()` 尚不读取 canonical `fields`。
+- 现有 `_declaration_context()` 已有 `try/finally` 的恢复语义，需补齐 canonical payload 与连续不同平台/声明的回归覆盖。
+- 旧兼容形状包括 `{platform, <platform-name>: fields}` 与 `{platform, field...}`；canonical 只在内部 wrapper context 使用，外部 `platformFields` 不变。
+- 无声明也采用 canonical shape `{"platform": type, "fields": {}}`；不扩展 origin、XHS source 等既有 fail-closed 执行边界。
+
+### 实现进展
+
+- 已完成只读调研：读取 `CONTEXT.md`、ADR-0008/0009、issue 计划、相关 prototype/research、声明映射、wrapper、normalization、composition 及现有测试；未修改官方源码。
+- Red（producer 垂直切片）：新增 `test_declaration_producer_emits_canonical_platform_and_fields_shape`，`cd daemon && uv run pytest tests/test_publish_adapter.py -q` → `1 failed, 26 passed`；失败确认当前 producer 仍输出平台名嵌套 shape。
+- Green（producer）：`_declaration_item_for_effective()` 改为始终产出 `{"platform": type, "fields": selected}`，无声明使用空 `fields`；同一批定向测试 → `27 passed`。
+- Red（consumer 垂直切片）：新增 `test_declaration_consumer_reads_canonical_fields`，定向测试 → `1 failed, 27 passed`；失败确认 `_fields_for()` 尚未读取 canonical `fields`。
+- Green（consumer）：`_fields_for()` 先读并校验 canonical `platform/fields`，再兼容旧平台嵌套与旧 flat shape；平台不匹配或 canonical fields 非 object 返回空字典；定向测试 → `28 passed`。
+- Green（迁移 fixture）：新增旧平台嵌套与旧 flat shape 双读回归，定向测试 → `30 passed`。
+- Green（空声明）：新增无任务/账号默认声明时的 canonical 空 `fields` 回归；首次误用带账号默认的 fixture 得到错误预期，改为显式清空该账号默认后重跑 → `34 passed`。
+- Green（context 生命周期）：新增成功、异常、内建超时异常后的 finally 清理，以及随后不同平台声明可独立读取的回归；定向测试 → `34 passed`。
+- Green（连续 item）：新增混合平台 effective item 执行隔离与首项超时后下一项独立读取回归；声明/组合定向测试 → `38 passed`，相关 ruff → `All checks passed`。
+- 重构：更新迁移队列与组合测试注释，明确新 producer 只写 canonical shape，旧嵌套/flat 仅作兼容 fixture。
+- Runtime verify：隔离启动组合 Flask 服务 `127.0.0.1:5419`，GET `/getAccounts` 返回 `200`；通过 HTTP POST `/postVideo` 驱动真实组合入口，返回 `200`，服务端 fake 官方 seam 观察到 active fields 为 `{'declaration': '无需添加自主声明'}`；验证服务已停止。
+
+### 最终验证
+
+- `cd daemon && uv run pytest -q` → `81 passed in 1.92s`。
+- `cd daemon && uv run --with ruff ruff check posthub/uploader_wrapper.py tests/test_publish_adapter.py tests/test_composition.py` → `All checks passed!`。
+- `cd web && pnpm test -- --run` → `16 files / 171 tests passed`；仅有既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过，Vite `2.07s`。
+- `shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`，官方文件未改；未修改官方 `uploader/*`，未修改 web 业务代码。
+- `git diff --check` 通过；仅有本 issue 的 wrapper、测试与 implementation notes 变更，准备提交中文语义原子 commit。
+
+### Deviations
+
+- 暂无。
+
+### Reviewer refinement（2026-08-27）
+
+- 基线复核：`git diff develop...HEAD` 仅含 canonical producer/consumer、item context 回归与本笔记；官方 `daemon/sau_backend.py`、`uploader/*` 均未改，web 未改。
+- 已复验基线：`cd daemon && uv run pytest -q` → `81 passed`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`cd web && pnpm run build` 通过。
+- 发现验收缺口：`_fields_for()` 对匹配平台的 malformed canonical `fields`、旧平台嵌套容器及 flat 字段值会返回空字典或透传任意类型，可能静默丢声明或把非字符串交给 uploader。按保守策略改为只接受平台允许字段及其类型，畸形 context 显式失败；平台不匹配仍返回空字典，因为 `_active_fields()` 会跨平台探测。
+- 同时补充同平台不同声明的连续 item 隔离，以及 canonical 与旧字段并存时 canonical 优先的回归；不扩展 #90/#91/#92，不引入新官方 seam。
+- Green（review fix）：新增 `_validate_context_fields()`；canonical/旧平台嵌套的容器、字段名和值类型不合法时显式抛错，legacy flat 也不再把未知/错误类型字段静默透传；平台不匹配仍按跨平台探测语义返回空字典。
+- Green（coverage）：canonical、旧平台嵌套与旧 flat 均补齐小红书/视频号/抖音三平台读取回归，并补 canonical 与 legacy 并存优先级；定向测试 `53 passed`，ruff check/format 均通过。
+- 最终复验：`cd daemon && uv run pytest -q` → `96 passed in 1.58s`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`cd web && pnpm run build` 通过。
+- Runtime verify：临时组合 Flask 服务经真实 HTTP `/postVideoBatch` 返回 `200`；fake 官方 seam 依次观察到抖音 `{'declaration': '无需添加自主声明'}` 与视频号 `{'declaration': '内容包含营销广告'}`，证明 canonical context 在跨平台 item 间隔离。畸形单发数组与错误声明类型均返回 `400`，没有调用 fake seam；服务已停止。
