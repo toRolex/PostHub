@@ -236,3 +236,14 @@
 ### Deviations
 
 - 暂无。
+
+### Reviewer refinement（2026-08-27）
+
+- 基线复核：`git diff develop...HEAD` 仅含 canonical producer/consumer、item context 回归与本笔记；官方 `daemon/sau_backend.py`、`uploader/*` 均未改，web 未改。
+- 已复验基线：`cd daemon && uv run pytest -q` → `81 passed`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`cd web && pnpm run build` 通过。
+- 发现验收缺口：`_fields_for()` 对匹配平台的 malformed canonical `fields`、旧平台嵌套容器及 flat 字段值会返回空字典或透传任意类型，可能静默丢声明或把非字符串交给 uploader。按保守策略改为只接受平台允许字段及其类型，畸形 context 显式失败；平台不匹配仍返回空字典，因为 `_active_fields()` 会跨平台探测。
+- 同时补充同平台不同声明的连续 item 隔离，以及 canonical 与旧字段并存时 canonical 优先的回归；不扩展 #90/#91/#92，不引入新官方 seam。
+- Green（review fix）：新增 `_validate_context_fields()`；canonical/旧平台嵌套的容器、字段名和值类型不合法时显式抛错，legacy flat 也不再把未知/错误类型字段静默透传；平台不匹配仍按跨平台探测语义返回空字典。
+- Green（coverage）：canonical、旧平台嵌套与旧 flat 均补齐小红书/视频号/抖音三平台读取回归，并补 canonical 与 legacy 并存优先级；定向测试 `53 passed`，ruff check/format 均通过。
+- 最终复验：`cd daemon && uv run pytest -q` → `96 passed in 1.58s`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`cd web && pnpm run build` 通过。
+- Runtime verify：临时组合 Flask 服务经真实 HTTP `/postVideoBatch` 返回 `200`；fake 官方 seam 依次观察到抖音 `{'declaration': '无需添加自主声明'}` 与视频号 `{'declaration': '内容包含营销广告'}`，证明 canonical context 在跨平台 item 间隔离。畸形单发数组与错误声明类型均返回 `400`，没有调用 fake seam；服务已停止。

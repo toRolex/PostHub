@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -40,6 +40,11 @@ _ORIGINAL_POST_VIDEO_KS = _post_video_mod.post_video_ks
 
 _local = threading.local()
 _MISSING = object()
+_CONTEXT_FIELD_TYPES: dict[int, dict[str, type]] = {
+    1: {"source": str, "origin": bool},
+    2: {"declaration": str, "origin": bool},
+    3: {"declaration": str},
+}
 
 
 def _queue() -> deque:
@@ -135,34 +140,52 @@ def _pop_for(platform: int) -> dict | None:
     return None
 
 
-def _fields_for(item: dict | None, platform: int) -> dict[str, Any]:
+def _validate_context_fields(fields: Any, platform: int, shape: str) -> dict[str, Any]:
+    """校验声明 context，避免畸形迁移数据静默变成无声明。"""
+    if not isinstance(fields, dict):
+        raise TypeError(f"{shape} fields 必须是 object")
+
+    expected = _CONTEXT_FIELD_TYPES.get(platform, {})
+    unknown = [name for name in fields if name not in expected]
+    if unknown:
+        raise ValueError(f"{shape} fields 包含非法字段：{unknown!r}")
+
+    invalid = [
+        name
+        for name, value in fields.items()
+        if value is not None and not isinstance(value, expected[name])
+    ]
+    if invalid:
+        raise ValueError(f"{shape} fields 字段类型非法：{invalid!r}")
+    return dict(fields)
+
+
+def _fields_for(item: Mapping[str, Any] | None, platform: int) -> dict[str, Any]:
     """读取 canonical 声明，并兼容迁移期旧平台嵌套/flat shape。"""
-    if not item:
+    if item is None:
         return {}
+    if not isinstance(item, Mapping):
+        raise TypeError("声明 context 必须是 object")
 
     if "fields" in item:
         if item.get("platform") != platform:
             return {}
-        fields = item["fields"]
-        return fields if isinstance(fields, dict) else {}
+        return _validate_context_fields(item["fields"], platform, "canonical")
 
     if item.get("platform") is not None and item.get("platform") != platform:
         return {}
     key = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}.get(platform)
-    fields = item.get(key) if key else None
-    if isinstance(fields, dict):
-        return fields
+    if key is not None and key in item:
+        return _validate_context_fields(item[key], platform, f"legacy {key}")
+
     # 兼容早期组合实现曾产生的 {platform, declaration/source, origin} 形状；
     # 新入口不再产生该形状，但读取兼容避免热更新期间声明丢失。
-    if platform == 1:
-        allowed = {"source", "origin"}
-    elif platform == 2:
-        allowed = {"declaration", "origin"}
-    elif platform == 3:
-        allowed = {"declaration"}
-    else:
-        allowed = set()
-    return {name: item[name] for name in allowed if name in item}
+    expected = _CONTEXT_FIELD_TYPES.get(platform, {})
+    unexpected = [name for name in item if name != "platform" and name not in expected]
+    if unexpected:
+        raise ValueError(f"legacy flat fields 包含非法字段：{unexpected!r}")
+    flat = {name: item[name] for name in expected if name in item}
+    return _validate_context_fields(flat, platform, "legacy flat")
 
 
 def _active_fields(platform: int) -> dict[str, Any]:

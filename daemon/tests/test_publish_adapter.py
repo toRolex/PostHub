@@ -542,7 +542,9 @@ def test_declaration_producer_emits_canonical_platform_and_fields_shape() -> Non
     }
 
 
-def test_declaration_producer_keeps_empty_fields_canonical_without_declaration() -> None:
+def test_declaration_producer_keeps_empty_fields_canonical_without_declaration() -> (
+    None
+):
     payload = {
         "fileList": ["video.mp4"],
         "accountList": ["douyin.json"],
@@ -560,31 +562,90 @@ def test_declaration_producer_keeps_empty_fields_canonical_without_declaration()
     }
 
 
-def test_declaration_consumer_reads_canonical_fields() -> None:
-    item = {"platform": 3, "fields": {"declaration": "无需添加自主声明"}}
+@pytest.mark.parametrize(
+    ("platform", "fields"),
+    [
+        (1, {"source": "小红书声明"}),
+        (2, {"declaration": "视频号声明"}),
+        (3, {"declaration": "抖音声明"}),
+    ],
+)
+def test_declaration_consumer_reads_canonical_fields(
+    platform: int, fields: dict[str, Any]
+) -> None:
+    item = {"platform": platform, "fields": fields}
 
-    assert uploader_wrapper._fields_for(item, 3) == {
-        "declaration": "无需添加自主声明"
-    }
+    assert uploader_wrapper._fields_for(item, platform) == fields
 
 
 @pytest.mark.parametrize(
-    ("item", "expected"),
+    ("platform", "item", "expected"),
     [
         (
-            {"platform": 3, "douyin": {"declaration": "无需添加自主声明"}},
-            {"declaration": "无需添加自主声明"},
+            1,
+            {"platform": 1, "xiaohongshu": {"source": "小红书声明"}},
+            {"source": "小红书声明"},
         ),
         (
-            {"platform": 3, "declaration": "无需添加自主声明"},
-            {"declaration": "无需添加自主声明"},
+            1,
+            {"platform": 1, "source": "小红书声明"},
+            {"source": "小红书声明"},
+        ),
+        (
+            2,
+            {"platform": 2, "tencent": {"declaration": "视频号声明"}},
+            {"declaration": "视频号声明"},
+        ),
+        (
+            2,
+            {"platform": 2, "declaration": "视频号声明"},
+            {"declaration": "视频号声明"},
+        ),
+        (
+            3,
+            {"platform": 3, "douyin": {"declaration": "抖音声明"}},
+            {"declaration": "抖音声明"},
+        ),
+        (
+            3,
+            {"platform": 3, "declaration": "抖音声明"},
+            {"declaration": "抖音声明"},
         ),
     ],
 )
 def test_declaration_consumer_keeps_legacy_shapes_readable(
-    item: dict[str, Any], expected: dict[str, Any]
+    platform: int, item: dict[str, Any], expected: dict[str, Any]
 ) -> None:
-    assert uploader_wrapper._fields_for(item, 3) == expected
+    assert uploader_wrapper._fields_for(item, platform) == expected
+
+
+def test_declaration_consumer_prefers_canonical_fields_over_legacy_fields() -> None:
+    item = {
+        "platform": 3,
+        "fields": {"declaration": "canonical"},
+        "douyin": {"declaration": "legacy"},
+    }
+
+    assert uploader_wrapper._fields_for(item, 3) == {"declaration": "canonical"}
+
+
+@pytest.mark.parametrize(
+    ("item", "exception_type", "message"),
+    [
+        ({"platform": 3, "fields": None}, TypeError, "object"),
+        ({"platform": 3, "fields": {"declaration": True}}, ValueError, "类型非法"),
+        ({"platform": 3, "fields": {"origin": True}}, ValueError, "非法字段"),
+        ({"platform": 3, "douyin": None}, TypeError, "object"),
+        ({"platform": 3, "douyin": {"declaration": 1}}, ValueError, "类型非法"),
+        ({"platform": 3, "declaration": 1}, ValueError, "类型非法"),
+        ({"platform": 3, "origin": True}, ValueError, "非法字段"),
+    ],
+)
+def test_declaration_consumer_rejects_malformed_context(
+    item: dict[str, Any], exception_type: type[Exception], message: str
+) -> None:
+    with pytest.raises(exception_type, match=message):
+        uploader_wrapper._fields_for(item, 3)
 
 
 @pytest.mark.parametrize("error_type", [None, RuntimeError, TimeoutError])
@@ -596,9 +657,7 @@ def test_declaration_context_clears_after_success_exception_or_timeout(
 
     if error_type is None:
         with uploader_wrapper._declaration_context(first):
-            assert uploader_wrapper._active_fields(3) == {
-                "declaration": "抖音声明"
-            }
+            assert uploader_wrapper._active_fields(3) == {"declaration": "抖音声明"}
     else:
         with pytest.raises(error_type), uploader_wrapper._declaration_context(first):
             assert uploader_wrapper._active_fields(3) == {"declaration": "抖音声明"}
@@ -654,6 +713,43 @@ def test_effective_items_use_isolated_context_for_platform_and_declaration() -> 
     assert not hasattr(uploader_wrapper._local, "active")
 
 
+def test_effective_items_replace_context_for_same_platform_declarations() -> None:
+    payloads = [
+        {
+            "fileList": ["first.mp4"],
+            "accountList": ["douyin.json"],
+            "type": 3,
+            "title": "第一条",
+            "tags": [],
+            "platformFields": {"douyin": {"declaration": "no_need"}},
+        },
+        {
+            "fileList": ["second.mp4"],
+            "accountList": ["douyin.json"],
+            "type": 3,
+            "title": "第二条",
+            "tags": [],
+            "platformFields": {"douyin": {"declaration": "marketing"}},
+        },
+    ]
+    items = [
+        normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0]
+        for payload in payloads
+    ]
+    observed: list[dict[str, Any]] = []
+
+    uploader_wrapper._execute_effective_group(
+        items,
+        lambda _command: observed.append(uploader_wrapper._active_fields(3).copy()),
+    )
+
+    assert observed == [
+        {"declaration": "无需添加自主声明"},
+        {"declaration": "内容含营销推广信息"},
+    ]
+    assert not hasattr(uploader_wrapper._local, "active")
+
+
 def test_effective_item_failure_clears_context_before_next_item() -> None:
     first_payload = {
         "fileList": ["douyin.mp4"],
@@ -675,9 +771,7 @@ def test_effective_item_failure_clears_context_before_next_item() -> None:
     second = normalize_publish_payloads([second_payload], ACCOUNT_FIXTURES).effective[0]
 
     def fail(_command: dict[str, Any]) -> None:
-        assert uploader_wrapper._active_fields(3) == {
-            "declaration": "无需添加自主声明"
-        }
+        assert uploader_wrapper._active_fields(3) == {"declaration": "无需添加自主声明"}
         raise TimeoutError("item timeout")
 
     with pytest.raises(TimeoutError, match="timeout"):
