@@ -534,3 +534,11 @@
 - Deviations：为让 detail 与 fake uploader 共享同一冻结时刻，新增 PostHub-owned `publishDatetimes` 到抖音 timer effective（submitted 仍保留原始 HH:MM）；这是必要的执行快照，不修改官方代码，也不承担新的 scheduler。
 - Reviewer 修复：`now=None` 时同一批多个 effective item 曾逐项读取本地时钟，跨午夜可能得到不同日期；现于首次抖音 timer item 冻结一次本地 naive 时钟，并补多账号跨午夜回归。
 
+### Issue #88 Merger 执行记录（2026-08-27）
+
+- 按要求执行 `git merge afk/issue-88 --no-edit`，业务文件自动合并；唯一冲突为 `docs/implementation-notes.md`。已逐侧读取并保留 #86 的多素材 immediate 记录与 #88 `021e4ac`、`4c878b4`、`e1542c4` 的分钟快照、本地 naive 时钟及跨午夜修复记录，生成 merge commit `6af1154`；未使用 `-X`，未回退 #85/#87/#86 能力。
+- daemon：`cd daemon && uv run pytest -q` → `161 passed in 4.12s`。
+- web：`pnpm test -- --run` → `20 files / 207 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `0.91s`）；仅有既有 jsdom navigation stderr。
+- Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- #88 业务内容与验证均通过；下一步合入 #90 声明三态改动。
+
