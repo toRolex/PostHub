@@ -193,3 +193,40 @@
 - 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
 - 本轮未修改 `daemon/sau_backend.py`、官方 `uploader/*`、`web/` 或 `src-tauri/` 业务代码；未 push、未建 PR。
 - 收尾：`wt remove afk/issue-82 -D --foreground` 已清理 issue 82 worktree 与本地分支；`gh issue close 82 --comment '实现已合并到 develop，完成 normalization / adapter 与 fail-closed 验收。'` 后 `gh issue view 82 --json state` 返回 `CLOSED`。
+
+## Issue #83：定时契约 HH:MM 双读单写
+
+### 目标与计划
+
+- 仅处理定时契约：前端领域与官方请求的新写入统一使用 `string[]` HH:MM；迁移期读取旧 `number[]` 并在内存中规范化为 HH:MM。
+- 先在 `web/src/domain/batch.test.ts`、`web/src/api/official.test.ts` 与相关 store 测试建立失败回归，再垂直实现纯时间函数、单视频/矩阵映射和 timer preference 迁移。
+- 纯时间契约固定本地机器时间输入、最近整点四舍五入（正好 30 分钟向后）、跨午夜进位；不引入自研 scheduler/rules，不修改官方源码。
+- 完成后运行 web 全量测试/build，并补 daemon/Tauri 全量测试（若环境允许）；提交中文语义原子 commit，不 push、不建 PR、不 merge、不关闭 issue。
+
+### 已确认事实
+
+- 当前 `TimerPref`、单视频表单和 `PostVideoRequest.dailyTimes` 仍为 `number[]`；`ScheduleView` 与单视频定时 UI 仍解析整数小时。
+- 矩阵 `BatchItem` 已使用 `timeOfDay` HH:MM，但 `buildBatchItemsFromMatrix` 仍将时刻转为官方整点小时，且当前 parser 仅校验小时并丢弃分钟。
+- 当前 worktree `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-83` 分支 `afk/issue-83`，基线为 `e3801de`，初始工作树干净。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已完成初始状态、现有定时 seam 与测试盘点；未修改业务代码。
+- 已列出待锁定规则：HH:MM 严格解析与规范化、旧小时数组迁移、纯时间计算的本地时钟参数化、单视频与矩阵官方 payload 分别保持 HH:MM 字符串。
+- Red：先新增 `web/src/domain/time.test.ts` 的 parser、双读单写、非法输入、机器本地时间、最近整点、30 分钟 tie-break、午夜 carry 测试；缺少 `time` 模块、后续缺少时间函数时按预期失败。
+- Green：新增 `web/src/domain/time.ts`，以日内分钟作为纯计算值；`readTimeList` 双读旧小时/HH:MM，`writeTimeList` 与 `normalizeDailyTimes` 单写规范 HH:MM；`nearestWholeHour` 使用本地时分并在 30 分钟向后取整，显式返回 `dayCarry`，`carryStartDays` 合并起始日。
+- Green：`PostVideoRequest.dailyTimes`、单视频 timer 输入与矩阵 effective payload 改为 `string[]`；矩阵映射保留 `timeOfDay` 分钟。旧 `parseHHMMToHour` 仅保留为兼容整点 seam 的最近整点降级。
+- Green：`TimerPref`、发布表单、定时设置 UI 与矩阵时刻池统一 HH:MM；`loadTimerPref` 读取旧 number[] 后立即持久化 string[]，写入端规范化去重排序并拒绝非法矩阵时刻。相关定向测试 → `17 files / 189 tests passed`。
+- Green：发现 daemon PostHub-owned normalization 原只接受旧整数数组，导致新前端请求无法通过官方 seam；在 `daemon/posthub/publish_adapter.py` 增加双读并将 effective payload 单写为规范 HH:MM，保留分钟。新增旧格式迁移、分钟保真、非法时间回归；daemon 定向测试 → `27 passed`。
+
+### 最终验证记录
+
+- `cd web && pnpm test -- --run` → `17 files / 189 tests passed`；保留既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.89s`）。
+- `cd daemon && uv run pytest -q` → `72 passed`；涉及 Python 文件 `ruff check` 与 `ruff format --check` 均通过。
+- `cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 `resources/{daemon,bin,browser}` 目录，未进入 Git。
+- 未 push、未建 PR、未 merge、未关闭 issue；待提交中文语义原子 commit。

@@ -5,6 +5,7 @@ import { useDaemonStore } from "../stores/daemon";
 import { useFilesStore } from "../stores/files";
 import { usePublishStore } from "../stores/publish";
 import { parseTags } from "../domain/tags";
+import { normalizeDailyTimes } from "../domain/time";
 import type { Platform, PlatformFields } from "../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
 import { cn } from "../lib/utils";
@@ -331,16 +332,14 @@ function TimerSection({ errors }: { errors: string[] }) {
   const startDays = usePublishStore((s) => s.startDays);
   const setForm = usePublishStore((s) => s.setForm);
 
-  // 时刻输入（整数小时）→ number[]：逗号/空格分隔，丢弃非 0-23 与重复项。
-  function parseDailyTimes(raw: string): number[] {
-    return Array.from(
-      new Set(
-        raw
-          .split(/[\s,，]+/)
-          .map(Number)
-          .filter((h) => Number.isInteger(h) && h >= 0 && h <= 23),
-      ),
-    ).sort((a, b) => a - b);
+  // 时刻输入（HH:MM）→ string[]：逗号/空格分隔，非法项不写入。
+  function parseDailyTimes(raw: string): string[] {
+    const values = raw.split(/[\s,，]+/).filter(Boolean);
+    try {
+      return normalizeDailyTimes(values);
+    } catch {
+      return [];
+    }
   }
 
   return (
@@ -377,7 +376,7 @@ function TimerSection({ errors }: { errors: string[] }) {
             <Input
               id="publish-timer-times"
               value={dailyTimes.join(" ")}
-              placeholder="整点小时，空格分隔，如 10 14 20"
+              placeholder="HH:MM，空格分隔，如 10:00 14:30 20:05"
               onChange={(e) => setForm({ dailyTimes: parseDailyTimes(e.target.value) })}
             />
             <span className="text-caption text-meta">当前 {dailyTimes.length} 个时刻</span>

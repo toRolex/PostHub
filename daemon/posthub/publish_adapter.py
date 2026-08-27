@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -275,7 +276,34 @@ def _validate_optional_string(payload: Mapping[str, Any], key: str, index: int) 
         raise _error(index, f"{key}必须是 string 或 null")
 
 
-def _validate_schedule(payload: Mapping[str, Any], index: int) -> bool:
+def _normalize_daily_times(value: Any, index: int) -> list[str]:
+    """双读旧小时/新 HH:MM，输出排序去重的 HH:MM。"""
+    if not isinstance(value, (list, tuple)) or not value:
+        raise _error(index, "每日时刻 dailyTimes 不能为空")
+
+    normalized: set[str] = set()
+    for raw in value:
+        if isinstance(raw, bool):
+            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串或旧小时整数")
+        if isinstance(raw, int):
+            if raw < 0 or raw > 23:
+                raise _error(index, "每日时刻 dailyTimes 小时必须在 0-23")
+            normalized.add(f"{raw:02d}:00")
+            continue
+        if not isinstance(raw, str):
+            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串或旧小时整数")
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+        if match is None:
+            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM")
+        hour, minute = (int(part) for part in match.groups())
+        if hour > 23 or minute > 59:
+            raise _error(index, "每日时刻 dailyTimes 必须是有效 HH:MM")
+        normalized.add(f"{hour:02d}:{minute:02d}")
+
+    return sorted(normalized)
+
+
+def _validate_schedule(payload: dict[str, Any], index: int) -> bool:
     enabled = payload.get("enableTimer", False)
     if enabled is None:
         enabled = False
@@ -292,16 +320,11 @@ def _validate_schedule(payload: Mapping[str, Any], index: int) -> bool:
     ):
         raise _error(index, "每日条数 videosPerDay 必须是正整数")
 
-    daily_times = payload.get("dailyTimes")
-    if not isinstance(daily_times, (list, tuple)) or not daily_times:
-        raise _error(index, "每日时刻 dailyTimes 不能为空")
-    if any(
-        isinstance(hour, bool) or not isinstance(hour, int) or hour < 0 or hour > 23
-        for hour in daily_times
-    ):
-        raise _error(index, "每日时刻 dailyTimes 必须是 0-23 整数数组")
-    if videos_per_day > len(daily_times):
+    normalized_daily_times = _normalize_daily_times(payload.get("dailyTimes"), index)
+    if videos_per_day > len(normalized_daily_times):
         raise _error(index, "每日条数不能超过时刻数量")
+    # effective payload 的唯一写入形态；旧整数只在读取时转换。
+    payload["dailyTimes"] = normalized_daily_times
 
     start_days = payload.get("startDays")
     if (

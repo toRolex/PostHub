@@ -129,7 +129,7 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
     ]);
   });
 
-  it("timer startDays 缺失或为负 → 错误", () => {
+  it("timer startDays 缺失、非整数或为负 → 错误", () => {
     const errors = validateBatch(
       [
         makeItem({
@@ -142,6 +142,12 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
           filePath: "v5.mp4",
           mode: "timer",
           timeOfDay: "10:00",
+          startDays: 1.5,
+        }),
+        makeItem({
+          filePath: "v6.mp4",
+          mode: "timer",
+          timeOfDay: "10:00",
           startDays: -1,
         }),
       ],
@@ -150,6 +156,22 @@ describe("validateBatch（结构化 ValidationError，issue #57）", () => {
     expect(errors).toEqual([
       { row: 1, filePath: "v4.mp4", msg: "定时模式必须设置起始日 startDays >= 0" },
       { row: 2, filePath: "v5.mp4", msg: "定时模式必须设置起始日 startDays >= 0" },
+      { row: 3, filePath: "v6.mp4", msg: "定时模式必须设置起始日 startDays >= 0" },
+    ]);
+  });
+
+  it("timer timeOfDay 非法 HH:MM → 错误而不是绕过校验", () => {
+    const errors = validateBatch(
+      [makeItem({ filePath: "v7.mp4", mode: "timer", timeOfDay: "24:30", startDays: 0 })],
+      ["24:30"],
+    );
+    expect(errors).toEqual([
+      { row: 0, filePath: "", msg: "每日时刻须为 HH:MM（小时 0-23，分钟 0-59）" },
+      {
+        row: 1,
+        filePath: "v7.mp4",
+        msg: "定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）",
+      },
     ]);
   });
 

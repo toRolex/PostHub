@@ -143,9 +143,35 @@ def test_normalization_preserves_official_platform_payload_fields(
     assert item.effective["accountList"] == payload["accountList"]
     assert item.effective["category"] == payload["category"]
     assert item.effective.get("platformFields") == expected_fields
+    if payload.get("enableTimer"):
+        assert item.effective["dailyTimes"] == [
+            f"{hour:02d}:00" for hour in sorted(set(payload["dailyTimes"]))
+        ]
     for field in ("thumbnail", "productLink", "productTitle", "isDraft"):
         if field in payload:
             assert item.effective[field] == payload[field]
+
+
+def test_schedule_accepts_hhmm_and_effective_payload_preserves_minutes() -> None:
+    payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "定时",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 2,
+        "dailyTimes": ["14:30", "09:05", "14:30"],
+        "startDays": 2,
+    }
+
+    result = normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
+
+    assert result.submitted[0]["dailyTimes"] == ["14:30", "09:05", "14:30"]
+    assert result.effective[0].effective["dailyTimes"] == ["09:05", "14:30"]
+    assert all(
+        isinstance(value, str) for value in result.effective[0].effective["dailyTimes"]
+    )
 
 
 def test_normalization_splits_accounts_and_emits_submitted_and_effective_snapshots() -> (
@@ -282,6 +308,15 @@ def test_normalization_rejects_invalid_schedule_and_platform_field_shape() -> No
     payload["platformFields"] = {"douyin": {"origin": True}}
     with pytest.raises(NormalizationError, match="字段非法"):
         normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
+
+    for invalid_time in ("24:00", "12:60", "bad"):
+        invalid_schedule = {
+            **payload,
+            "platformFields": None,
+            "dailyTimes": [invalid_time],
+        }
+        with pytest.raises(NormalizationError, match="每日时刻"):
+            normalize_publish_payloads([invalid_schedule], ACCOUNT_FIXTURES)
 
 
 @pytest.mark.parametrize("malformed_type", [[], {}, 3.0])

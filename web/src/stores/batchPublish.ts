@@ -10,6 +10,7 @@ import {
 } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
 import { withMutation } from "./_withMutation";
+import { normalizeHHMM } from "../domain/time";
 
 /**
  * 矩阵批量发布 store。
@@ -146,10 +147,19 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
       ),
     })),
 
-  addDailyTime: (hm) =>
+  addDailyTime: (hm) => {
+    let normalized: string;
+    try {
+      normalized = normalizeHHMM(hm);
+    } catch {
+      return;
+    }
     set((s) => ({
-      dailyTimes: s.dailyTimes.includes(hm) ? s.dailyTimes : [...s.dailyTimes, hm],
-    })),
+      dailyTimes: s.dailyTimes.includes(normalized)
+        ? s.dailyTimes
+        : [...s.dailyTimes, normalized].sort(),
+    }));
+  },
 
   removeDailyTime: (hm) =>
     set((s) => ({

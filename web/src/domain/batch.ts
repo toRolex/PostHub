@@ -10,8 +10,9 @@
 import type { Platform } from "../api/types";
 import type { PlatformFields } from "./declarations";
 import { validatePlatformFields } from "./declarations";
+import { normalizeDailyTimes, normalizeHHMM } from "./time";
 
-/** 整批共用时刻池（HH:MM 字符串，提交时按整点取整映射回 0–23 整型）。 */
+/** 整批共用时刻池（HH:MM 字符串，提交时分钟保持不变）。 */
 export type DailyTime = string;
 
 /** 单视频条目定时模式：立即发布 / 定时发布。 */
@@ -116,7 +117,13 @@ export function validateBatch(items: BatchItem[], dailyTimes: string[]): Validat
   if (items.length === 0) {
     errors.push({ row: 0, filePath: "", msg: "请至少添加一条视频" });
   }
-  const dailyTimesSet = new Set(dailyTimes);
+  let normalizedDailyTimes: string[] = [];
+  try {
+    normalizedDailyTimes = normalizeDailyTimes(dailyTimes);
+  } catch {
+    errors.push({ row: 0, filePath: "", msg: "每日时刻须为 HH:MM（小时 0-23，分钟 0-59）" });
+  }
+  const dailyTimesSet = new Set(normalizedDailyTimes);
   items.forEach((item, idx) => {
     const row = idx + 1;
     if (!item.title.trim()) {
@@ -129,14 +136,26 @@ export function validateBatch(items: BatchItem[], dailyTimes: string[]): Validat
       errors.push({ row, filePath: item.filePath, msg: "请至少选择一个平台的账号" });
     }
     if (item.mode === "timer") {
-      if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
+      let normalizedTime: string | undefined;
+      if (item.timeOfDay) {
+        try {
+          normalizedTime = normalizeHHMM(item.timeOfDay);
+        } catch {
+          // 统一落入“未从时刻池选择”的领域错误，避免非法值绕过校验。
+        }
+      }
+      if (!normalizedTime || !dailyTimesSet.has(normalizedTime)) {
         errors.push({
           row,
           filePath: item.filePath,
           msg: "定时模式必须从顶部时刻表挑 1 个时刻（timeOfDay）",
         });
       }
-      if (item.startDays === undefined || item.startDays < 0) {
+      if (
+        item.startDays === undefined ||
+        !Number.isInteger(item.startDays) ||
+        item.startDays < 0
+      ) {
         errors.push({
           row,
           filePath: item.filePath,

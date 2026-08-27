@@ -33,7 +33,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **孤儿 daemon** | 桌面壳关窗口 / 崩溃 / 被强杀时，孙进程 managed python 因未被 spawn_daemon 的直接 `child.kill()` 覆盖而残留，**继续监听 5409**。每次重新打开 PostHub 都会刷一对新链路，**多次开关导致 N 对链路并存**，新链路因端口被占而抢不到连接——表现为扫码登录 SSE 一直 0 字节。 |
 | **矩阵批量** | 「批量发布」区段的产品形态（issue #37/#38/#39）：每视频一条 BatchItem（独立标题 / 描述 / 标签 / 账号 / 定时模式），不再笛卡尔展开成「标题 × 账号」共享一份内容。提交时一行 BatchItem 展开为多条 PostVideoRequest（每账号一条），一次 POST `/postVideoBatch`。 |
 | **受限本机 batch runner/history** | PostHub-owned 的产品扩展：只负责桌面端批量提交编排所需的本机记录、状态回看与恢复入口；实际发布仍委托官方 `/postVideo` / `/postVideoBatch`。它不提供通用任务调度、跨机器执行、独立重试/限速/并发策略，也不替代官方定时语义。 |
-| **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上、提交时由 `buildBatchItemsFromMatrix` 按整点取整映射回 0–23 整型数组下发。 |
+| **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上；`buildBatchItemsFromMatrix` 新写入保持 HH:MM 分钟，旧整点 seam 仅在兼容降级时取最近整点。 |
 | **无 CLI** | PostHub 不发布命令行工具（`posthub` CLI / `ph` 子命令等）；所有交互走桌面壳 GUI。官方 `sau_backend.py` 仍由桌面壳作为子进程拉起（不在用户 shell 暴露）。PostHub 用户面对的「官方后端」只通过桌面壳的 HTTP/SSE seam 触达。 |
 | **内容声明** | 各平台发布页要求创作者勾选/选择的合规标识字段，承载「是否 AI 生成 / 虚构 / 实拍 / 营销 / 转载 / 个人观点」等语义。三家平台 UI 字段名与候选文案均不统一。 |
 | **平台声明字段** | 视频号「添加声明」8 选项 / 抖音「自主声明」单选 radio / 小红书「添加内容类型声明」单选 radio。PostHub **按平台分键透传**到 `platform_fields.<platform>`，不抽象成统一键 —— 三家语义不对齐，统一键会丢精度。 |

@@ -104,14 +104,14 @@ describe("buildPostVideoRequest（表单 → /postVideo 契约）", () => {
       timer: {
         enableTimer: true,
         videosPerDay: 2,
-        dailyTimes: [10, 14, 20],
+        dailyTimes: ["20:05", "10:00", "14:30", "14:30"],
         startDays: 1,
       },
     });
     expect(body.enableTimer).toBe(true);
     expect(body.videosPerDay).toBe(2);
-    // dailyTimes 为「整点小时」数字数组（官方 generate_schedule_time_next_day 语义）。
-    expect(body.dailyTimes).toEqual([10, 14, 20]);
+    // 新写入只使用 HH:MM 字符串，并保留分钟。
+    expect(body.dailyTimes).toEqual(["10:00", "14:30", "20:05"]);
     expect(body.dailyTimes).toHaveLength(3);
     expect(body.startDays).toBe(1);
   });

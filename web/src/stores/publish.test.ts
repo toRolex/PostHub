@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initialPublishState, usePublishStore } from "./publish";
+import {
+  initialPublishState,
+  loadTimerPref,
+  TIMER_PREF_KEY,
+  usePublishStore,
+} from "./publish";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
 
@@ -32,6 +37,7 @@ const ACCOUNTS = [
 
 describe("publish store（发布表单 → 官方 /postVideo）", () => {
   beforeEach(() => {
+    localStorage.clear();
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
     useAccountsStore.setState({ ...initialAccountsState, accounts: ACCOUNTS as never });
     usePublishStore.setState(initialPublishState);
@@ -149,5 +155,40 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     });
     const noAccount = usePublishStore.getState().validate();
     expect(noAccount.some((e) => e.includes("账号"))).toBe(true);
+  });
+
+  it("读取旧 number[] 默认定时配置并迁移为 HH:MM string[]", () => {
+    localStorage.setItem(
+      TIMER_PREF_KEY,
+      JSON.stringify({
+        timerEnabled: true,
+        videosPerDay: 2,
+        dailyTimes: [20, 10, 20],
+        startDays: 3,
+      }),
+    );
+
+    expect(loadTimerPref()).toEqual({
+      timerEnabled: true,
+      videosPerDay: 2,
+      dailyTimes: ["10:00", "20:00"],
+      startDays: 3,
+    });
+    expect(JSON.parse(localStorage.getItem(TIMER_PREF_KEY)!).dailyTimes).toEqual([
+      "10:00",
+      "20:00",
+    ]);
+  });
+
+  it("默认定时配置新写入只保存 string[]，保留分钟", () => {
+    usePublishStore.getState().setTimerPref({
+      timerEnabled: true,
+      videosPerDay: 2,
+      dailyTimes: ["14:30", "09:05"],
+      startDays: 1,
+    });
+    const stored = JSON.parse(localStorage.getItem(TIMER_PREF_KEY)!);
+    expect(stored.dailyTimes).toEqual(["09:05", "14:30"]);
+    expect(stored.dailyTimes.every((value: unknown) => typeof value === "string")).toBe(true);
   });
 });
