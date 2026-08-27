@@ -4,9 +4,12 @@ import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useFilesStore } from "../stores/files";
 import { usePublishStore } from "../stores/publish";
+import { useRunStore } from "../stores/runs";
 import { parseTags } from "../domain/tags";
+import { resolveDouyinDeclaration } from "../domain/declarations";
 import { normalizeDailyTimes } from "../domain/time";
 import type { Platform, PlatformFields } from "../api/types";
+import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
@@ -461,6 +464,54 @@ function DeclarationSection() {
 
 /* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
+function runItemStatusLabel(status: string): string {
+  return {
+    pending: "待执行",
+    running: "执行中",
+    success: "成功",
+    failed: "失败",
+  }[status] ?? status;
+}
+
+/** 最近 accepted run 详情：展示首次受理时冻结的最终 effective 声明。 */
+function RunDetailPanel() {
+  const snapshot = useRunStore((s) => s.snapshot);
+  if (!snapshot) return null;
+
+  return (
+    <section className="border-t border-border-soft py-6">
+      <SectionHead title="最近运行详情" hint="展示首次受理时冻结的最终值" />
+      <div className="flex flex-col gap-2">
+        {snapshot.items.map((item) => {
+          const effective = item.effective;
+          const platform = effective
+            ? OFFICIAL_TYPE_PLATFORM[effective.type]
+            : undefined;
+          const douyin =
+            platform === "douyin"
+              ? resolveDouyinDeclaration(effective?.platformFields?.douyin, undefined)
+              : undefined;
+          return (
+            <div
+              key={item.itemId}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border-soft bg-bg px-3 py-2 text-label"
+            >
+              <span className="font-mono text-caption text-meta">{item.itemId.slice(0, 8)}</span>
+              <span className="text-fg-2">{runItemStatusLabel(item.status)}</span>
+              {douyin && (
+                <span className="rounded-sm bg-accent-tint px-1.5 py-0.5 text-caption text-accent-ink">
+                  抖音声明：{douyin.value ? `${douyin.value} · ${douyin.label}` : douyin.label}
+                </span>
+              )}
+              {item.error && <span className="text-danger-deep">{item.error}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function FeedbackPanel() {
   const results = usePublishStore((s) => s.results);
   const submitting = usePublishStore((s) => s.submitting);
@@ -603,6 +654,7 @@ export function PublishView() {
       <ContentSection />
       <TimerSection errors={errors} />
       <DeclarationSection />
+      <RunDetailPanel />
       <PublishActions errors={errors} />
       <BatchPublishSection />
     </div>

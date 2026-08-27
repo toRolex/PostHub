@@ -176,7 +176,14 @@ def test_query_observes_item_lifecycle_and_fail_closed_completed_run(
             "status": "failed",
             "error": "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam",
             "submitted": immediate_payload(),
-            "effective": immediate_payload(),
+            "effective": {
+                "fileList": ["video.mp4"],
+                "accountList": ["douyin.json"],
+                "type": 3,
+                "title": "立即 item",
+                "tags": ["测试"],
+                "enableTimer": False,
+            },
         }
     ]
 
@@ -566,6 +573,37 @@ def wait_for_status_from_store(store: RunStore, run_id: str, status: str) -> dic
             return latest
         time.sleep(0.01)
     pytest.fail(f"run 未进入 {status}：{latest}")
+
+
+def test_run_detail_exposes_first_acceptance_effective_douyin_snapshot(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, official_db = run_app
+    with sqlite3.connect(official_db) as conn:
+        conn.execute(
+            "UPDATE user_info SET default_platform_fields = ? WHERE filePath = ?",
+            ('{"douyin":{"declaration":"no_need"}}', "douyin.json"),
+        )
+        conn.commit()
+
+    with app.test_client() as client:
+        accepted = client.post("/postRuns", json=immediate_payload())
+        run_id = accepted.get_json()["data"]["runId"]
+        detail = client.get(f"/postRuns/{run_id}").get_json()["data"]
+
+    effective = detail["items"][0]["effective"]
+    assert effective["platformFields"] == {"douyin": {"declaration": "no_need"}}
+
+    # 受理后改变账号默认，不得改写已经持久化的 item effective 快照。
+    with sqlite3.connect(official_db) as conn:
+        conn.execute(
+            "UPDATE user_info SET default_platform_fields = ? WHERE filePath = ?",
+            ('{"douyin":{"declaration":"ai_generated"}}', "douyin.json"),
+        )
+        conn.commit()
+    with app.test_client() as client:
+        after_change = client.get(f"/postRuns/{run_id}").get_json()["data"]
+    assert after_change["items"][0]["effective"] == effective
 
 
 def test_latest_run_query_returns_completed_run_after_worker_finishes(

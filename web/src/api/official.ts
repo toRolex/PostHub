@@ -248,6 +248,7 @@ export interface RunItemSnapshot {
   submitted?: PostVideoRequest;
   /** 账号粒度 effective payload；抖音 timer 含 naive ISO publishDatetimes。 */
   effective?: PostVideoRequest & { publishDatetimes?: string[] };
+
 }
 
 export interface RunSnapshot {

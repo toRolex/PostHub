@@ -1000,3 +1000,61 @@ def test_douyin_batch_freezes_local_date_once_across_effective_accounts(
         ["2026-08-28T00:05:00"],
         ["2026-08-28T00:05:00"],
     ]
+
+
+@pytest.mark.parametrize(
+    ("task_fields", "expected_value"),
+    [
+        (None, "marketing"),
+        ({"douyin": {"declaration": "no_need"}}, "no_need"),
+        ({"douyin": {"declaration": "ai_generated"}}, "ai_generated"),
+    ],
+)
+def test_douyin_declaration_has_three_distinct_effective_states(
+    task_fields: dict[str, Any] | None, expected_value: str
+) -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "抖音三态",
+        "tags": [],
+    }
+    if task_fields is not None:
+        payload["platformFields"] = task_fields
+    accounts = deepcopy(ACCOUNT_FIXTURES)
+    accounts[2]["default_platform_fields"] = {"douyin": {"declaration": "marketing"}}
+
+    item = normalize_publish_payloads([payload], accounts).effective[0]
+
+    assert item.effective["platformFields"] == {
+        "douyin": {"declaration": expected_value}
+    }
+
+
+def test_douyin_wrapper_constructor_receives_mapped_chinese_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "抖音构造器",
+        "tags": [],
+        "platformFields": {"douyin": {"declaration": "no_need"}},
+    }
+    item = normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0]
+    seen: dict[str, Any] = {}
+
+    def fake_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(uploader_wrapper._OriginalDouYinVideo, "__init__", fake_init)
+    with uploader_wrapper._declaration_context(
+        uploader_wrapper._declaration_item_for_effective(item)
+    ):
+        uploader_wrapper._DouYinVideoWithDeclaration(
+            "标题", "video.mp4", [], 0, ["douyin.json"]
+        )
+
+    assert seen["declaration"] == "无需添加自主声明"

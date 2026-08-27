@@ -121,6 +121,34 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     expect(rows[0].platform).toBe("xiaohongshu");
   });
 
+  it("抖音预览显示最终有效声明：空字段继承默认，no_need/具体值覆盖默认", () => {
+    const rows = buildPreviewRows(
+      [
+        mkItem({
+          filePath: "inherit.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+        }),
+        mkItem({
+          filePath: "no-need.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+          platformFields: { douyin: { declaration: "no_need" } },
+        }),
+        mkItem({
+          filePath: "specific.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+          platformFields: { douyin: { declaration: "marketing" } },
+        }),
+      ],
+      { "d.json": { douyin: { declaration: "ai_generated" } } },
+    );
+
+    expect(rows.map((row) => row.declaration)).toEqual([
+      { value: "ai_generated", label: "内容由AI生成" },
+      { value: "no_need", label: "无需添加自主声明" },
+      { value: "marketing", label: "内容含营销推广信息" },
+    ]);
+  });
+
   it("itemKey 与 store itemResults.itemKey 稳定一致（filePath + '|' + cookieFile）", () => {
     const rows = buildPreviewRows([
       mkItem({

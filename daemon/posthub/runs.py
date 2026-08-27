@@ -322,6 +322,7 @@ class RunStore:
                     "status": item["status"],
                     "error": item["error"],
                     "submitted": json.loads(item["submitted_json"]),
+                    # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
                     "effective": json.loads(item["effective_json"]),
                 }
                 for item in items
