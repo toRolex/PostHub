@@ -293,7 +293,7 @@ class RunStore:
                 return None
             items = conn.execute(
                 """
-                SELECT id, ordinal, status, error
+                SELECT id, ordinal, status, error, submitted_json, effective_json
                 FROM run_items WHERE run_id = ? ORDER BY ordinal
                 """,
                 (run_id,),
@@ -305,7 +305,13 @@ class RunStore:
             "updatedAt": run["updated_at"],
             "completedAt": run["completed_at"],
             "items": [
-                {"itemId": item["id"], "status": item["status"], "error": item["error"]}
+                {
+                    "itemId": item["id"],
+                    "status": item["status"],
+                    "error": item["error"],
+                    "submitted": json.loads(item["submitted_json"]),
+                    "effective": json.loads(item["effective_json"]),
+                }
                 for item in items
             ],
         }

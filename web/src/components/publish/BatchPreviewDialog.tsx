@@ -31,6 +31,7 @@ import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
 import { PlatformLimitHint } from "./PlatformLimitHint";
 import { cn } from "../../lib/utils";
+import { normalizeHHMM } from "../../domain/time";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
 export interface PreviewRow {
@@ -56,7 +57,17 @@ export function buildPreviewRows(items: BatchItem[]): PreviewRow[] {
     platform,
     accountCookie: cookie,
     mode: item.mode,
-    timeOfDay: item.timeOfDay,
+    // preview 与提交 payload 共用 HH:MM 规范化；非法值保留原文供校验错误展示。
+    timeOfDay:
+      item.mode === "timer" && item.timeOfDay
+        ? (() => {
+            try {
+              return normalizeHHMM(item.timeOfDay);
+            } catch {
+              return item.timeOfDay;
+            }
+          })()
+        : item.timeOfDay,
     startDays: item.startDays,
   }));
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,10 @@ from flask import Flask
 
 import sau_backend
 from posthub.composition import compose_posthub_backend, shutdown_posthub_backend
-from posthub.publish_adapter import normalize_publish_payload
+from posthub.publish_adapter import (
+    normalize_publish_payload,
+    normalize_publish_payloads,
+)
 from posthub.runs import RunStore, RunWorker
 
 
@@ -126,6 +130,8 @@ def test_query_observes_item_lifecycle_and_fail_closed_completed_run(
             "itemId": completed["items"][0]["itemId"],
             "status": "failed",
             "error": "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam",
+            "submitted": immediate_payload(),
+            "effective": immediate_payload(),
         }
     ]
 
@@ -531,3 +537,44 @@ def test_latest_run_query_returns_completed_run_after_worker_finishes(
     assert latest.status_code == 200
     assert latest.get_json()["data"]["runId"] == run_id
     assert latest.get_json()["data"]["status"] == "completed"
+
+
+def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payload(
+    tmp_path: Path,
+) -> None:
+    immediate = immediate_payload()
+    timer = {
+        **immediate,
+        "title": "分钟定时",
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["14:37"],
+        "startDays": 1,
+    }
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [immediate, timer], [account], now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None)
+    )
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run(normalized.effective)
+    seen: list[dict] = []
+    worker = RunWorker(store, uploader=lambda effective: seen.append(dict(effective)))
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert seen == [item.effective for item in normalized.effective]
+    assert detail["items"][0]["effective"].get("publishDatetimes") is None
+    assert detail["items"][1]["effective"]["publishDatetimes"] == [
+        "2026-08-29T14:37:00"
+    ]
+    assert detail["items"][1]["submitted"]["dailyTimes"] == ["14:37"]

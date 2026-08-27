@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from posthub.declarations import (
@@ -303,6 +304,57 @@ def _normalize_daily_times(value: Any, index: int) -> list[str]:
     return sorted(normalized)
 
 
+def generate_douyin_publish_datetimes(
+    total_videos: int,
+    videos_per_day: int,
+    daily_times: list[str],
+    start_days: int,
+    *,
+    now: datetime | None = None,
+) -> list[datetime]:
+    """按本地日历生成抖音最终执行时刻，返回无时区 naive datetime。"""
+    if (
+        isinstance(total_videos, bool)
+        or not isinstance(total_videos, int)
+        or total_videos < 0
+    ):
+        raise ValueError("total_videos 必须是非负整数")
+    if (
+        isinstance(videos_per_day, bool)
+        or not isinstance(videos_per_day, int)
+        or videos_per_day <= 0
+        or videos_per_day > len(daily_times)
+    ):
+        raise ValueError("videos_per_day 必须在每日时刻数量范围内")
+    if (
+        isinstance(start_days, bool)
+        or not isinstance(start_days, int)
+        or start_days < 0
+    ):
+        raise ValueError("start_days 必须是非负整数")
+    current = datetime.today() if now is None else now
+    if not isinstance(current, datetime) or current.tzinfo is not None:
+        raise ValueError("now 必须是本地 naive datetime")
+
+    slots: list[tuple[int, int]] = []
+    for raw in daily_times:
+        match = re.fullmatch(r"(\d{2}):(\d{2})", raw)
+        if match is None:
+            raise ValueError(f"daily_times 时刻格式非法：{raw!r}")
+        hour, minute = (int(part) for part in match.groups())
+        if hour > 23 or minute > 59:
+            raise ValueError(f"daily_times 时刻越界：{raw!r}")
+        slots.append((hour, minute))
+
+    return [
+        datetime.combine(
+            current.date() + timedelta(days=video // videos_per_day + start_days + 1),
+            time(*slots[video % videos_per_day]),
+        )
+        for video in range(total_videos)
+    ]
+
+
 def _validate_schedule(payload: dict[str, Any], index: int) -> bool:
     enabled = payload.get("enableTimer", False)
     if enabled is None:
@@ -456,6 +508,8 @@ def _validate_execution_fields(
 def normalize_publish_payloads(
     payloads: Iterable[Mapping[str, Any]],
     accounts: Iterable[AccountSnapshot | Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
 ) -> NormalizedPublishBatch:
     """将单视频或旧批量请求规范化为账号粒度的有效命令。
 
@@ -525,6 +579,17 @@ def normalize_publish_payloads(
             command = deepcopy(submitted_payload)
             command["fileList"] = list(files)
             command["accountList"] = [snapshot.file_path]
+            if platform_type == 3 and command.get("enableTimer"):
+                command["publishDatetimes"] = [
+                    value.isoformat(timespec="seconds")
+                    for value in generate_douyin_publish_datetimes(
+                        len(files),
+                        command["videosPerDay"],
+                        command["dailyTimes"],
+                        command["startDays"],
+                        now=now,
+                    )
+                ]
             if selected_fields:
                 command["platformFields"] = selected_fields
             else:
@@ -545,9 +610,11 @@ def normalize_publish_payloads(
 def normalize_publish_payload(
     payload: Mapping[str, Any],
     accounts: Iterable[AccountSnapshot | Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
 ) -> NormalizedPublishBatch:
     """单视频入口的命名别名，和旧批量入口共用实现。"""
-    return normalize_publish_payloads([payload], accounts)
+    return normalize_publish_payloads([payload], accounts, now=now)
 
 
 class PublishExecutionAdapter:
