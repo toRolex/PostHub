@@ -292,3 +292,14 @@
 - Green（coverage）：canonical、旧平台嵌套与旧 flat 均补齐小红书/视频号/抖音三平台读取回归，并补 canonical 与 legacy 并存优先级；定向测试 `53 passed`，ruff check/format 均通过。
 - 最终复验：`cd daemon && uv run pytest -q` → `96 passed in 1.58s`；`cd web && pnpm test -- --run` → `16 files / 171 tests passed`；`cd web && pnpm run build` 通过。
 - Runtime verify：临时组合 Flask 服务经真实 HTTP `/postVideoBatch` 返回 `200`；fake 官方 seam 依次观察到抖音 `{'declaration': '无需添加自主声明'}` 与视频号 `{'declaration': '内容包含营销广告'}`，证明 canonical context 在跨平台 item 间隔离。畸形单发数组与错误声明类型均返回 `400`，没有调用 fake seam；服务已停止。
+
+### Issue #84 Merger 执行记录（2026-08-27）
+
+- 合并前确认：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop` 分支为 `develop`，工作树干净；按指定顺序仅执行 `git merge afk/issue-84 --no-edit`，未使用 squash、`-X`、push 或 PR。
+- 冲突：`docs/implementation-notes.md` 单文件冲突；已保留 develop 侧完整 #83 HH:MM 实现/验证与 Merger 记录，并逐段追加 issue #84 分支的 canonical/legacy 双读、类型校验、finally 隔离回归及 Reviewer refinement 记录；未整体覆盖任一侧。
+- 业务文件自动合并完成：保留 #84 的 canonical declaration validation/finally 隔离实现，同时保留 #83 的 HH:MM normalization 与测试变更；未做业务语义改写。
+- 合并结果：生成 merge commit `f782083`，未修改官方 `daemon/sau_backend.py` 或 `uploader/*`。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `97 passed in 1.47s`；涉及 Python 文件 `ruff check` → `All checks passed!`，`ruff format --check` → `3 files already formatted`。
+- 合并后 web：`pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `0.90s`）；仅有既有 jsdom navigation stderr。
+- 合并后 Tauri：`cargo test --all-targets` → lib `17 passed`、bin `0 passed`。
+- 收尾：已执行 `wt remove afk/issue-83 -D --foreground` 并关闭/验证 #83 为 `CLOSED`；#84 worktree 与 issue 待本轮成功后按指定流程处理。
