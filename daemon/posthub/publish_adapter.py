@@ -31,6 +31,12 @@ _PLATFORM_FIELD_KEYS = {
     "wechat": {"declaration", "origin"},
     "douyin": {"declaration"},
 }
+# 只有确实能在官方执行链路中应用的字段才能进入 effective 命令；
+# 没有可靠 DOM/构造参数 seam 时必须拒绝，而不是返回 200 后静默丢字段。
+_UNSUPPORTED_EXECUTION_FIELDS = {
+    "xiaohongshu": {"source", "origin"},
+    "wechat": {"origin"},
+}
 
 
 class NormalizationError(ValueError):
@@ -386,7 +392,13 @@ def _merge_selected_platform_fields(
     if default_section is not None:
         if not isinstance(default_section, Mapping):
             raise _error(index, f"账号默认声明.{platform_name} 必须是 object")
-        selected.update(deepcopy(dict(default_section)))
+        selected.update(
+            {
+                key: deepcopy(value)
+                for key, value in default_section.items()
+                if value is not None
+            }
+        )
     task_section = submitted.get(platform_name)
     if task_section is not None:
         selected.update(
@@ -397,6 +409,25 @@ def _merge_selected_platform_fields(
             }
         )
     return {platform_name: selected} if selected else {}
+
+
+def _validate_execution_fields(
+    platform_type: int,
+    fields: Mapping[str, dict[str, Any]],
+    index: int,
+) -> None:
+    """拒绝没有可靠执行 seam 的有效字段，避免静默错发。"""
+    platform_name = _PLATFORM_NAMES[platform_type]
+    unsupported = sorted(
+        key
+        for key in _UNSUPPORTED_EXECUTION_FIELDS.get(platform_name, set())
+        if fields.get(platform_name, {}).get(key) is not None
+    )
+    if unsupported:
+        raise _error(
+            index,
+            f"{platform_name} 字段暂不支持安全执行：{unsupported}",
+        )
 
 
 def normalize_publish_payloads(
@@ -467,6 +498,7 @@ def normalize_publish_payloads(
                 platform_fields,
                 index,
             )
+            _validate_execution_fields(platform_type, selected_fields, index)
             command = deepcopy(submitted_payload)
             command["fileList"] = list(files)
             command["accountList"] = [snapshot.file_path]

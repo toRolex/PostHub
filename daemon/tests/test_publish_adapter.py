@@ -23,7 +23,7 @@ ACCOUNT_FIXTURES = [
         "filePath": "xhs.json",
         "userName": "小红书账号",
         "status": 1,
-        "default_platform_fields": {"xiaohongshu": {"source": "self_declare"}},
+        "default_platform_fields": None,
     },
     {
         "id": 12,
@@ -31,9 +31,7 @@ ACCOUNT_FIXTURES = [
         "filePath": "wechat.json",
         "userName": "视频号账号",
         "status": 1,
-        "default_platform_fields": {
-            "wechat": {"declaration": "no_label", "origin": True}
-        },
+        "default_platform_fields": {"wechat": {"declaration": "no_label"}},
     },
     {
         "id": 13,
@@ -70,10 +68,9 @@ ACCOUNT_FIXTURES = [
                 "productTitle": "小红书商品",
                 "isDraft": True,
                 "enableTimer": False,
-                "platformFields": {"xiaohongshu": {"source": "marketing"}},
             },
             1,
-            {"xiaohongshu": {"source": "marketing"}},
+            None,
         ),
         (
             {
@@ -88,12 +85,10 @@ ACCOUNT_FIXTURES = [
                 "dailyTimes": [10, 14],
                 "startDays": 2,
                 "isDraft": True,
-                "platformFields": {
-                    "wechat": {"declaration": "marketing", "origin": False}
-                },
+                "platformFields": {"wechat": {"declaration": "marketing"}},
             },
             2,
-            {"wechat": {"declaration": "marketing", "origin": False}},
+            {"wechat": {"declaration": "marketing"}},
         ),
         (
             {
@@ -201,9 +196,7 @@ def test_normalization_splits_accounts_and_emits_submitted_and_effective_snapsho
     assert result.submitted[0]["title"] == "双账号"
 
 
-def test_task_platform_fields_override_account_defaults_without_dropping_other_defaults() -> (
-    None
-):
+def test_task_platform_fields_override_account_defaults() -> None:
     payload = {
         "fileList": ["wechat.mp4"],
         "accountList": ["wechat.json"],
@@ -211,16 +204,16 @@ def test_task_platform_fields_override_account_defaults_without_dropping_other_d
         "title": "覆盖声明原创",
         "tags": [],
         "enableTimer": False,
-        "platformFields": {"wechat": {"origin": False}},
+        "platformFields": {"wechat": {"declaration": "marketing"}},
     }
 
     result = normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
 
     assert result.effective[0].effective["platformFields"] == {
-        "wechat": {"declaration": "no_label", "origin": False}
+        "wechat": {"declaration": "marketing"}
     }
     assert result.effective[0].account_snapshot.default_platform_fields == {
-        "wechat": {"declaration": "no_label", "origin": True}
+        "wechat": {"declaration": "no_label"}
     }
 
 
@@ -331,6 +324,63 @@ def test_normalization_rejects_malformed_platform_field_values(
         normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
 
 
+@pytest.mark.parametrize(
+    ("platform_type", "platform_fields", "expected_field"),
+    [
+        (1, {"xiaohongshu": {"source": "self_declare"}}, "source"),
+        (1, {"xiaohongshu": {"origin": True}}, "origin"),
+        (2, {"wechat": {"origin": False}}, "origin"),
+    ],
+)
+def test_normalization_rejects_fields_without_a_safe_execution_seam(
+    platform_type: int,
+    platform_fields: dict[str, Any],
+    expected_field: str,
+) -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": [{1: "xhs.json", 2: "wechat.json"}[platform_type]],
+        "type": platform_type,
+        "title": "声明执行边界",
+        "tags": [],
+        "platformFields": platform_fields,
+    }
+
+    with pytest.raises(NormalizationError, match=expected_field):
+        normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
+
+
+def test_normalization_omits_null_account_default_fields() -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "空默认字段",
+        "tags": [],
+    }
+    accounts = deepcopy(ACCOUNT_FIXTURES)
+    accounts[2]["default_platform_fields"] = {"douyin": {"declaration": None}}
+
+    command = normalize_publish_payloads([payload], accounts).effective[0].effective
+
+    assert "platformFields" not in command
+
+
+def test_normalization_rejects_unsupported_account_default_before_execution() -> None:
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["xhs.json"],
+        "type": 1,
+        "title": "账号默认声明执行边界",
+        "tags": [],
+    }
+    accounts = deepcopy(ACCOUNT_FIXTURES)
+    accounts[0]["default_platform_fields"] = {"xiaohongshu": {"source": "self_declare"}}
+
+    with pytest.raises(NormalizationError, match="source"):
+        normalize_publish_payloads([payload], accounts)
+
+
 def test_execution_adapter_normalizes_before_invoking_official_seam() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -356,6 +406,18 @@ def test_execution_adapter_normalizes_before_invoking_official_seam() -> None:
             [payload, {**payload, "fileList": []}],
             ACCOUNT_FIXTURES,
         )
+    assert calls == []
+
+    unsupported = {
+        "fileList": ["video.mp4"],
+        "accountList": ["xhs.json"],
+        "type": 1,
+        "title": "未支持声明",
+        "tags": [],
+        "platformFields": {"xiaohongshu": {"source": "self_declare"}},
+    }
+    with pytest.raises(NormalizationError, match="source"):
+        adapter.execute([unsupported], ACCOUNT_FIXTURES)
     assert calls == []
 
 
