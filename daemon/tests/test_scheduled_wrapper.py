@@ -289,6 +289,84 @@ def test_schedule_adapter_supports_hhmm_minutes_without_rounding() -> None:
     assert result[0].microsecond == 0
 
 
+def test_schedule_adapter_converts_all_hhmm_slots_and_preserves_start_days(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_generate(
+        total_videos: int,
+        *,
+        videos_per_day: int,
+        daily_times: list[int | float],
+        timestamps: bool,
+        start_days: int,
+    ) -> list[datetime]:
+        captured.update(
+            {
+                "total_videos": total_videos,
+                "videos_per_day": videos_per_day,
+                "daily_times": daily_times,
+                "timestamps": timestamps,
+                "start_days": start_days,
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        uploader_wrapper, "_ORIGINAL_GENERATE_SCHEDULE_TIME", fake_generate
+    )
+    uploader_wrapper._generate_schedule_with_start_days(
+        2, 2, ["10:30", "11:45"], timestamps=False, start_days=2
+    )
+
+    assert captured == {
+        "total_videos": 2,
+        "videos_per_day": 2,
+        "daily_times": [10.5, 11.75],
+        "timestamps": False,
+        "start_days": 2,
+    }
+
+
+@pytest.mark.parametrize("daily_times", ([24], [-1], [1.5], [True], ["24:00"]))
+def test_schedule_adapter_rejects_invalid_daily_times(daily_times: list[Any]) -> None:
+    with pytest.raises((TypeError, ValueError), match="daily_times"):
+        uploader_wrapper._generate_schedule_with_start_days(
+            1, 1, daily_times, timestamps=False, start_days=0
+        )
+
+
+@pytest.mark.parametrize("daily_times", (10, "10:30"))
+def test_schedule_adapter_rejects_non_array_daily_times(daily_times: Any) -> None:
+    with pytest.raises(TypeError, match="daily_times"):
+        uploader_wrapper._generate_schedule_with_start_days(
+            1, 1, daily_times, timestamps=False, start_days=0
+        )
+
+
+@pytest.mark.parametrize("start_days", [-1, 1.5, "2", True])
+def test_schedule_adapter_rejects_invalid_start_days(start_days: Any) -> None:
+    with pytest.raises((TypeError, ValueError), match="start_days"):
+        uploader_wrapper._generate_schedule_with_start_days(
+            1, 1, ["10:00"], timestamps=False, start_days=start_days
+        )
+
+
+def test_douyin_batch_legacy_tail_is_realigned() -> None:
+    app = Flask(__name__)
+    app.add_url_rule("/postVideoBatch", endpoint="postVideoBatch", view_func=lambda: "")
+    app.add_url_rule("/postVideo", endpoint="postVideo", view_func=lambda: "")
+    with app.test_request_context("/postVideoBatch"):
+        assert uploader_wrapper._normalize_douyin_tail(
+            "product-link", "product-title", ""
+        ) == ("", "product-link", "product-title")
+    with app.test_request_context("/postVideo"):
+        assert uploader_wrapper._normalize_douyin_tail(
+            "cover.jpg", "product-link", "product-title"
+        ) == ("cover.jpg", "product-link", "product-title")
+
+
 def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
     captured: list[tuple[bool, int]] = []
 
