@@ -364,3 +364,15 @@
 - #87 按用户指定改用修复后 tip `dda9a96`，包含 `3540e90`、`a280b50` 与边界测试；旧实现合并提交 `2484e15` 已在 develop，本轮必须合并新增提交。
 - #85 tip `98273b7`，包含 accepted run 生命周期/恢复竞态修复 `efb80b7` 与 worker 回收、状态轮询边界测试；本轮必须合并。
 - 执行顺序：先提交本准备记录以满足 Git merge 工作树保护，再逐分支拓扑 merge；每个实际 merge 后立即执行 daemon、web、build、Tauri 全量测试。只做最小冲突解决，不改无关业务；不 push、PR、squash、`-X`，不关闭父 issue #80。
+
+### 回归修复记录（2026-08-27）
+
+- 进入恢复时工作树干净；已知 develop 全量回归为 `tests/test_scheduled_wrapper.py` 9 项失败，根因是 #83 已将 `dailyTimes` 单写为 `HH:MM` 字符串，而当前 #87 generator 仍执行整数小时减法。
+- 本轮严格 TDD：先运行现有 scheduled wrapper 测试确认回归，再补充 HH:MM 单视频/批量四平台 fake uploader contract 失败测试；保持旧 number[] 读取兼容，不退回字符串契约。
+- Deviations：暂无。
+- Red：新增 HH:MM generator 精度测试及四平台 HTTP 单发/batch 参数化契约后，`cd daemon && uv run pytest tests/test_scheduled_wrapper.py -q` 为 `5 failed, 23 passed`；generator 对 `"10:30"` 做整数减法触发 `TypeError`，HTTP 层则因 adapter 仍只接受整数返回 400。
+- Green：adapter 双读旧整数/新 HH:MM，统一写出排序去重的 `HH:MM`；generator wrapper 仅在运行时把 HH:MM 转为带分钟的小数小时后关键字委托官方生成器，保留 `start_days` 与 `timestamps` 语义，不改官方源码、不复制发布循环。新增契约覆盖旧格式、新格式分钟保真及四平台 HTTP 单发/batch；定向测试 `56 passed`。
+- Deviations：为兼容上游只支持整数减法的生成器，采用小数小时运行时适配而非重写官方生成算法；分钟由 `timedelta` 保真落到 `datetime`，避免静默取整。
+- Runtime verify：临时数据库启动真实组合 Flask socket，HTTP 发送四平台 `/postVideo` 与 `/postVideoBatch`，8/8 返回 200；fake uploader 实际记录全部 `publish_strategy=scheduled`、`2026-08-29 10:30:00`，抖音封面/商品链接/商品标题与视频号 `category=7/is_draft=True` 均在正确参数位置；无 `TypeError`/`ValueError`/500。
+- 顾问复核发现前端仍在 `official.ts` 将 HH:MM 截为整点，属于分钟丢失的 P1；按 TDD 先移植/补齐 #83 已确认的前端 HH:MM 回归测试，`cd web && pnpm test -- --run` 为 `11 failed, 164 passed`，失败集中于时间规范化、store 迁移、batch 校验与 API 请求格式。
+- Green：补齐前端时间值对象、单视频/批量 API 与 store 的 HH:MM 双读单写，旧整数仅读取时转为 `HH:MM`；矩阵提交不再 floor 分钟。`cd web && pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → tsc 与 Vite 均通过。daemon 复验 → `101 passed`。

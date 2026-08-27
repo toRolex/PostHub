@@ -277,7 +277,7 @@ def _validate_optional_string(payload: Mapping[str, Any], key: str, index: int) 
 
 
 def _normalize_daily_times(value: Any, index: int) -> list[str]:
-    """双读旧小时/新 HH:MM，输出排序去重的 HH:MM。"""
+    """双读旧小时与新 HH:MM，单写排序去重的 HH:MM。"""
     if not isinstance(value, (list, tuple)) or not value:
         raise _error(index, "每日时刻 dailyTimes 不能为空")
 
