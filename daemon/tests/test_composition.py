@@ -6,14 +6,27 @@ import sqlite3
 from pathlib import Path
 
 import myUtils.postVideo as official_post_video
+import pytest
+from flask import Flask
 
 import sau_backend
 from posthub import uploader_wrapper
-from posthub.composition import compose_official_backend
+from posthub.composition import compose_official_backend, compose_posthub_backend
 
 
 def _rule_count(app, path: str) -> int:
     return sum(1 for rule in app.url_map.iter_rules() if rule.rule == path)
+
+
+def test_repeated_composition_rejects_a_different_db_path(tmp_path: Path) -> None:
+    app = Flask(__name__)
+    first_db = tmp_path / "first" / "db" / "database.db"
+    second_db = tmp_path / "second" / "db" / "database.db"
+
+    compose_posthub_backend(app, first_db)
+
+    with pytest.raises(ValueError, match="不同数据库"):
+        compose_posthub_backend(app, second_db)
 
 
 def test_repeated_composition_preserves_seams_and_uses_explicit_db(
@@ -110,6 +123,20 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         assert malformed_batch.status_code == 400
         assert douyin_calls == []
 
+        unsupported_xhs = client.post(
+            "/postVideo",
+            json={
+                "fileList": ["a.mp4"],
+                "accountList": ["a.json"],
+                "type": 1,
+                "title": "xhs-unsupported-declaration",
+                "platformFields": {"xiaohongshu": {"source": "self_declare"}},
+            },
+        )
+        assert unsupported_xhs.status_code == 400
+        assert "source" in unsupported_xhs.get_json()["msg"]
+        assert xhs_calls == []
+
         # 小红书走真实 wrapper 入口；若递归或签名错误，这里不会返回 200。
         xhs_response = client.post(
             "/postVideo",
@@ -121,6 +148,20 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
             },
         )
         assert xhs_response.status_code == 200
+
+        unsupported_tencent_origin = client.post(
+            "/postVideo",
+            json={
+                "fileList": ["a.mp4"],
+                "accountList": ["a.json"],
+                "type": 2,
+                "title": "tencent-unsupported-origin",
+                "platformFields": {"wechat": {"origin": False}},
+            },
+        )
+        assert unsupported_tencent_origin.status_code == 400
+        assert "origin" in unsupported_tencent_origin.get_json()["msg"]
+        assert tencent_calls == []
 
         # 视频号声明进入明确的 wrapper seam；测试不启动真实浏览器。
         tencent_response = client.post(
