@@ -75,12 +75,16 @@ def _coerce_daily_times_for_official_generator(daily_times: Any) -> Any:
     """把 HH:MM 适配为官方生成器可计算且不丢分钟的小时值。"""
     if daily_times is None:
         return None
+    if not isinstance(daily_times, (list, tuple)):
+        raise TypeError("daily_times 必须是 HH:MM 字符串或旧小时整数数组")
 
     converted: list[int | float] = []
     for raw in daily_times:
         if isinstance(raw, bool):
             raise TypeError("daily_times 时刻必须是 HH:MM 字符串或旧小时整数")
         if isinstance(raw, int):
+            if raw < 0 or raw > 23:
+                raise ValueError(f"daily_times 小时越界：{raw!r}")
             converted.append(raw)
             continue
         if not isinstance(raw, str):
@@ -117,6 +121,10 @@ def _generate_schedule_with_start_days(
         # 官方旧入口把 start_days 错放在 timestamps 的第四个位置。
         start_days = timestamps
         timestamps = False
+    if isinstance(start_days, bool) or not isinstance(start_days, int):
+        raise TypeError("start_days 必须是非负整数")
+    if start_days < 0:
+        raise ValueError("start_days 必须是非负整数")
     return _ORIGINAL_GENERATE_SCHEDULE_TIME(
         total_videos,
         videos_per_day=videos_per_day,
