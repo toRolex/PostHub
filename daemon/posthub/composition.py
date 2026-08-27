@@ -12,6 +12,7 @@ from typing import Any
 
 import db_init
 from posthub.routes import register_declaration_hooks, register_posthub_routes
+from posthub.runs import register_run_routes, shutdown_run_worker
 from posthub.uploader_wrapper import install as install_uploader_wrapper
 
 _COMPOSITION_MARKER = "_posthub_composition"
@@ -45,16 +46,28 @@ def _configure_official_base_dir(base_dir: Path) -> None:
         module.BASE_DIR = base_dir
 
 
-def compose_posthub_backend(app: Any, db_path: Path | str) -> Any:
+def compose_posthub_backend(
+    app: Any,
+    db_path: Path | str,
+    run_db_path: Path | str | None = None,
+) -> Any:
     """在指定 Flask 应用上一次性组合 PostHub-owned 生命周期与路由。"""
     path = Path(db_path).resolve()
+    run_path = (
+        Path(run_db_path).resolve()
+        if run_db_path is not None
+        else path.parent / "posthub-runs.db"
+    )
+    if run_path == path:
+        raise ValueError("PostHub run 数据库必须独立于官方 database.db")
     existing = getattr(app, "extensions", {}).get(_COMPOSITION_MARKER)
     if existing is not None:
         existing_path = existing.get("db_path")
-        if existing_path != path:
+        if existing_path != path or existing.get("run_db_path") != run_path:
             raise ValueError(
                 "同一 Flask app 不允许组合到不同数据库；"
-                f"已绑定 {existing_path}，请求 {path}"
+                f"已绑定 official={existing_path}, runs={existing.get('run_db_path')}，"
+                f"请求 official={path}, runs={run_path}"
             )
         return app
 
@@ -63,8 +76,20 @@ def compose_posthub_backend(app: Any, db_path: Path | str) -> Any:
     install_uploader_wrapper()
     register_posthub_routes(app, path)
     register_declaration_hooks(app, path)
-    app.extensions[_COMPOSITION_MARKER] = {"db_path": path}
+    register_run_routes(app, path, run_path)
+    app.extensions[_COMPOSITION_MARKER] = {
+        "db_path": path,
+        "run_db_path": run_path,
+    }
     return app
+
+
+def shutdown_posthub_backend(app: Any) -> None:
+    """停止组合层后台 worker；仅页面刷新/关闭发布页不会调用此钩子。
+
+    桌面窗口退出按 ADR-0007 同时终止 daemon，因此不对桌面关闭后的继续执行作承诺。
+    """
+    shutdown_run_worker(app)
 
 
 def compose_official_backend(db_path: Path | str | None = None) -> Any:

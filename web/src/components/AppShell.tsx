@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
+import { useRunStore } from "../stores/runs";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -22,24 +23,54 @@ const NAV_ITEMS: { view: View; label: string; icon: typeof Send }[] = [
   { view: "settings", label: "设置", icon: Settings },
 ];
 
-async function loadDaemonUrl(): Promise<void> {
-  if (!isTauri()) return;
+async function loadDaemonUrl(): Promise<string> {
+  const current = useDaemonStore.getState().url;
+  if (!isTauri()) return current;
   try {
     const url = await invoke<string>("get_daemon_url");
     useDaemonStore.setState({ url });
+    return url;
   } catch {
     // 非 Tauri 环境或命令不可用时使用默认地址
+    return current;
   }
+}
+
+export function shouldRefreshRun(status: "pending" | "running" | "completed" | null): boolean {
+  return status !== "completed";
+}
+
+export function runStatusMeta(status: "pending" | "running" | "completed" | null) {
+  if (status === "pending") {
+    return { dot: "bg-meta", text: "text-fg-2", label: "最近运行 待执行" };
+  }
+  if (status === "running") {
+    return {
+      dot: "bg-accent",
+      text: "text-accent-ink",
+      label: "最近运行 执行中",
+      pulse: true,
+    };
+  }
+  if (status === "completed") {
+    return { dot: "bg-success", text: "text-success-deep", label: "最近运行 已完成" };
+  }
+  return null;
 }
 
 function Topbar() {
   const connected = useDaemonStore((s) => s.connected);
-  const meta = connected
+  const runStatus = useRunStore((s) => s.status);
+  const runId = useRunStore((s) => s.runId);
+  const daemonMeta = connected
     ? { dot: "bg-success", text: "text-success-deep", label: "守护进程 已连通" }
     : { dot: "bg-danger", text: "text-danger-deep", label: "守护进程 未连接" };
+  const runMeta = runStatusMeta(runStatus);
   return (
     <header className="flex h-11 shrink-0 items-center gap-4 border-b border-border-soft bg-bg px-4">
-      <Status meta={meta} />
+      <Status meta={daemonMeta} />
+      {runMeta && <Status meta={runMeta} />}
+      {runId && <span className="ml-auto font-mono text-caption text-meta">run {runId.slice(0, 8)}</span>}
     </header>
   );
 }
@@ -127,16 +158,28 @@ function ShellView() {
 
 export function AppShell() {
   useEffect(() => {
-    void loadDaemonUrl();
-    void useAccountsStore.getState().fetchAccounts();
-    void useDaemonStore.getState().probeDaemon();
+    let disposed = false;
+    void (async () => {
+      const url = await loadDaemonUrl();
+      if (disposed) return;
+      void useAccountsStore.getState().fetchAccounts();
+      void useDaemonStore.getState().probeDaemon();
+      void useRunStore.getState().restoreLatestRun(url);
+    })();
     const { pollIntervalMs } = useDaemonStore.getState();
     const healthTimer = window.setInterval(
       () => void useDaemonStore.getState().probeDaemon(),
       pollIntervalMs,
     );
+    const runTimer = window.setInterval(() => {
+      if (shouldRefreshRun(useRunStore.getState().status)) {
+        void useRunStore.getState().refresh(useDaemonStore.getState().url);
+      }
+    }, pollIntervalMs);
     return () => {
+      disposed = true;
       window.clearInterval(healthTimer);
+      window.clearInterval(runTimer);
     };
   }, []);
 

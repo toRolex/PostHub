@@ -8,6 +8,7 @@ import {
 } from "./publish";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
+import { useRunStore, initialRunState } from "./runs";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
@@ -41,6 +42,7 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
     useAccountsStore.setState({ ...initialAccountsState, accounts: ACCOUNTS as never });
     usePublishStore.setState(initialPublishState);
+    useRunStore.setState(initialRunState);
   });
 
   afterEach(() => {
@@ -49,7 +51,11 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
 
   it("submit 成功 -> 每平台各调一次 /postVideo，携带官方契约体", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
+      jsonResponse({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-1", status: "pending", itemCount: 1 },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -64,11 +70,11 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
 
     await usePublishStore.getState().submit();
 
-    // 两个平台各一次 POST /postVideo
+    // 两个平台各一次 accepted POST /postRuns
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const calls = fetchMock.mock.calls as [string, RequestInit][];
     for (const [url, init] of calls) {
-      expect(url).toBe("http://127.0.0.1:9999/postVideo");
+      expect(url).toBe("http://127.0.0.1:9999/postRuns");
       expect(init.method).toBe("POST");
       const body = JSON.parse(init.body as string);
       expect(body.fileList).toEqual(["uuid_a_春天.mp4"]);
@@ -87,8 +93,17 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(JSON.parse(wechatCall.body as string).accountList).toEqual(["wechat_a.json"]);
 
     const s = usePublishStore.getState();
-    expect(s.results.douyin?.ok).toBe(true);
-    expect(s.results.wechat?.ok).toBe(true);
+    expect(s.results.douyin).toEqual({
+      ok: true,
+      msg: "已受理，后台执行中",
+      runId: "run-1",
+    });
+    expect(s.results.wechat).toEqual({
+      ok: true,
+      msg: "已受理，后台执行中",
+      runId: "run-1",
+    });
+    expect(JSON.parse(localStorage.getItem("posthub.latestRunId")!)).toBe("run-1");
   });
 
   it("submit 校验失败 -> 抛错且不发起请求", async () => {
@@ -107,7 +122,11 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
         jsonResponse({ code: 400, msg: "账号列表不能为空", data: null }, false, 400),
       )
       .mockResolvedValueOnce(
-        jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "run-2", status: "pending", itemCount: 1 },
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
 

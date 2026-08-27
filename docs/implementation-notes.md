@@ -385,3 +385,63 @@
 - 合并后 web：`cd web && pnpm test -- --run` → `17 files / 189 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.03s`）；仅有既有 jsdom navigation stderr。
 - 合并后 Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`。
 - #87 Reviewer concern 保留：`PublishView` 尚无逐字 HH:MM 输入能力；不影响本轮合并，但需后续处理。
+
+## Issue #85：贯通单 immediate item 的 accepted run 主干
+
+### 目标与计划
+
+- 仅实现单 immediate item 的 accepted-run 垂直主干：POST 立即返回 `runId`/accepted 语义，PostHub-owned SQLite 持久化 run/item，worker 通过测试注入执行器验证 `pending → running → success`，查询 API 作为事实来源，前端发布页刷新后恢复最近 run 状态；生产未配置真实 seam 时 fail-closed。
+- 先以现有 #81/#82 组合入口与 `EffectiveBatchItem` 为 seam，建立 HTTP contract、数据库迁移、worker 生命周期、查询 API 与前端恢复的失败测试；每次只实现一个最小垂直切片。
+- 不恢复 ADR-0001 的通用 scheduler/task/platform_job 模型；不修改官方发布执行真源，不引入 CDP、自研通用调度器或页面存活依赖。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已确认工作目录为 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-85`、分支 `afk/issue-85`；当前基线含 #81/#82 组合与适配实现，并继承 #87 合并后的已知 HH:MM 回归。后续只在本 worktree 工作。
+- 已读取 `CONTEXT.md`、ADR-0006/0007/0009、组合入口、`publish_adapter.py`、`routes.py` 及既有测试；等待只读调研补充前端恢复与现有 prototype/测试落点。
+- Red（HTTP / 持久化 / worker seam）：新增 `daemon/tests/test_runs.py`，首轮 `cd daemon && uv run pytest tests/test_runs.py -q` 在收集阶段失败：`posthub.composition` 尚无 `shutdown_posthub_backend`，确认生命周期 seam 需先建立。
+- Green（后端第一切片）：新增 `posthub.runs`，独立 `posthub-runs.db` 的 runs/run_items schema、事务性 claim/finish、启动恢复、可停止 fake worker，以及 `/postRuns`（同时保留 `/posthub/runs` 兼容入口）accepted/detail/latest 查询；组合入口保存 run DB 路径并暴露 `shutdown_posthub_backend`。定向测试 → `4 passed`。
+- Red（前端 API seam）：新增 `web/src/api/runs.test.ts`，全量启动命令中的该文件得到 `2 failed, 189 passed`；失败为 `officialApi.acceptRun/getRun` 尚不存在，确认前端需新增 accepted/query API。
+- Green（前端 API/store）：`officialApi` 新增 `/postRuns` accepted/detail/latest 方法与显式 RunStatus 类型；新增 `stores/runs.ts`，仅持久化最近 `runId`，受理响应只置 pending，不写 success，刷新优先按指针查询并回退 latest。定向 API/store → `12 passed`（含既有 publish 测试迁移为 accepted 语义）。
+- Green（发布页/顶部恢复）：立即模式单视频改走 accepted-run，反馈改为“已受理，后台执行中”；定时模式保留官方 `/postVideo`，避免扩大 issue 范围。AppShell 启动恢复最近 run 并按 daemon 轮询间隔刷新，顶部显示待执行/执行中/已完成真实状态与短 runId；状态映射测试 → `2 passed`。
+- Green（worker 回归）：补充 fake uploader 收到持久化 effective payload、item 成功落库、worker 停止后重启将 running 复位并完成的测试；`cd daemon && uv run pytest tests/test_runs.py -q` → `6 passed`。
+
+### 验证
+
+- 尚未开始。
+
+### 下一步
+
+- 等待只读调研结果；随后先写第一条 accepted POST 失败测试并运行，记录实际 red 输出。
+
+### Issue #85 复核与 TDD 修补（2026-08-27）
+
+- 已读取当前工作树全部差异与新增文件；确认已有实现仍有三类验收缺口：默认 `FakeUploader` 空操作会假成功，worker stop/恢复没有 owner/lease 保护，前端异步查询可被旧响应覆盖且无 run 指针时不会重试 latest。
+- 已读取 `CONTEXT.md`、ADR-0006/0007/0009 与 `src-tauri/src/lib.rs`：桌面窗口关闭由 ADR-0007 明确 kill 官方 daemon；“刷新/关闭发布页不影响后台”仅适用于页面生命周期，不能宣称桌面关闭后仍继续执行。
+- Red（worker）：新增默认执行器 fail-closed、过期 lease 恢复、跨 `RunStore` owner 校验、阻塞 uploader stop 不重复恢复回归；并将 HTTP 默认 worker 断言改为明确失败。`cd daemon && uv run pytest tests/test_runs.py -q` → `5 failed, 6 passed`；失败分别暴露默认 Fake 成功、缺少 lease 参数与 owner 语义。
+- Red（前端）：新增旧 `getRun`/`getLatestRun` 响应不可覆盖新 accepted run、无指针初次 latest 失败后 refresh 重试回归。`cd web && pnpm test -- --run src/stores/runs.test.ts` → `3 failed, 17 passed`（命令实际运行全部文件）；确认当前 store 的竞态与 latest 重试缺口。
+- Green（后端）：`RunStore` 增加 `lease_owner/lease_until` 迁移列；claim 使用 owner token + SQLite `BEGIN IMMEDIATE`，recover 只回收过期 lease，finish 必须匹配 owner；`RunWorker.stop()` 超时保留仍存活线程引用，`start()` 不会重启/重复恢复，默认执行器改为明确抛错的 fail-closed uploader。定向测试 → `11 passed`。
+- Green（前端）：`runs` store 以 mutation version + read sequence 丢弃旧 restore/refresh 响应；无内存/本地指针时 refresh 继续请求 latest，初始 daemon 不可用后可在轮询中恢复。定向命令实际运行全量 Vitest → `20 files / 199 tests passed`。
+- 约束记录：`shutdown_posthub_backend` 文案明确只有页面刷新/关闭发布页不触发停止；桌面窗口关闭仍按 ADR-0007 kill daemon，不能宣称桌面关闭后继续执行。
+- Green（初始化顺序）：`AppShell` 等待 `loadDaemonUrl()` 返回最终 URL 后再启动账号/探活/run 恢复，轮询仍读取当前 daemon URL，避免异步 URL 覆盖恢复请求。
+- Deviations：全量 daemon 首轮复验暴露基线已有 #83/#87 的 HH:MM→旧官方整点 generator 不兼容（9 项失败）；为避免交付全量回归，追加 PostHub wrapper 边界适配：仅整点 `HH:00` 临时转旧整数，非整点明确拒绝，未修改官方 `sau_backend.py`/`uploader/*`，不恢复 scheduler。追加回归后 scheduled 定向测试 → `25 passed`。
+- 已知未纳入本 issue：打包 daemon 的运行态数据库目录与 Tauri app_data 可写路径仍需独立生命周期/打包问题处理；本轮未改 `src-tauri`。
+- 最终验证：`cd daemon && uv run pytest -q` → `133 passed in 3.44s`；相关 Python `ruff check` → `All checks passed!`，`ruff format --check` → `5 files already formatted`。
+- 最终验证：`cd web && pnpm test -- --run` → `20 files / 199 tests passed`（保留既有 jsdom navigation stderr）；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- Runtime verify：以临时 `POSTHUB_BASE_DIR` 启动真实 `uv run python run_backend.py`，HTTP `/getAccounts` 返回 200；合法 `/postRuns` 返回 200 + `runId`/`status=pending`，随后 `/postRuns/{runId}` 返回 `status=completed`、item `failed` 且错误为“未配置 immediate 发布执行器…”；数组 body 返回 JSON 400，未误报成功。服务已停止，临时数据已清理。
+- `src-tauri` 本轮未修改，按条件未运行 cargo test；关闭窗口仍由现有 ADR-0007 进程树清理终止 daemon。
+- 官方副本校验：`shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `sau_backend.py` 或 `uploader/*`。
+- 下一步：提交中文 commit 并确保工作树干净。
+
+### Issue #85 协调复核补丁（2026-08-27）
+
+- 复核发现三项遗漏：claim 后 stop 在 uploader 前直接返回会留下 running lease；`refresh()` 对 stale localStorage runId 的 404 只报错、不回退 latest；completed run 仍被 AppShell 每 5 秒轮询。
+- Scope 修正：上一提交中为让全量测试通过而加入的 `uploader_wrapper.py` HH:MM 旧 generator 适配属于 #88，不纳入 #85；本轮撤回该两文件改动，保留 #85 accepted-run 修复。恢复后 #88 的既有 scheduled 回归按原状态保留，不在本轮修补。
+- Red：先补 claim 后 stop 必须安全 requeue、stale pointer refresh 必须 fallback latest、completed 状态停止轮询及空异常仍为 failed 回归；定向测试分别暴露 lease 泄漏、latest 不回退与空字符串假成功。
+- Green：新增 owner 校验的 `release_item`，stop 在进入 uploader 前释放自身 claim；`finish_item` 用 `error is not None` 判定失败；refresh 的 run 查询失败回退 latest 并清理空指针；AppShell 仅对未完成 run 轮询。
+- 定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `14 passed in 2.32s`；`cd web && pnpm test -- --run src/stores/runs.test.ts src/components/AppShell.test.ts` 实际全量运行 → `20 files / 201 tests passed`（既有 jsdom stderr）。
+- 复核后全量：`cd daemon && uv run pytest -q` → `9 failed, 131 passed`，失败全部为已恢复的 #88 scheduled HH:MM 旧 generator 回归；本轮不修该问题。`pnpm test -- --run` → `20 files / 201 tests passed`；`pnpm run build` 通过；issue85 Python ruff check/format 通过。
+- 已保留 `src-tauri` 不变；桌面窗口关闭继续按 ADR-0007 终止 daemon，页面刷新/关闭发布页不触发 worker 停止。

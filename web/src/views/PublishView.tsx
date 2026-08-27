@@ -489,7 +489,7 @@ function FeedbackPanel() {
               <p className="font-semibold">
                 {PLATFORM_NAMES[p]}
                 <span className="ml-2 font-normal text-muted">
-                  {r.ok ? "发布任务已提交" : "失败"}
+                  {r.ok ? r.msg : "失败"}
                 </span>
               </p>
               {!r.ok && <p className="mt-0.5 break-words text-danger-deep">{r.msg}</p>}
