@@ -581,3 +581,12 @@
 - 复核验证：daemon `cd daemon && uv run pytest -q` → `159 passed`；web `pnpm test -- --run` → `20 files / 204 tests passed`；`pnpm run build` 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 tests`；相关 Python `ruff check` / `ruff format --check` 通过。
 - 未发现需修复的业务缺陷；本轮不改业务代码。工作树最终须保持干净。
 
+### Issue #90 Merger 执行记录（2026-08-27）
+
+- 按要求执行 `git merge afk/issue-90 --no-edit`，冲突涉及 `runs.py`、daemon 测试、official API、BatchPreviewDialog 与本笔记；已逐侧读取并手工整合，保留 #88 的 `publishDatetimes` 分钟快照/跨午夜实现及 #90 声明三态、preview 和快照类型改动，生成 merge commit `f3d4272`。未使用 `-X`，未回退 #86/#88 能力。
+- 冲突取舍：RunStore 与前端 RunItem 同时保留 submitted/effective；预览函数同时保留 HH:MM 规范化与抖音最终声明展示；测试同时保留分钟快照跨午夜回归与声明三态回归。
+- daemon：`cd daemon && uv run pytest -q` → `166 passed in 4.03s`。
+- web：`pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `0.95s`）；仅有既有 jsdom navigation stderr。
+- Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- 本轮未发现新的业务 concern；仅保留既有 jsdom navigation stderr。下一步提交本轮中文 summarizing commit，关闭 #86/#88/#90 并清理对应 worktrees。
+
