@@ -485,3 +485,11 @@
 
 - Tauri 首次测试因仓库忽略的资源目录缺失失败；仅补齐本地空 `resources/{daemon,bin,browser}` 后通过，空目录未纳入 Git。
 - web 测试保留既有 jsdom `navigation (except hash changes)` stderr，不影响通过。
+
+### AFK Reviewer 复核（2026-08-27）
+
+- 复核 `6d9f79f^...6d9f79f`：变更仅涉及 `runs.py` 快照返回、声明三态/预览/run detail、类型和回归测试；未改官方 `daemon/sau_backend.py`、`uploader/*`，未引入 retry、scheduler 或新的 platform wrapper。
+- Issue #90 五项验收逐项核对通过：空/default、显式 `no_need`、具体枚举的 effective 区分；首次受理快照冻结；fake DouYin 构造器中文映射；成功/异常/超时 finally 清理；preview/run detail 展示。
+- 兼容性核对：保留官方 HTTP seam、`platformFields.douyin`、HH:MM 双读单写和独立 run DB；`runs.py` 仅增加读取已持久化 `effective_json`，未改 accepted-run 公共状态机。与 #86/#88 的重叠点已确认不引入其数组/summary 或分钟快照语义。
+- 复核验证：daemon `cd daemon && uv run pytest -q` → `159 passed`；web `pnpm test -- --run` → `20 files / 204 tests passed`；`pnpm run build` 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 tests`；相关 Python `ruff check` / `ruff format --check` 通过。
+- 未发现需修复的业务缺陷；本轮不改业务代码。工作树最终须保持干净。
