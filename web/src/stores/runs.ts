@@ -64,6 +64,10 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isMissingRun(error: unknown): boolean {
+  return /run 不存在|404/.test(messageOf(error));
+}
+
 export const useRunStore = create<RunState>()((set, get) => {
   let mutationVersion = 0;
   let readSequence = 0;
@@ -87,6 +91,7 @@ export const useRunStore = create<RunState>()((set, get) => {
     base: string,
     requestId: number,
     version: number,
+    fallbackError?: unknown,
   ): Promise<void> => {
     try {
       const snapshot = await officialApi.getLatestRun(base);
@@ -98,7 +103,9 @@ export const useRunStore = create<RunState>()((set, get) => {
       }
       applySnapshot(snapshot);
     } catch (error) {
-      if (canCommit(requestId, version)) set({ error: messageOf(error) });
+      if (canCommit(requestId, version)) {
+        set({ error: messageOf(fallbackError ?? error) });
+      }
     }
   };
 
@@ -135,8 +142,13 @@ export const useRunStore = create<RunState>()((set, get) => {
         applySnapshot(snapshot);
       } catch (error) {
         if (!canCommit(requestId, version)) return;
-        // 本地指针可能指向已清理的旧 run；查询失败时回退持久化 latest。
-        await fetchLatest(base, requestId, version);
+        if (!isMissingRun(error)) {
+          // 网络错误不清空最后快照；保留错误并让 AppShell 的下一轮继续重试。
+          set({ error: messageOf(error) });
+          return;
+        }
+        // 本地指针可能指向已清理的旧 run；仅 404/不存在时回退持久化 latest。
+        await fetchLatest(base, requestId, version, error);
       }
     },
 

@@ -118,7 +118,7 @@ def test_accept_immediate_batch_creates_one_run_with_all_effective_items(
         accepted = response.get_json()["data"]
         assert accepted["itemCount"] == 2
         run_id = accepted["runId"]
-        completed = wait_for_status(client, run_id, "completed")
+        completed = wait_for_status(client, run_id, "completed_with_failures")
 
     assert len(completed["items"]) == 2
     assert completed["summary"] == {
@@ -160,21 +160,29 @@ def test_query_observes_item_lifecycle_and_fail_closed_completed_run(
         run_id = accepted.get_json()["data"]["runId"]
 
         pending_or_running = client.get(f"/postRuns/{run_id}").get_json()["data"]
-        assert pending_or_running["status"] in {"pending", "running", "completed"}
+        assert pending_or_running["status"] in {
+            "pending",
+            "running",
+            "completed",
+            "completed_with_failures",
+        }
         assert pending_or_running["items"][0]["status"] in {
             "pending",
             "running",
             "failed",
         }
 
-        completed = wait_for_status(client, run_id, "completed")
+        completed = wait_for_status(client, run_id, "completed_with_failures")
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_failures"
     assert completed["items"] == [
         {
             "itemId": completed["items"][0]["itemId"],
+            "seq": 1,
             "status": "failed",
             "error": "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam",
+            "errorSummary": "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam",
+            "errorDetail": completed["items"][0]["errorDetail"],
             "submitted": immediate_payload(),
             "effective": {
                 "fileList": ["video.mp4"],
@@ -293,7 +301,7 @@ def test_default_worker_fails_closed_instead_of_marking_success(tmp_path: Path) 
     worker = RunWorker(store)
     worker.start()
     try:
-        completed = wait_for_status_from_store(store, run_id, "completed")
+        completed = wait_for_status_from_store(store, run_id, "completed_with_failures")
     finally:
         worker.stop()
 
@@ -614,12 +622,140 @@ def test_latest_run_query_returns_completed_run_after_worker_finishes(
     with app.test_client() as client:
         accepted = client.post("/postRuns", json=immediate_payload())
         run_id = accepted.get_json()["data"]["runId"]
-        wait_for_status(client, run_id, "completed")
+        wait_for_status(client, run_id, "completed_with_failures")
         latest = client.get("/postRuns/latest")
 
     assert latest.status_code == 200
     assert latest.get_json()["data"]["runId"] == run_id
-    assert latest.get_json()["data"]["status"] == "completed"
+    assert latest.get_json()["data"]["status"] == "completed_with_failures"
+
+
+def test_worker_continues_after_one_item_failure_and_aggregates_partial_success(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    payloads = [
+        immediate_payload(),
+        {**immediate_payload(), "title": "失败 item"},
+        {**immediate_payload(), "title": "成功 item"},
+    ]
+    normalized = normalize_publish_payloads(payloads, [account])
+    run_id = store.create_run(normalized.effective)
+    seen: list[str] = []
+
+    def fake_uploader(effective: dict) -> None:
+        seen.append(effective["title"])
+        if effective["title"] == "失败 item":
+            raise RuntimeError("平台拒绝：详细失败原因\\nrequest-id=req-93")
+
+    worker = RunWorker(store, uploader=fake_uploader)
+    worker.start()
+    try:
+        completed = wait_for_status_from_store(store, run_id, "completed_with_failures")
+    finally:
+        worker.stop()
+
+    assert seen == ["立即 item", "失败 item", "成功 item"]
+    assert [item["status"] for item in completed["items"]] == [
+        "success",
+        "failed",
+        "success",
+    ]
+    assert completed["summary"] == {
+        "itemCount": 3,
+        "pendingCount": 0,
+        "runningCount": 0,
+        "successCount": 2,
+        "failedCount": 1,
+        "completedCount": 3,
+    }
+    failed = completed["items"][1]
+    assert failed["seq"] == 2
+    assert failed["errorSummary"] == "平台拒绝：详细失败原因"
+    assert "request-id=req-93" in failed["errorDetail"]
+    assert failed["error"] == failed["errorSummary"]
+
+
+def test_run_detail_returns_items_in_seq_order_with_queryable_error_detail(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [
+            {**immediate_payload(), "title": "第三"},
+            {**immediate_payload(), "title": "第一"},
+        ],
+        [account],
+    )
+    run_id = store.create_run(normalized.effective)
+    first = store.claim_next_item("owner-a")
+    assert first is not None
+    _, first_item, _ = first
+    store.finish_item(
+        run_id, first_item, owner_token="owner-a", error="短摘要\\n完整详情"
+    )
+    second = store.claim_next_item("owner-a")
+    assert second is not None
+    _, second_item, _ = second
+    store.finish_item(run_id, second_item, owner_token="owner-a")
+
+    detail = store.get_run(run_id)
+    assert [item["seq"] for item in detail["items"]] == [1, 2]
+    assert detail["items"][0]["errorSummary"] == "短摘要"
+    assert detail["items"][0]["errorDetail"] == "短摘要\\n完整详情"
+
+
+def test_old_run_schema_migrates_to_partial_completion_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "old-runs.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE run_items (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+                submitted_json TEXT NOT NULL,
+                effective_json TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO runs VALUES ('run-old', 'completed', 'a', 'a', 'a');
+            INSERT INTO run_items VALUES ('item-old', 'run-old', 0, 'failed', '{}', '{}', 'old', 'a', 'a');
+            """
+        )
+
+    store = RunStore(db_path)
+    assert store.finish_item("run-old", "item-old", owner_token="nobody") is False
+    with sqlite3.connect(db_path) as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+        ).fetchone()[0]
+    assert "completed_with_failures" in sql
 
 
 def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payload(

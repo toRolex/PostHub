@@ -482,8 +482,11 @@ function RunDetailPanel() {
     <section className="border-t border-border-soft py-6">
       <SectionHead title="最近运行详情" hint="展示首次受理时冻结的最终值" />
       <div className="flex flex-col gap-2">
-        {snapshot.items.map((item) => {
+        {snapshot.items.map((item, index) => {
           const effective = item.effective;
+          const seq = item.seq ?? index + 1;
+          const errorSummary = item.errorSummary ?? item.error;
+          const errorDetail = item.errorDetail ?? item.error;
           const platform = effective
             ? OFFICIAL_TYPE_PLATFORM[effective.type]
             : undefined;
@@ -496,6 +499,7 @@ function RunDetailPanel() {
               key={item.itemId}
               className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border-soft bg-bg px-3 py-2 text-label"
             >
+              <span className="font-mono text-caption text-meta">#{seq}</span>
               <span className="font-mono text-caption text-meta">{item.itemId.slice(0, 8)}</span>
               <span className="text-fg-2">{runItemStatusLabel(item.status)}</span>
               {douyin && (
@@ -503,7 +507,15 @@ function RunDetailPanel() {
                   抖音声明：{douyin.value ? `${douyin.value} · ${douyin.label}` : douyin.label}
                 </span>
               )}
-              {item.error && <span className="text-danger-deep">{item.error}</span>}
+              {errorSummary && <span className="text-danger-deep">{errorSummary}</span>}
+              {errorDetail && (
+                <details className="basis-full rounded-md bg-danger-tint px-2 py-1 text-caption text-danger-deep">
+                  <summary className="cursor-pointer select-none">查看详细错误</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono">
+                    {errorDetail}
+                  </pre>
+                </details>
+              )}
             </div>
           );
         })}

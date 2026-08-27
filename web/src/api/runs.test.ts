@@ -57,6 +57,42 @@ describe("accepted run API", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(payload);
   });
 
+  it("查询 API 保留 completed_with_failures、seq 与错误详情", async () => {
+    const snapshot = {
+      runId: "run-partial",
+      status: "completed_with_failures",
+      createdAt: "2026-08-27T00:00:00.000+00:00",
+      updatedAt: "2026-08-27T00:00:00.100+00:00",
+      completedAt: "2026-08-27T00:00:00.100+00:00",
+      summary: {
+        itemCount: 3,
+        pendingCount: 0,
+        runningCount: 0,
+        successCount: 2,
+        failedCount: 1,
+        completedCount: 3,
+      },
+      items: [
+        { itemId: "item-1", seq: 1, status: "success", error: null },
+        {
+          itemId: "item-2",
+          seq: 2,
+          status: "failed",
+          error: "平台拒绝",
+          errorSummary: "平台拒绝",
+          errorDetail: "平台拒绝：详细原因",
+        },
+        { itemId: "item-3", seq: 3, status: "success", error: null },
+      ],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(response({ code: 200, data: snapshot }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(officialApi.getRun("http://127.0.0.1:5409", "run-partial")).resolves.toEqual(
+      snapshot,
+    );
+  });
+
   it("getRun 与 getLatestRun 返回查询 API 的事实状态", async () => {
     const snapshot = {
       runId: "run-1",

@@ -222,7 +222,7 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-export type RunStatus = "pending" | "running" | "completed";
+export type RunStatus = "pending" | "running" | "completed" | "completed_with_failures";
 export type RunItemStatus = "pending" | "running" | "success" | "failed";
 
 export interface AcceptedRun {
@@ -242,8 +242,15 @@ export interface RunSummary {
 
 export interface RunItemSnapshot {
   itemId: string;
+  /** 人类可读的 1-based 执行顺序。旧 daemon 响应可能没有。 */
+  seq?: number;
   status: RunItemStatus;
+  /** 兼容旧 daemon 的错误字段；新响应与 errorSummary 相同。 */
   error: string | null;
+  /** 单行短摘要，用于列表展示。 */
+  errorSummary?: string | null;
+  /** 可查询的完整错误（通常含 traceback）。 */
+  errorDetail?: string | null;
   /** 受理时的调用方 payload 快照；旧 daemon 响应可能没有。 */
   submitted?: PostVideoRequest;
   /** 账号粒度 effective payload；抖音 timer 含 naive ISO publishDatetimes。 */

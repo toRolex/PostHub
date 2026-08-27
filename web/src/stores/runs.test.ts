@@ -128,6 +128,55 @@ describe("run store（查询 API 是生命周期事实来源）", () => {
     expect(useRunStore.getState().status).toBe("completed");
   });
 
+  it("刷新保留 completed_with_failures 和每项错误详情", async () => {
+    const partial = {
+      ...SNAPSHOT,
+      status: "completed_with_failures" as const,
+      summary: {
+        ...SNAPSHOT.summary,
+        itemCount: 3,
+        successCount: 2,
+        failedCount: 1,
+        completedCount: 3,
+      },
+      items: [
+        { itemId: "item-1", seq: 1, status: "success" as const, error: null },
+        {
+          itemId: "item-2",
+          seq: 2,
+          status: "failed" as const,
+          error: "平台拒绝",
+          errorSummary: "平台拒绝",
+          errorDetail: "平台拒绝：详细原因",
+        },
+      ],
+    };
+    vi.spyOn(officialApi, "getRun").mockResolvedValue(partial);
+    useRunStore.setState({ runId: "run-1", status: "running" });
+
+    await useRunStore.getState().refresh("http://127.0.0.1:5409");
+
+    expect(useRunStore.getState().status).toBe("completed_with_failures");
+    expect(useRunStore.getState().snapshot?.items[1].errorDetail).toBe("平台拒绝：详细原因");
+  });
+
+  it("网络错误保留最后快照，后续 refresh 继续查询", async () => {
+    const getRun = vi
+      .spyOn(officialApi, "getRun")
+      .mockRejectedValueOnce(new Error("网络断开"))
+      .mockResolvedValueOnce(SNAPSHOT);
+    useRunStore.setState({ runId: "run-1", status: "running", snapshot: SNAPSHOT });
+
+    await useRunStore.getState().refresh("http://127.0.0.1:5409");
+    expect(useRunStore.getState().snapshot).toBe(SNAPSHOT);
+    expect(useRunStore.getState().status).toBe("running");
+    expect(useRunStore.getState().error).toBe("网络断开");
+
+    await useRunStore.getState().refresh("http://127.0.0.1:5409");
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(useRunStore.getState().error).toBe("");
+  });
+
   it("stale localStorage runId 查询失败时 refresh 会回退 latest", async () => {
     localStorage.setItem(LATEST_RUN_ID_KEY, JSON.stringify("stale-run"));
     const getRun = vi

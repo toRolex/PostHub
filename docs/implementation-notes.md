@@ -590,3 +590,41 @@
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - 本轮未发现新的业务 concern；仅保留既有 jsdom navigation stderr。下一步提交本轮中文 summarizing commit，关闭 #86/#88/#90 并清理对应 worktrees。
 
+## Issue #93：展示多 item 部分成功与详情状态
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-93` 的 `afk/issue-93` 分支实现；前置 #86 已在当前基线合入。不 reset/rebase/amend，不 push、PR、merge、关闭 issue。
+- 先在既有 accepted-run 的 RunStore/worker/API、runs store/AppShell 与发布页运行详情 seam 写失败测试，再按垂直切片实现：worker 失败不中断后续 item；持久化短摘要/详细错误、seq 与 `completed_with_failures`；前端状态文案、详情和轮询节奏/网络错误保留。
+- 不恢复旧 scheduler，不引入 retry/409 API 或新的官方执行逻辑；只扩展 PostHub-owned accepted-run 状态支持，不修改官方源码。
+
+### 预确认 seams
+
+- `RunWorker` 注入 fake uploader：连续 success/failure/success 的执行顺序与终态。
+- `RunStore.get_run` / `/postRuns/{runId}`：item 按 seq 返回，错误摘要可直接显示、详细错误可查询，run 汇总以持久化 item 为事实来源。
+- `useRunStore` 与 `AppShell`：`completed_with_failures` 终态、2 秒起步/无变化退避至 10 秒、网络异常保留最后快照并继续刷新。
+- 发布页 `RunDetailPanel`：按 seq 展示 item 状态，失败项短错误摘要与详细错误可展开查看。
+
+### 当前盘点
+
+- 当前 runs schema 仅允许 run status `pending/running/completed`，item 只有单一 `error` 字段；worker 已捕获单 item 异常并继续循环，但 run 始终聚合为 `completed`。
+- 前端 `RunStatus` 仅有 `pending/running/completed`；AppShell 使用 daemon 固定 poll interval，已在 completed 停止；RunDetailPanel 以 itemId 截断展示，未显示 seq 或详细错误。
+- 当前工作树初始干净；按用户要求不等待调研，下一步先补后端连续三项与错误详情失败测试，再补前端状态/轮询失败测试。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- Red：在 `daemon/tests/test_runs.py` 增加 fake success/failure/success、短错误摘要/详细错误、1-based `seq`、旧 runs schema 迁移回归；在 web API/store/AppShell 测试增加 `completed_with_failures`、网络错误保留快照、2s/10s 轮询退避回归。
+- Green：RunStore 扩展 `completed_with_failures` 聚合状态，增加 `error_summary/error_detail` 迁移列；worker 每 item 捕获 traceback 后继续 claim 后续 item；查询 API 返回 `seq`、摘要和详细错误，保留旧 `error` 兼容字段。
+- Green：AppShell run polling 改为 2 秒起步、无状态变化指数退避至 10 秒，部分成功视为终态；网络错误不再误触发 latest 清空状态，继续由下一轮重试。发布页详情按 `seq` 展示失败摘要，并用 `<details>` 查询完整错误。
+- Green：为短 lease worker 增加执行前同步续租，并将 heartbeat 续租窗口保持安全余量，避免 SQLite 调度抖动导致活动 item 被错误回收；不改变 accepted-run 的重试/调度边界。
+
+### 最终验证
+
+- daemon `cd daemon && uv run pytest -q` → `169 passed`；相关 `ruff check` → `All checks passed`，`ruff format --check` → `2 files already formatted`。
+- web `pnpm test -- --run` → `20 files / 215 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- Runtime verify：隔离 Flask socket `127.0.0.1:5439` 经真实 HTTP `/postRuns` 驱动 success/failure/success，返回 `completed_with_failures`，summary 为 `2 success / 1 failed / 3 completed`；详情按 `seq=1,2,3` 返回，失败项有短摘要和含 request-id 的完整错误。空数组与非 object item 均返回 JSON 400。
+

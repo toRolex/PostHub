@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { runProgressLabel, runStatusMeta, shouldRefreshRun } from "./AppShell";
+import {
+  nextRunPollDelay,
+  runProgressLabel,
+  runStatusMeta,
+  shouldRefreshRun,
+} from "./AppShell";
 
 describe("顶部最近 run 状态条", () => {
   it("pending/running/completed 使用真实生命周期文案", () => {
@@ -31,10 +36,22 @@ describe("顶部最近 run 状态条", () => {
     expect(runStatusMeta(null)).toBeNull();
   });
 
-  it("completed run 不再持续轮询，其他状态仍允许恢复/刷新", () => {
+  it("completed run 不再持续轮询，部分成功也是终态", () => {
     expect(shouldRefreshRun("completed")).toBe(false);
+    expect(shouldRefreshRun("completed_with_failures")).toBe(false);
     expect(shouldRefreshRun("pending")).toBe(true);
     expect(shouldRefreshRun("running")).toBe(true);
     expect(shouldRefreshRun(null)).toBe(true);
+  });
+
+  it("部分成功显示明确状态文案", () => {
+    expect(runStatusMeta("completed_with_failures")?.label).toBe("最近运行 部分成功");
+  });
+
+  it("轮询从 2 秒起步，无变化指数退避但上限 10 秒，有变化重置", () => {
+    expect(nextRunPollDelay(2000, false)).toBe(4000);
+    expect(nextRunPollDelay(8000, false)).toBe(10000);
+    expect(nextRunPollDelay(10000, false)).toBe(10000);
+    expect(nextRunPollDelay(10000, true)).toBe(2000);
   });
 });
