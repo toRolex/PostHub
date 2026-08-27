@@ -479,6 +479,14 @@
 - `BatchPublishStore.submit` 当前总是调用官方 `/postVideoBatch`，需要对全 immediate 矩阵改为一次 `acceptRun`；timer 路径保留现有官方 batch 语义，避免混入后续 issue。
 - 原型 `docs/prototypes/posthub-app.html`、`docs/prototypes/posthub-app-variants.html` 及历史 `prototype/batch-multiselect-entry` 均指向复选框 + 全选条 + 计数 +「加入所选（N）」方案；加入后清空选择且不自动滚动/额外 toast。
 
+## Issue #88：抖音分钟级 timer
+
+### 目标与计划
+
+- 在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-88` 的 `afk/issue-88` 分支实现抖音分钟级 timer；不修改官方 `daemon/sau_backend.py` 或 `uploader/*`，不混入 #89。
+- 严格 TDD：先读取 #83/#87 后现有 timer、normalization、wrapper、run detail、fake uploader 与 HTTP 测试；以 `14:37`、本地日期、分钟边界、immediate/timer 混合建立失败回归，再逐垂直切片实现。
+- 统一验证 preview、submitted/effective payload、fake uploader、run detail 的分钟保真；Python 仅用 `uv`，禁止 push/PR/merge/关闭 issue/reset/rebase/amend。
+
 
 ### Deviations
 
@@ -509,4 +517,20 @@
 - web：`pnpm test -- --run` → `20 files / 206 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `1.09s`）；仅有既有 jsdom navigation stderr。
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - #86 业务内容与验证均通过；下一步清理无独特业务改动的 stale #85，并合入 #88。
+
+## Issue #88：抖音分钟级 timer
+
+### 实现进展
+
+- 已确认工作树与分支：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-88`、`afk/issue-88`；基线为 #85 收口后的 `3ec3663`，当前干净。
+- 已读取 `CONTEXT.md` 与既有 implementation notes；已确认 #88 issue 要求：14:37 分钟保真、`startDays` + 本地日期生成 naive datetime、preview/submitted/effective/fake uploader/run detail 一致，以及分钟边界和混合 run。
+- 现有缺口：effective 只有 HH:MM，没有持久化的绝对执行时刻；RunStore detail 不返回 submitted/effective；wrapper 仍在执行时临时生成日期，无法保证 run detail 与 fake uploader 共用同一时刻。决定新增 PostHub-owned `publishDatetimes`（naive ISO 字符串数组）到抖音 timer effective payload，运行时由 wrapper 使用同一快照注入官方 generator；submitted 保留原始 HH:MM。
+- Red 计划：先补 Python normalization 日期快照、wrapper fake uploader、RunStore detail/混合 immediate-timer 回归；再补前端 preview/批量 payload 的分钟保真回归。实现只在 PostHub wrapper/adapter/run detail 与 web seam，绝不改官方源码。
+- Red 已确认：新增的 normalization 回归因缺少 `now` 参数失败；现有 `publish_adapter.py` 草稿仅有未接线的日期 helper，且其正则转义待修。继续补齐 wrapper 与 detail 的失败断言，再实现。
+- Red 扩展：补充 fake uploader 必须复用 normalization 绝对时刻、RunStore detail 必须同时返回 submitted/effective 的断言；并补充前端 preview 对 timer HH:MM 规范化的回归。
+- Green 实现：normalization 接受可选冻结 `now`，仅抖音 timer 生成 `publishDatetimes`（本地日期 + `startDays` + 次日语义，naive ISO 秒精度）；wrapper 用 thread-local 将该快照注入官方 generator，仍不改官方源码；RunStore detail 返回持久化 submitted/effective，web 类型兼容旧响应，preview 与 payload 共用 HH:MM 规范化。
+- 验证完成：`cd daemon && uv run pytest -q` → `159 passed`；`cd web && pnpm test -- --run` → `20 files / 202 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过；涉及 Python 文件 `uv run --with ruff ruff check` 与 `ruff format --check` 均通过。web 测试仅有既有 jsdom navigation stderr。
+- Runtime verify：启动真实组合 Flask socket `127.0.0.1:5428`，HTTP `/postVideo` 与 `/postVideoBatch` 均返回 `200`；fake 抖音 uploader 两次收到同一 `2026-08-29T14:37:00` naive datetime 与 `scheduled` 策略；数组 body 探针返回 JSON `400`，未进入发布 seam。服务已停止并清理临时数据。
+- Deviations：为让 detail 与 fake uploader 共享同一冻结时刻，新增 PostHub-owned `publishDatetimes` 到抖音 timer effective（submitted 仍保留原始 HH:MM）；这是必要的执行快照，不修改官方代码，也不承担新的 scheduler。
+- Reviewer 修复：`now=None` 时同一批多个 effective item 曾逐项读取本地时钟，跨午夜可能得到不同日期；现于首次抖音 timer item 冻结一次本地 naive 时钟，并补多账号跨午夜回归。
 

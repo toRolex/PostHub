@@ -98,6 +98,18 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     expect(rows[0].startDays).toBe(1);
   });
 
+  it("preview 与 timer payload 一样规范化分钟格式，不丢 14:37", () => {
+    const rows = buildPreviewRows([
+      mkItem({
+        accountCookiesByPlatform: { douyin: ["d.json"] },
+        mode: "timer",
+        timeOfDay: "14:37",
+        startDays: 0,
+      }),
+    ]);
+    expect(rows[0].timeOfDay).toBe("14:37");
+  });
+
   it("accountCookiesByPlatform 字段空数组时该平台不产出行", () => {
     const rows = buildPreviewRows([
       mkItem({

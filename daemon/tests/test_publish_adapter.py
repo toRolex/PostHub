@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from flask import Flask
 
-from posthub import uploader_wrapper
+from posthub import publish_adapter, uploader_wrapper
 from posthub.publish_adapter import (
     AccountSnapshot,
     NormalizationError,
@@ -879,3 +880,123 @@ def test_wrapper_fails_closed_without_effective_items_in_publish_request() -> No
         uploader_wrapper.set_pending_effective_items([])
 
     assert calls == []
+
+
+def test_douyin_timer_effective_snapshot_keeps_minute_and_absolute_local_datetime() -> (
+    None
+):
+    payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "分钟定时",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["14:37"],
+        "startDays": 1,
+    }
+
+    result = normalize_publish_payloads(
+        [payload],
+        ACCOUNT_FIXTURES,
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
+    )
+    item = result.effective[0]
+
+    assert result.submitted[0]["dailyTimes"] == ["14:37"]
+    assert item.effective["dailyTimes"] == ["14:37"]
+    assert item.effective["publishDatetimes"] == ["2026-08-29T14:37:00"]
+
+
+def test_douyin_timer_minute_boundaries_and_mixed_immediate_timer_are_stable() -> None:
+    timer = {
+        "fileList": [
+            "douyin-1.mp4",
+            "douyin-2.mp4",
+            "douyin-3.mp4",
+            "douyin-4.mp4",
+        ],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "边界",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 4,
+        "dailyTimes": ["00:00", "23:29", "23:30", "23:59"],
+        "startDays": 0,
+    }
+    immediate = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "立即",
+        "tags": [],
+        "enableTimer": False,
+    }
+
+    result = normalize_publish_payloads(
+        [immediate, timer],
+        ACCOUNT_FIXTURES,
+        now=__import__("datetime").datetime(2026, 8, 27, 12, 0),
+    )
+
+    assert result.effective[0].effective["enableTimer"] is False
+    assert "publishDatetimes" not in result.effective[0].effective
+    assert result.effective[1].effective["publishDatetimes"] == [
+        "2026-08-28T00:00:00",
+        "2026-08-28T23:29:00",
+        "2026-08-28T23:30:00",
+        "2026-08-28T23:59:00",
+    ]
+
+
+def test_douyin_batch_freezes_local_date_once_across_effective_accounts(
+    monkeypatch,
+) -> None:
+    payload = {
+        "fileList": ["douyin.mp4"],
+        "accountList": ["douyin-a.json", "douyin-b.json"],
+        "type": 3,
+        "title": "跨午夜",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["00:05"],
+        "startDays": 0,
+    }
+    accounts = [
+        {
+            "id": 31,
+            "type": 3,
+            "filePath": "douyin-a.json",
+            "userName": "抖音 A",
+            "status": 1,
+            "default_platform_fields": None,
+        },
+        {
+            "id": 32,
+            "type": 3,
+            "filePath": "douyin-b.json",
+            "userName": "抖音 B",
+            "status": 1,
+            "default_platform_fields": None,
+        },
+    ]
+    clock_reads: list[datetime] = []
+
+    def fake_local_now() -> datetime:
+        clock_reads.append(
+            datetime(2026, 8, 27, 23, 59, tzinfo=UTC).replace(tzinfo=None)
+        )
+        return clock_reads[-1]
+
+    monkeypatch.setattr(publish_adapter, "_local_naive_now", fake_local_now)
+
+    result = normalize_publish_payloads([payload], accounts)
+
+    assert len(clock_reads) == 1
+    assert [item.effective["publishDatetimes"] for item in result.effective] == [
+        ["2026-08-28T00:05:00"],
+        ["2026-08-28T00:05:00"],
+    ]

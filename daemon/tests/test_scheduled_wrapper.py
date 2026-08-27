@@ -675,3 +675,106 @@ def test_timer_http_single_and_batch_use_fake_uploader_contract(
         )
     if platform == 2:
         assert all(call["args"][5:7] == (7, True) for call in calls)
+
+
+def test_douyin_wrapper_reuses_effective_absolute_datetime_snapshot(
+    monkeypatch,
+) -> None:
+    """fake uploader 必须收到 normalization 时冻结的本地 naive 时刻。"""
+    from posthub.publish_adapter import normalize_publish_payloads
+
+    uploader_wrapper.install()
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["account.json"],
+        "type": 3,
+        "title": "分钟",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["14:37"],
+        "startDays": 1,
+    }
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "account.json",
+        "userName": "抖音",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    item = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
+    ).effective[0]
+    calls: list[datetime] = []
+    original_class = uploader_wrapper._OriginalDouYinVideo
+
+    def fake_init(self, *args: Any, **kwargs: Any) -> None:
+        calls.append(kwargs.get("publish_date", args[3]))
+        self.publish_date = calls[-1]
+        self.publish_strategy = kwargs.get("publish_strategy")
+
+    async def fake_upload(self) -> None:
+        return None
+
+    monkeypatch.setattr(original_class, "__init__", fake_init)
+    monkeypatch.setattr(
+        original_class, "douyin_upload_video", fake_upload, raising=False
+    )
+    uploader_wrapper.set_pending_effective_items([item])
+    try:
+        uploader_wrapper._inject_declaration_to_douyin(
+            "分钟",
+            ["video.mp4"],
+            [],
+            ["account.json"],
+            enableTimer=True,
+            videos_per_day=1,
+            daily_times=["14:37"],
+            start_days=1,
+        )
+    finally:
+        uploader_wrapper.set_pending_effective_items([])
+
+    assert calls == [datetime(2026, 8, 29, 14, 37, tzinfo=UTC).replace(tzinfo=None)]
+    assert calls[0].tzinfo is None
+
+
+def test_run_detail_keeps_submitted_and_effective_timer_snapshots(tmp_path) -> None:
+    """run detail 与 fake uploader 使用同一份 persisted effective 快照。"""
+    from posthub.publish_adapter import normalize_publish_payloads
+    from posthub.runs import RunStore
+
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["account.json"],
+        "type": 3,
+        "title": "分钟",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["14:37"],
+        "startDays": 1,
+    }
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "account.json",
+        "userName": "抖音",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 23, 50, tzinfo=UTC).replace(tzinfo=None),
+    )
+    detail = RunStore(tmp_path / "runs.db")
+    run_id = detail.create_run(normalized.effective)
+
+    item = detail.get_run(run_id)["items"][0]
+    assert item["submitted"] == payload
+    assert item["effective"]["dailyTimes"] == ["14:37"]
+    assert item["effective"]["publishDatetimes"] == ["2026-08-29T14:37:00"]
