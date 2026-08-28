@@ -476,7 +476,6 @@ async def _apply_tencent_content_declaration(
     禁止把“未设置声明”伪装成发布成功。诊断保存在当前 item thread-local，
     由 RunWorker 在 item 终态前持久化到可查询详情。
     """
-    clear_declaration_diagnostics()
     entry = None
     entry_selector: str | None = None
     entry_rendered = False

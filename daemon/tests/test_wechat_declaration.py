@@ -15,13 +15,24 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def clear_diagnostics() -> None:
+    uploader_wrapper.clear_declaration_diagnostics()
+
+
 class StubLocator:
     def __init__(
-        self, *, text: str, visible: bool = True, present: bool = True
+        self,
+        *,
+        text: str,
+        visible: bool = True,
+        present: bool = True,
+        click_error: Exception | None = None,
     ) -> None:
         self.text = text
         self.visible = visible
         self.present = present
+        self.click_error = click_error
         self.clicks = 0
 
     @property
@@ -36,6 +47,8 @@ class StubLocator:
 
     async def click(self) -> None:
         self.clicks += 1
+        if self.click_error is not None:
+            raise self.click_error
 
     async def inner_text(self) -> str:
         return self.text
@@ -112,6 +125,38 @@ def test_wechat_ai_generated_uses_first_entry_selector(tmp_path: Path) -> None:
     assert page.options["含AI生成内容"].clicks == 1
 
 
+def test_wechat_declaration_diagnostics_accumulate_within_one_item(
+    tmp_path: Path,
+) -> None:
+    uploader_wrapper.clear_declaration_diagnostics()
+    first_page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={"无需标注": StubLocator(text="无需标注")},
+    )
+    second_page = StubPage(
+        entries={'text="添加声明"': StubLocator(text="添加声明")},
+        options={"含AI生成内容": StubLocator(text="含AI生成内容")},
+    )
+
+    run(
+        uploader_wrapper._apply_tencent_content_declaration(
+            first_page, "无需标注", account_file="first.json", debug_dir=tmp_path
+        )
+    )
+    run(
+        uploader_wrapper._apply_tencent_content_declaration(
+            second_page, "含AI生成内容", account_file="second.json", debug_dir=tmp_path
+        )
+    )
+
+    diagnostics = uploader_wrapper.get_declaration_diagnostics()
+    assert [item["account"] for item in diagnostics] == ["first.json", "second.json"]
+    assert [item["displayValue"] for item in diagnostics] == [
+        "无需标注",
+        "含AI生成内容",
+    ]
+
+
 def test_wechat_missing_entry_warns_screenshots_and_fails_closed(
     tmp_path: Path,
 ) -> None:
@@ -155,6 +200,56 @@ def test_wechat_missing_option_warns_screenshots_and_fails_closed(
     assert diagnostics[0]["reason"] == "option_unavailable"
     assert diagnostics[0]["selector"] == 'text="内容声明"'
     assert diagnostics[0]["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_entry_click_failure_warns_screenshots_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={
+            'text="内容声明"': StubLocator(
+                text="内容声明", click_error=RuntimeError("detached")
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="入口点击失败"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page, "无需标注", account_file="entry-click.json", debug_dir=tmp_path
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "entry_click_failed"
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_option_click_failure_warns_screenshots_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={
+            "含AI生成内容": StubLocator(
+                text="含AI生成内容", click_error=RuntimeError("detached")
+            )
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="选项点击失败"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page,
+                "含AI生成内容",
+                account_file="option-click.json",
+                debug_dir=tmp_path,
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "option_click_failed"
+    assert diagnostic["screenshot"] == page.screenshots[0]
 
 
 def test_wechat_declaration_context_does_not_leak_after_dom_failure() -> None:

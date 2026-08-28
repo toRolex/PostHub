@@ -15,6 +15,7 @@ from flask import Flask, g, jsonify, request
 
 from posthub.publish_adapter import NormalizationError, normalize_publish_payloads
 from posthub.uploader_wrapper import (
+    clear_declaration_diagnostics,
     set_pending_declarations,
     set_pending_effective_items,
 )
@@ -77,6 +78,7 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
         if request.endpoint not in {"postVideo", "postVideoBatch"}:
             return None
 
+        clear_declaration_diagnostics()
         # 每个发布请求从空队列开始；即使请求体形状错误，也不能继承同线程
         # 上一请求的 effective item。
         set_pending_effective_items([])
@@ -106,6 +108,7 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
 
     @app.teardown_request
     def clear_posthub_declarations(_error):
+        clear_declaration_diagnostics()
         set_pending_effective_items([])
         set_pending_declarations([])
 

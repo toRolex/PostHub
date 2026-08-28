@@ -624,3 +624,33 @@
 - API 契约：`web/src/api/official.ts` 增加可选 `RunItemDiagnostic` 类型，兼容旧 daemon；详情 payload 的 `diagnostics` 包含 warning、selector、账号、最终显示值和 screenshot 路径。
 - 官方源码边界：未修改 `daemon/sau_backend.py` 或官方 `uploader/*`；未混入 XHS/retry；未 push、PR、merge、关闭 issue、reset、rebase、amend。
 
+## AFK Reviewer 复核：f152fc3
+
+### 复核发现与修复
+
+- Red：新增同一 item 内连续处理两个视频号账号的诊断累积测试；原 helper 每次调用都会清空 thread-local，导致前一个账号的 selector/最终显示值丢失。
+- Green：将诊断清理边界收敛到 RunWorker 的 item 起止；移除 DOM helper 内的清理，并在官方 HTTP 发布请求 before/teardown 清理，避免跨 item/请求泄漏，同时保留同一 item 多账号诊断。
+- 补齐入口点击失败与候选点击失败的 warning、debug screenshot、fail-closed 测试覆盖。
+
+### Deviations
+
+- 与实现提交原计划不同：helper 不再承担每次 DOM 调用的清理职责，因为一个 effective item 可包含多个账号；采用 item/request 生命周期边界，避免丢诊断。
+
+### 验证
+
+- 定向视频号测试：`9 passed`。
+- 提交前继续运行 daemon 全量、web test/build；Tauri 仅在本轮改动触及相关桌面代码时运行。
+- 复核后 daemon 全量：`uv run pytest -q` → `177 passed`；定向 Python ruff check/format check → 通过。
+- 复核后 web：`pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → tsc 与 Vite build 通过；仅有既有 jsdom navigation stderr。
+- 运行实例：隔离 `POSTHUB_BASE_DIR` 启动 `run_backend.py`，`GET /getAccounts` 返回 200；空 `/postRuns` 返回 400；隔离账号 accepted run 进入 completed/failed，RunStore detail 返回 `diagnostics: []` 与 fail-closed error。真实浏览器发布未驱动，避免无 dry-run 的外部发布副作用。
+- Tauri：本轮未改 `src-tauri`，按改动范围跳过。
+
+### AFK Implementer 收口（2026-08-28）
+
+- 继续审计 `f152fc3` 与其未提交改动；未 reset、stash、覆盖或 amend，当前仅保留 #91 的 wrapper、路由、测试和本笔记差异。
+- 复验定向测试：`cd daemon && uv run pytest tests/test_wechat_declaration.py tests/test_runs.py -q` → `28 passed`。
+- 复验后端全量：`cd daemon && uv run pytest -q` → `177 passed in 5.23s`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `5 files already formatted`；`git diff --check` 通过。
+- 复验前端全量：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。仅有既有 jsdom navigation stderr。
+- 真实账号验收 concern：本轮未驱动真实账号，不能宣称平台最终显示值已实测；当前代码记录的候选 selector 为 `text="内容声明"` / `text="添加声明"`，成功诊断记录实际命中的 selector、账号和候选 `inner_text()`，待真实页面验收时逐项回填最终显示值。
+- Tauri：本轮未改 `src-tauri`，按改动范围跳过；未 push、未建 PR、未 merge、未关闭 issue。
+
