@@ -510,3 +510,85 @@ def test_wechat_option_probe_programming_error_is_reported_not_downgraded(
     assert diagnostic["reason"] == "option_probe_failed"
     assert diagnostic["selector"] == 'text="无需标注"'
     assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_recovers_menu_left_open_by_upstream_statement_step(
+    tmp_path: Path,
+) -> None:
+    class MenuPage:
+        def __init__(self) -> None:
+            self.menu_open = True
+            self.entry = MenuLocator(self, "内容声明")
+            self.option = MenuLocator(self, "无需标注")
+            self.screenshots: list[str] = []
+
+        def locator(self, selector: str) -> MenuLocator:
+            if selector == 'text="内容声明"':
+                return self.entry
+            if selector == 'text="无需标注"':
+                return self.option
+            return MenuLocator(self, "", present=False, visible=False)
+
+        def get_by_text(self, text: str, *, exact: bool = False) -> MenuLocator:
+            assert exact
+            return (
+                self.option
+                if text == "无需标注"
+                else MenuLocator(self, "", present=False, visible=False)
+            )
+
+        async def screenshot(self, *, path: str, full_page: bool = True) -> None:
+            assert full_page
+            self.screenshots.append(path)
+
+    class MenuLocator:
+        def __init__(
+            self,
+            page: MenuPage,
+            text: str,
+            *,
+            present: bool = True,
+            visible: bool = True,
+        ) -> None:
+            self.page = page
+            self.text = text
+            self._present = present
+            self._visible = visible
+            self.clicks = 0
+
+        @property
+        def first(self) -> MenuLocator:
+            return self
+
+        async def count(self) -> int:
+            if self.text == "无需标注":
+                return int(self.page.menu_open)
+            return int(self._present)
+
+        async def is_visible(self) -> bool:
+            if self.text == "无需标注":
+                return self.page.menu_open
+            return self._visible
+
+        async def click(self) -> None:
+            self.clicks += 1
+            if self.text == "内容声明":
+                self.page.menu_open = not self.page.menu_open
+            else:
+                self.page.menu_open = False
+
+        async def inner_text(self) -> str:
+            return self.text
+
+    page = MenuPage()
+    run(
+        uploader_wrapper._apply_tencent_content_declaration(
+            page, "无需标注", account_file="upstream-open.json", debug_dir=tmp_path
+        )
+    )
+
+    assert page.entry.clicks == 2
+    assert page.option.clicks == 1
+    assert (
+        uploader_wrapper.get_declaration_diagnostics()[0]["displayValue"] == "无需标注"
+    )

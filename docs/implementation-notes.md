@@ -684,3 +684,18 @@
 - 一次性验证启动修正：组合入口的 `uploader` 不是公开参数，验证服务改为组合后替换已注册 worker 的安全 fake uploader；未修改生产组合 API。
 - 真实账号 selector/最终展示值与 Windows 进程树仍无法在当前 macOS 验证；不伪装通过。未 push、未建 PR、未 merge、未关闭 issue。
 
+
+### AFK Reviewer 重试复核（2026-08-28）
+
+- 基线复验：`git diff develop..HEAD` 仅含 #91 wrapper、runs/routes、诊断测试、前端 API/详情和本笔记；官方 `daemon/sau_backend.py`、`uploader/*` 未修改。
+- daemon 全量 → `191 passed in 4.38s`；web 全量 → `20 files / 210 tests passed`；`pnpm run build` 的 `tsc --noEmit` 与 Vite build 通过；定向 Ruff/format 与 `git diff --check` 通过。
+- 发现 P1：视频号 wrapper 先调用官方 `apply_original_statement()`；官方在找不到旧「无需声明/不声明/无」选项时可能已打开「内容声明」菜单但未选择，随后 PostHub helper 再次点击入口会关闭菜单，导致 `no_label`/`ai_generated` 被误报候选缺失并 fail-closed。需补菜单状态回退测试并在 helper 中最小重试入口。
+- Deviations：不改变官方源码或 selector 宏观策略；仅让候选缺失后的第二次入口点击恢复官方 helper 可能留下的已打开菜单，真实候选仍按 DOM 校验，真实账号/Windows 仍未验证。
+
+### AFK Reviewer 修复与运行验收（2026-08-28）
+
+- Red/Green：新增官方菜单残留状态 stub，原 helper 在菜单已打开时二次点击后候选不可见；将候选探测抽为可重入 probe，候选双 selector 均未命中且无 hidden/probe error 时重开入口再探测；仍保留 generic 异常 fail-closed 与最终 DOM 文案校验。
+- 定向回归：`cd daemon && uv run pytest tests/test_wechat_declaration.py tests/test_runs.py -q` → `43 passed in 4.67s`；daemon 全量 → `192 passed in 6.03s`。
+- 最终验证：web `pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build`（tsc + Vite）通过；涉及 Python `ruff check` / `ruff format --check` 与 `git diff --check` 通过。
+- Runtime verify：隔离 Flask/Werkzeug socket 通过 `/postRuns` 驱动真实 worker；fake page 模拟官方先打开菜单，`no_label` 完成恢复、点击和真实 `inner_text()` 校验，详情为 `success` 且诊断含账号/selector/displayValue。候选缺失探针返回 `completed/failed`、`reason=option_unavailable`、warning、双候选 selector 与可访问 screenshot 路径。
+- 官方边界：`daemon/sau_backend.py` SHA-256 仍为 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `uploader/*`。真实账号、Windows 进程树仍未验证，保留 concern；未 push、PR、merge、关闭 issue。

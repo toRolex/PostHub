@@ -586,38 +586,81 @@ async def _apply_tencent_content_declaration(
             lambda: page.locator(f'text="{declaration}"').first,
         ),
     )
-    for selector, make_option in option_factories:
-        try:
-            option_locator = make_option()
-            count = await option_locator.count()
-            if not count:
-                continue
+
+    async def probe_option() -> tuple[
+        Any | None, str | None, list[str], list[tuple[str, Exception]]
+    ]:
+        option = None
+        option_selector: str | None = None
+        option_present_hidden: list[str] = []
+        option_probe_failures: list[tuple[str, Exception]] = []
+        for selector, make_option in option_factories:
             try:
-                visible = await option_locator.is_visible()
+                option_locator = make_option()
+                count = await option_locator.count()
+                if not count:
+                    continue
+                try:
+                    visible = await option_locator.is_visible()
+                except _RECOVERABLE_LOCATOR_ERROR as exc:
+                    option_probe_failures.append((selector, exc))
+                    continue
+                if visible:
+                    option = option_locator
+                    option_selector = selector
+                    break
+                option_present_hidden.append(selector)
             except _RECOVERABLE_LOCATOR_ERROR as exc:
                 option_probe_failures.append((selector, exc))
                 continue
-            if visible:
-                option = option_locator
-                option_selector = selector
-                break
-            option_present_hidden.append(selector)
-        except _RECOVERABLE_LOCATOR_ERROR as exc:
-            option_probe_failures.append((selector, exc))
-            continue
+            except Exception as exc:
+                message = f"视频号内容声明候选探测失败：selector={selector}；{exc}"
+                await _capture_tencent_declaration_failure(
+                    page,
+                    reason="option_probe_failed",
+                    message=message,
+                    account_file=account_file,
+                    debug_dir=debug_dir,
+                    selector=selector,
+                    requestedValue=declaration,
+                    error=str(exc),
+                )
+                raise RuntimeError(message) from exc
+        return option, option_selector, option_present_hidden, option_probe_failures
+
+    (
+        option,
+        option_selector,
+        option_present_hidden,
+        option_probe_failures,
+    ) = await probe_option()
+    if (
+        option is None
+        and option_selector is None
+        and not option_present_hidden
+        and not option_probe_failures
+    ):
+        # 官方 apply_original_statement() 可能已打开菜单但因旧候选不匹配
+        # 没有选择；第一次点击会将菜单关闭，再点一次恢复菜单后重探测。
+        try:
+            await entry.click()
         except Exception as exc:
-            message = f"视频号内容声明候选探测失败：selector={selector}；{exc}"
+            message = f"视频号内容声明入口点击失败：{exc}；selector={entry_selector}"
             await _capture_tencent_declaration_failure(
                 page,
-                reason="option_probe_failed",
+                reason="entry_click_failed",
                 message=message,
                 account_file=account_file,
                 debug_dir=debug_dir,
-                selector=selector,
-                requestedValue=declaration,
-                error=str(exc),
+                selector=entry_selector,
             )
             raise RuntimeError(message) from exc
+        (
+            option,
+            option_selector,
+            option_present_hidden,
+            option_probe_failures,
+        ) = await probe_option()
 
     if option is None or option_selector is None:
         if option_probe_failures:
