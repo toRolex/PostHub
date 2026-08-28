@@ -116,12 +116,14 @@ export function resolveWechatTimer(value: string): WechatTimerResolution {
   const roundedHour = hour + (minute >= 30 ? 1 : 0);
   const finalTime = formatHHMM((roundedHour % 24) * 60);
   const dayCarry: 0 | 1 = roundedHour >= 24 ? 1 : 0;
-  let reason =
-    minute === 0
-      ? `原始时刻已是整点：${originalTime}`
-      : minute < 30
-        ? `按最近整点降级：${originalTime} → ${finalTime}`
-        : `按最近整点降级：${originalTime} → ${finalTime}（30 分钟向后取整）`;
+  let reason: string;
+  if (minute === 0) {
+    reason = `原始时刻已是整点：${originalTime}`;
+  } else if (minute < 30) {
+    reason = `按最近整点降级：${originalTime} → ${finalTime}`;
+  } else {
+    reason = `按最近整点降级：${originalTime} → ${finalTime}（30 分钟向后取整）`;
+  }
   if (dayCarry) reason += "，跨日 +1 天";
   return {
     originalTime,

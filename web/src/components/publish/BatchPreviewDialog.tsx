@@ -10,6 +10,7 @@
  * 边界规则（issue #39）：不挂 store；只通过 props 渲染。
  */
 
+import type { ReactNode } from "react";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { PLATFORM_NAMES } from "../../api/platformNames";
 import type { Platform } from "../../api/types";
@@ -114,6 +115,23 @@ export function buildPreviewRows(
 
 }
 
+function renderTimerCell(row: PreviewRow): ReactNode {
+  if (row.mode !== "timer") return "—";
+  if (!row.timerResolution) {
+    return <span className="tabular-nums">{row.timeOfDay}</span>;
+  }
+
+  const { originalTime, finalTime, reason, warning } = row.timerResolution;
+  return (
+    <div className="space-y-0.5 text-caption">
+      <div className="tabular-nums">原始 {originalTime}</div>
+      <div className="tabular-nums font-medium">最终 {finalTime}</div>
+      <div className="text-warn-deep">{reason}</div>
+      <div className="text-warn-deep">{warning}</div>
+    </div>
+  );
+}
+
 interface BatchPreviewDialogProps {
   open: boolean;
   items: BatchItem[];
@@ -201,22 +219,7 @@ export function BatchPreviewDialog({
                     <td className="px-3 py-2 text-fg-2">
                       {r.mode === "immediate" ? "立即" : "定时"}
                     </td>
-                    <td className="px-3 py-2 text-fg-2">
-                      {r.mode !== "timer" ? (
-                        "—"
-                      ) : r.timerResolution ? (
-                        <div className="space-y-0.5 text-caption">
-                          <div className="tabular-nums">原始 {r.timerResolution.originalTime}</div>
-                          <div className="tabular-nums font-medium">
-                            最终 {r.timerResolution.finalTime}
-                          </div>
-                          <div className="text-warn-deep">{r.timerResolution.reason}</div>
-                          <div className="text-warn-deep">{r.timerResolution.warning}</div>
-                        </div>
-                      ) : (
-                        <span className="tabular-nums">{r.timeOfDay}</span>
-                      )}
-                    </td>
+                    <td className="px-3 py-2 text-fg-2">{renderTimerCell(r)}</td>
                     <td className="px-3 py-2 tabular-nums text-fg-2">
                       {r.mode === "timer" && r.startDays !== undefined
                         ? `+${r.startDays + (r.timerResolution?.dayCarry ?? 0)} 天`

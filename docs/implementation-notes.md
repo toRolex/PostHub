@@ -624,3 +624,18 @@
 
 - 前端原先会预先改写视频号 timer，造成 daemon 无法恢复多时刻跨日信息；按保守策略收敛到 daemon authoritative normalization，前端只提交原始 HH:MM 并计算展示 metadata。
 - 真实平台账号未在 runtime 中触发，避免不可逆发布；平台拒绝隔离由 RunWorker 的 item 级 fake uploader 契约覆盖。
+
+### Reviewer refinement（2026-08-28）
+
+- 审阅范围限定为当前未提交的 #89 改动：视频号 timer resolution、`timerResolutions[]` metadata、preview/detail 与 warning；不触碰官方源码、`uploader/*` 或其它 issue。
+- 已复核前后端 raw HH:MM / effective final 的双快照语义；daemon 仍从 raw `dailyTimes` 重新计算，前端 metadata 仅用于同源预览，未改变现有测试语义。
+- 发现前端预览组件新增 JSX 使用嵌套三元表达式；仅做等价显式分支精炼，保持渲染内容与行为不变。
+- 额外可达性风险：当前 timer 发布仍走 `/postVideo`/`/postVideoBatch`，只有 immediate 进入 `/postRuns`；因此 `RunDetailPanel` 的视频号 timer 详情分支暂无真实数据来源。本轮不引入新的 history/run 主干，避免扩大到其它 issue。
+
+### Reviewer 验证（2026-08-28）
+
+- `cd daemon && uv run pytest -q` 首次因残留本地 `run_backend.py` 占用 5409 端口导致 e2e fixture 17 项 setup error；确认并停止该 issue worktree 自身残留进程后重跑 → `173 passed in 3.90s`。
+- `cd web && pnpm test -- --run` → `20 files / 219 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过（Vite `0.99s`）；保留既有 jsdom navigation stderr。
+- `cd daemon && uv run --with ruff ruff check ...`（5 个 issue 89 Python 文件）→ `All checks passed!`；`ruff format --check` → `5 files already formatted`；`git diff --check` 通过。
+- Runtime socket：临时 `POSTHUB_BASE_DIR` 启动真实 `run_backend.py`，插入隔离视频号账号；合法 `23:30` `/postVideo` 请求穿过 normalization 后因隔离环境缺 cookie 返回 JSON `500`，未触发真实账号发布；非法 `24:00` 在 normalization 阶段返回 JSON `400`，明确指出 `dailyTimes`，未进入官方执行。
+- 结果：仅精炼 `BatchPreviewDialog` 的 timer cell 显式分支、`resolveWechatTimer` 的条件分支并追加本记录；不新增 timer/run history 主干。timer `RunDetailPanel` 的数据源 concern 仍保留，结论 `DONE_WITH_CONCERNS`。
