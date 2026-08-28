@@ -842,3 +842,12 @@
 
 - 旧库若已有重复活动 item，采用迁移时保守隔离重复项而非继续并发执行，避免其绕过数据库单飞行约束；原始 run 与错误详情仍保留可查询。
 - 真实平台账号与 Windows 环境未驱动；当前 macOS 仅验证本机 HTTP/安全 fake seam。
+
+### Reviewer refinement（2026-08-29）
+
+- 已按要求读取 `git diff develop..HEAD`、Issue #94、`CONTEXT.md` 与 ADR-0009；当前实现覆盖批内重复 400、SQLite 跨连接单飞行 409、existingRunId 保真及前端打开已有 run。
+- 全量验证首轮：daemon `210 passed`；web `20 files / 229 tests passed`；web build 通过；Tauri lib `17 passed`、bin `0 tests`。web 保留既有 jsdom navigation stderr。
+- 发现 P1：若数据库已写入 `dedupe_key` 但唯一索引创建失败/丢失，重启时原迁移只扫描 NULL 键，重复活动 item 会使建索引再次 IntegrityError，daemon 无法启动。
+- 修复：迁移按 `created_at/ordinal/id` 重新核对所有活动 item（含已有键），重复项保守隔离为 failed 后再建唯一索引；新增部分迁移 schema 回归，覆盖已有重复键。定向 daemon `38 passed`，ruff check/format 通过。
+- 最终全量验证：daemon `211 passed`；web `20 files / 229 tests passed`；web build 通过；Tauri lib `17 passed`、bin `0 tests`；`git diff --check` 通过。web 仍有既有 jsdom navigation stderr。
+- 准备提交一个 `refine:` commit；不 push、不 merge、不关闭 Issue #94。

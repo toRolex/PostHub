@@ -950,6 +950,55 @@ def test_old_schema_duplicate_active_items_are_quarantined_and_release_key_after
     assert store.create_run((released,)) != "run-old"
 
 
+def test_existing_dedupe_keys_are_reconciled_before_unique_index_creation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "partially-migrated-runs.db"
+    effective = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "重复活动 item",
+        "tags": [],
+        "enableTimer": False,
+    }
+    RunStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP INDEX idx_run_items_active_dedupe")
+        conn.execute(
+            "INSERT INTO runs (id, status, created_at, updated_at) VALUES (?, 'pending', ?, ?)",
+            ("run-partial", "2026-08-29T00:00:00+00:00", "2026-08-29T00:00:00+00:00"),
+        )
+        for ordinal in range(2):
+            conn.execute(
+                """
+                INSERT INTO run_items (
+                    id, run_id, ordinal, status, submitted_json, effective_json,
+                    dedupe_key, created_at, updated_at
+                ) VALUES (?, 'run-partial', ?, 'pending', ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"item-partial-{ordinal}",
+                    ordinal,
+                    json.dumps(effective),
+                    json.dumps(effective),
+                    '["video.mp4","douyin.json"]',
+                    f"2026-08-29T00:00:0{ordinal}+00:00",
+                    f"2026-08-29T00:00:0{ordinal}+00:00",
+                ),
+            )
+        conn.commit()
+
+    RunStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT status, dedupe_key FROM run_items ORDER BY ordinal"
+        ).fetchall()
+    assert rows[0][0] == "pending"
+    assert rows[1][0] == "failed"
+    assert rows[0][1] == rows[1][1] == '["video.mp4","douyin.json"]'
+
+
 def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payload(
     tmp_path: Path,
 ) -> None:

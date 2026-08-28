@@ -158,7 +158,12 @@ class RunStore:
             if "dedupe_key" not in columns:
                 conn.execute("ALTER TABLE run_items ADD COLUMN dedupe_key TEXT")
             legacy_items = conn.execute(
-                "SELECT id, effective_json, status FROM run_items WHERE dedupe_key IS NULL"
+                """
+                SELECT id, effective_json, status, dedupe_key
+                FROM run_items
+                WHERE dedupe_key IS NULL OR status IN ('pending', 'running')
+                ORDER BY created_at, ordinal, id
+                """
             ).fetchall()
             active_keys: set[str] = set()
             for row in legacy_items:
@@ -190,9 +195,11 @@ class RunStore:
                         ),
                     )
                     continue
-                conn.execute(
-                    "UPDATE run_items SET dedupe_key = ? WHERE id = ?", (key, row["id"])
-                )
+                if row["dedupe_key"] != key:
+                    conn.execute(
+                        "UPDATE run_items SET dedupe_key = ? WHERE id = ?",
+                        (key, row["id"]),
+                    )
                 if row["status"] in {"pending", "running"}:
                     active_keys.add(key)
             conn.execute(
