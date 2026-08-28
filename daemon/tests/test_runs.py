@@ -346,6 +346,78 @@ def test_worker_restart_recovers_expired_running_item(tmp_path: Path) -> None:
     assert store.get_run(run_id)["items"][0]["status"] == "success"
 
 
+def test_recover_incomplete_closes_running_run_with_terminal_items(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner-a")
+    assert claimed is not None
+    _, item_id, _ = claimed
+    assert store.finish_item(run_id, item_id, owner_token="owner-a")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE runs SET status = 'running', completed_at = NULL WHERE id = ?",
+            (run_id,),
+        )
+
+    store.recover_incomplete()
+
+    recovered = store.get_run(run_id)
+    assert recovered is not None
+    assert recovered["status"] == "completed"
+    assert recovered["completedAt"] is not None
+
+
+def test_worker_skips_uploader_when_initial_lease_renewal_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    calls: list[dict] = []
+    monkeypatch.setattr(store, "renew_lease", lambda *args, **kwargs: False)
+
+    worker = RunWorker(
+        store,
+        uploader=lambda effective: calls.append(dict(effective)),
+    )
+    worker.start()
+    try:
+        completed = wait_for_status_from_store(store, run_id, "completed_with_failures")
+    finally:
+        worker.stop()
+
+    assert calls == []
+    assert completed["items"][0]["status"] == "failed"
+    assert completed["items"][0]["errorSummary"] == "item lease 已失效，跳过外部执行"
+
+
 def test_empty_error_is_still_failed_not_success(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "posthub-runs.db")
     normalized = normalize_publish_payload(
@@ -745,12 +817,22 @@ def test_old_run_schema_migrates_to_partial_completion_status(tmp_path: Path) ->
                 updated_at TEXT NOT NULL
             );
             INSERT INTO runs VALUES ('run-old', 'completed', 'a', 'a', 'a');
-            INSERT INTO run_items VALUES ('item-old', 'run-old', 0, 'failed', '{}', '{}', 'old', 'a', 'a');
+            INSERT INTO run_items VALUES ('item-old', 'run-old', 0, 'failed', '{}', '{}', '首行\\n完整旧详情', 'a', 'a');
+            INSERT INTO runs VALUES ('run-stale', 'running', 'b', 'b', NULL);
+            INSERT INTO run_items VALUES ('item-stale', 'run-stale', 0, 'success', '{}', '{}', NULL, 'b', 'b');
             """
         )
 
     store = RunStore(db_path)
     assert store.finish_item("run-old", "item-old", owner_token="nobody") is False
+    migrated = store.get_run("run-old")
+    assert migrated is not None
+    assert migrated["status"] == "completed_with_failures"
+    assert migrated["items"][0]["errorSummary"] == "首行"
+    assert migrated["items"][0]["errorDetail"] == "首行\\n完整旧详情"
+    stale = store.get_run("run-stale")
+    assert stale is not None
+    assert stale["status"] == "completed"
     with sqlite3.connect(db_path) as conn:
         sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"

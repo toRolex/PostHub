@@ -628,3 +628,19 @@
 - web `pnpm test -- --run` → `20 files / 215 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
 - Runtime verify：隔离 Flask socket `127.0.0.1:5439` 经真实 HTTP `/postRuns` 驱动 success/failure/success，返回 `completed_with_failures`，summary 为 `2 success / 1 failed / 3 completed`；详情按 `seq=1,2,3` 返回，失败项有短摘要和含 request-id 的完整错误。空数组与非 object item 均返回 JSON 400。
 
+### AFK Reviewer 复核（2026-08-28）
+
+- 已完整读取 `git diff develop..HEAD`；变更范围锁定 #93 的 RunStore/worker 错误详情与部分成功聚合、web API/store/AppShell 轮询和发布详情；未发现修改官方 uploader 或混入其它 issue 的业务文件。
+- 复核重点：多 item 隔离与终态聚合、旧 schema 迁移、lease/worker 失败路径、前端 stale/网络错误与轮询退避、seq/错误详情显示及类型兼容。
+- 初步结论：实现主路径与验收目标一致；先执行 daemon、web、build、Tauri 全量验证，再根据失败或边界证据决定是否追加 `refine:` 修复。真实账号、Windows 托盘生命周期无法在当前 macOS 环境验证，若无自动化证据保留为 concern。
+- 全量验证首轮：`cd daemon && uv run pytest -q` → `169 passed in 4.30s`；`cd web && pnpm test -- --run` → `20 files / 215 tests passed`（保留既有 jsdom navigation stderr）；`cd web && pnpm run build` → tsc/Vite 通过；Tauri 首轮因仓库忽略的 `src-tauri/resources/daemon` 不存在失败，按既有约定仅补本地空资源目录后重跑。
+- Tauri 复验：补齐未跟踪空 `src-tauri/resources/{daemon,bin,browser}` 后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 passed`；空目录未进入 Git。
+- 精炼前定向复核：`cd daemon && uv run pytest tests/test_runs.py -q` → `20 passed`；Python `ruff check`/`ruff format --check` → 通过；web AppShell 回归（当前 Vitest 配置仍运行全量）→ `20 files / 216 tests passed`。尝试 `pnpm exec prettier --check ...` 失败，因项目未安装 prettier，非代码失败。
+- 发现并修复 P1：终态 run 停止 timeout 链后，第二次 accepted run 不会自动建立轮询；新增 store 订阅、run generation 防旧请求重启新链，并补充回归 helper 测试。
+- 发现并修复 P2：旧 schema 中失败 run 迁移后仍显示 `completed`，且多行旧错误摘要未截短；迁移按 item 事实升级为 `completed_with_failures`，并用统一摘要规则回填 `errorSummary`，补充回归断言。
+- 修补后进入最终全量复验；不修改官方源码，不引入 retry/scheduler，不触碰其它 issue。
+- 交付前顾问复核发现两项边界：初始 lease 续租失败仍会调用外部 uploader；旧/崩溃恢复可能遗留“running 但无未完成 item”。按建议补回归并修复：初始续租异常/false 时 fail-closed 记 failed，heartbeat 遇 SQLite 短暂锁竞争继续重试；schema 初始化与 `recover_incomplete()` 均按 item 事实收敛终态并设置 `completed_at`。
+- 边界定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `22 passed`；Python `ruff check`/`ruff format --check` → 通过；`cd web && pnpm test -- --run && pnpm run build` → `20 files / 216 tests passed`、tsc/Vite 通过。
+- 最终全量验证：`cd daemon && uv run pytest -q` → `171 passed in 4.12s`；`cd web && pnpm test -- --run` → `20 files / 216 tests passed`（仅既有 jsdom navigation stderr）；`cd web && pnpm run build` → tsc/Vite 通过；`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 passed`；相关 Python ruff check/format → 通过；`git diff --check` → 通过。
+- 结论：已发现并修复 2 个会影响后续 run/历史状态或外部执行安全的边界缺陷；真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern。准备提交 `refine:`，不 merge/push/关 issue。
+

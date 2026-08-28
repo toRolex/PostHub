@@ -4,6 +4,7 @@ import {
   runProgressLabel,
   runStatusMeta,
   shouldRefreshRun,
+  shouldRestartRunPolling,
 } from "./AppShell";
 
 describe("顶部最近 run 状态条", () => {
@@ -46,6 +47,13 @@ describe("顶部最近 run 状态条", () => {
 
   it("部分成功显示明确状态文案", () => {
     expect(runStatusMeta("completed_with_failures")?.label).toBe("最近运行 部分成功");
+  });
+
+  it("终态停止后，新 accepted run 会重启轮询", () => {
+    expect(shouldRestartRunPolling("run-old", "run-new", "pending")).toBe(true);
+    expect(shouldRestartRunPolling("run-old", "run-new", "completed")).toBe(false);
+    expect(shouldRestartRunPolling("run-old", "run-old", "running")).toBe(false);
+    expect(shouldRestartRunPolling(null, null, "pending")).toBe(false);
   });
 
   it("轮询从 2 秒起步，无变化指数退避但上限 10 秒，有变化重置", () => {

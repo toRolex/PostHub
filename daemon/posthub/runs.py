@@ -30,6 +30,7 @@ _RUN_SERVICE_MARKER = "_posthub_run_service"
 DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
+LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
 
 
 def _now() -> str:
@@ -111,12 +112,52 @@ class RunStore:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_owner TEXT")
             if "lease_until" not in columns:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_until TEXT")
+            legacy_errors = conn.execute(
+                """
+                SELECT id, error FROM run_items
+                WHERE error IS NOT NULL AND error_summary IS NULL
+                """
+            ).fetchall()
+            for row in legacy_errors:
+                conn.execute(
+                    "UPDATE run_items SET error_summary = ? WHERE id = ?",
+                    (_error_summary(row["error"]), row["id"]),
+                )
             conn.execute(
                 """
                 UPDATE run_items
-                SET error_summary = COALESCE(error_summary, error),
-                    error_detail = COALESCE(error_detail, error)
-                WHERE error IS NOT NULL
+                SET error_detail = error
+                WHERE error IS NOT NULL AND error_detail IS NULL
+                """
+            )
+            # 旧版本会把含失败 item 的 run 误记为 completed；崩溃恢复也
+            # 可能遗留没有活动 item 的 running。首次打开时按 item 事实纠正，
+            # 避免历史详情继续显示为“已完成”或永久轮询“执行中”。
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'completed_with_failures'
+                WHERE status = 'completed'
+                  AND EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                  )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = CASE WHEN EXISTS (
+                        SELECT 1 FROM run_items
+                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                    ) THEN 'completed_with_failures' ELSE 'completed' END,
+                    completed_at = COALESCE(completed_at, updated_at)
+                WHERE status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id
+                        AND run_items.status IN ('pending', 'running')
+                  )
                 """
             )
 
@@ -166,7 +207,7 @@ class RunStore:
               (id, run_id, ordinal, status, submitted_json, effective_json, error,
                error_summary, error_detail, created_at, updated_at, lease_owner, lease_until)
             SELECT id, run_id, ordinal, status, submitted_json, effective_json, error,
-                   COALESCE({error_summary}, error), COALESCE({error_detail}, error),
+                   {error_summary}, {error_detail},
                    created_at, updated_at, {lease_owner}, {lease_until}
             FROM run_items_old
             """
@@ -239,6 +280,23 @@ class RunStore:
                   )
                 """,
                 (now,),
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = CASE WHEN EXISTS (
+                        SELECT 1 FROM run_items
+                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                    ) THEN 'completed_with_failures' ELSE 'completed' END,
+                    updated_at = ?, completed_at = COALESCE(completed_at, ?)
+                WHERE status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id
+                        AND run_items.status IN ('pending', 'running')
+                  )
+                """,
+                (now, now),
             )
 
     def claim_next_item(
@@ -552,24 +610,38 @@ class RunWorker:
             # 先由 worker 线程同步续租，再启动 heartbeat，避免新线程尚未调度
             # 时短 lease 已过期并被另一个 worker 回收。
             heartbeat_lease_seconds = max(self.lease_seconds, 1.0)
-            self.store.renew_lease(
-                run_id,
-                item_id,
-                owner_token=self._owner_token,
-                lease_seconds=heartbeat_lease_seconds,
-            )
+            try:
+                renewed = self.store.renew_lease(
+                    run_id,
+                    item_id,
+                    owner_token=self._owner_token,
+                    lease_seconds=heartbeat_lease_seconds,
+                )
+            except sqlite3.Error as exc:
+                return LEASE_LOST_ERROR, f"{LEASE_LOST_ERROR}: {exc}"
+            if not renewed:
+                return LEASE_LOST_ERROR, LEASE_LOST_ERROR
             interval = max(0.01, min(heartbeat_lease_seconds / 4, 0.25))
 
             def renew() -> None:
                 while not finished.is_set():
-                    if not self.store.renew_lease(
-                        run_id,
-                        item_id,
-                        owner_token=self._owner_token,
-                        lease_seconds=heartbeat_lease_seconds,
-                    ):
+                    try:
+                        renewed = self.store.renew_lease(
+                            run_id,
+                            item_id,
+                            owner_token=self._owner_token,
+                            lease_seconds=heartbeat_lease_seconds,
+                        )
+                    except sqlite3.Error:
+                        # 短暂 SQLite 锁竞争不能让 heartbeat 静默退出；下一轮
+                        # 继续续租，直到 uploader 完成或 lease owner 失效。
+                        if finished.wait(interval):
+                            return
+                        continue
+                    if not renewed:
                         return
-                    finished.wait(interval)
+                    if finished.wait(interval):
+                        return
 
             heartbeat = threading.Thread(
                 target=renew, name="posthub-run-lease", daemon=True

@@ -44,6 +44,18 @@ export function shouldRefreshRun(status: RunStatus | null): boolean {
   return status !== "completed" && status !== "completed_with_failures";
 }
 
+export function shouldRestartRunPolling(
+  previousRunId: string | null,
+  currentRunId: string | null,
+  currentStatus: RunStatus | null,
+): boolean {
+  return (
+    currentRunId !== null &&
+    currentRunId !== previousRunId &&
+    shouldRefreshRun(currentStatus)
+  );
+}
+
 export function nextRunPollDelay(previousMs: number, changed: boolean): number {
   return changed
     ? RUN_POLL_INITIAL_MS
@@ -193,6 +205,7 @@ export function AppShell() {
     let disposed = false;
     let runPollTimer: number | undefined;
     let runPollDelay = RUN_POLL_INITIAL_MS;
+    let runPollGeneration = 0;
 
     const runFingerprint = (): string => {
       const state = useRunStore.getState();
@@ -213,20 +226,51 @@ export function AppShell() {
       });
     };
 
-    const scheduleRunPoll = (delay: number): void => {
-      if (disposed) return;
+    const scheduleRunPoll = (delay: number, generation = runPollGeneration): void => {
+      if (disposed || runPollTimer !== undefined) return;
       runPollTimer = window.setTimeout(async () => {
-        if (disposed || !shouldRefreshRun(useRunStore.getState().status)) return;
+        runPollTimer = undefined;
+        if (
+          disposed ||
+          generation !== runPollGeneration ||
+          !shouldRefreshRun(useRunStore.getState().status)
+        ) {
+          return;
+        }
         const before = runFingerprint();
         // refresh 在网络异常时保留原快照；因此比较前后快照即可决定退避，
         // 网络错误不会停止后续重试，也不会清空用户已经看到的状态。
         await useRunStore.getState().refresh(useDaemonStore.getState().url);
-        if (disposed || !shouldRefreshRun(useRunStore.getState().status)) return;
+        if (
+          disposed ||
+          generation !== runPollGeneration ||
+          !shouldRefreshRun(useRunStore.getState().status)
+        ) {
+          return;
+        }
         const changed = before !== runFingerprint();
         runPollDelay = nextRunPollDelay(runPollDelay, changed);
-        scheduleRunPoll(runPollDelay);
+        scheduleRunPoll(runPollDelay, generation);
       }, delay);
     };
+
+    const unsubscribeRunStore = useRunStore.subscribe((state, previousState) => {
+      if (
+        disposed ||
+        !shouldRestartRunPolling(previousState.runId, state.runId, state.status)
+      ) {
+        return;
+      }
+      // 终态会停止当前链；新 accepted run 到达后必须建立新的 2 秒轮询链，
+      // 否则用户提交第二个 run 时不会再获取其终态。
+      runPollGeneration += 1;
+      runPollDelay = RUN_POLL_INITIAL_MS;
+      if (runPollTimer !== undefined) {
+        window.clearTimeout(runPollTimer);
+        runPollTimer = undefined;
+      }
+      scheduleRunPoll(RUN_POLL_INITIAL_MS, runPollGeneration);
+    });
 
     void (async () => {
       const url = await loadDaemonUrl();
@@ -243,6 +287,7 @@ export function AppShell() {
     );
     return () => {
       disposed = true;
+      unsubscribeRunStore();
       window.clearInterval(healthTimer);
       if (runPollTimer !== undefined) window.clearTimeout(runPollTimer);
     };
