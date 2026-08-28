@@ -953,7 +953,7 @@ def test_platform_rejection_only_fails_current_item_and_next_item_runs(
     worker = RunWorker(store, uploader=uploader)
     worker.start()
     try:
-        detail = wait_for_status_from_store(store, run_id, "completed")
+        detail = wait_for_status_from_store(store, run_id, "completed_with_failures")
     finally:
         worker.stop()
 
@@ -1095,7 +1095,7 @@ def test_worker_marks_item_failed_when_diagnostic_persistence_returns_false(
     worker = RunWorker(store, uploader=uploader)
     worker.start()
     try:
-        detail = wait_for_status_from_store(store, run_id, "completed")
+        detail = wait_for_status_from_store(store, run_id, "completed_with_failures")
     finally:
         worker.stop()
 
@@ -1143,7 +1143,7 @@ def test_worker_marks_item_failed_when_diagnostic_persistence_raises(
     worker = RunWorker(store, uploader=uploader)
     worker.start()
     try:
-        detail = wait_for_status_from_store(store, run_id, "completed")
+        detail = wait_for_status_from_store(store, run_id, "completed_with_failures")
     finally:
         worker.stop()
 

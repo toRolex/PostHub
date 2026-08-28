@@ -793,3 +793,12 @@
 - 边界定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `22 passed`；Python `ruff check`/`ruff format --check` → 通过；`cd web && pnpm test -- --run && pnpm run build` → `20 files / 216 tests passed`、tsc/Vite 通过。
 - 最终全量验证：`cd daemon && uv run pytest -q` → `171 passed in 4.12s`；`cd web && pnpm test -- --run` → `20 files / 216 tests passed`（仅既有 jsdom navigation stderr）；`cd web && pnpm run build` → tsc/Vite 通过；`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 passed`；相关 Python ruff check/format → 通过；`git diff --check` → 通过。
 - 结论：已发现并修复 2 个会影响后续 run/历史状态或外部执行安全的边界缺陷；真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern。准备提交 `refine:`，不 merge/push/关 issue。
+
+### AFK Merger 实际收口（2026-08-28）
+
+- 局部解决 `runs.py`、`test_runs.py`、`official.ts`、`PublishView.tsx` 与本笔记冲突；同时保留 #89 timer resolution、#91 diagnostics 生命周期和 #93 部分成功/错误详情/lease 聚合能力。未使用 ours/theirs 整体覆盖。
+- merge commit：`a65a630`（`Merge branch 'afk/issue-93' into develop`）；#89 已由父提交 `c64613d` 保留，#91 已由父提交 `77d36b3` 合入，#93 本轮完成合入。
+- 首轮 daemon 测试暴露 3 个 #91 旧断言仍等待 `completed`；按 #93 新终态契约仅将平台拒绝隔离、诊断写入返回 false/抛错三处等待值改为 `completed_with_failures`，未删除测试或改变生产逻辑。
+- 最终验证：`cd daemon && uv run pytest -q` → `204 passed`；`cd web && pnpm test -- --run` → `20 files / 225 tests passed`；`cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过（`1706 modules transformed`）。
+- `rg` 冲突标记为 0，`git diff --check` 通过；Tauri 未触及，按要求跳过。web 测试保留既有 jsdom navigation stderr。
+- 真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern；未 push、未建 PR、未修改 GitHub Issue、未删除 worktree/分支。
