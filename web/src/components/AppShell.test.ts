@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { runProgressLabel, runStatusMeta, shouldRefreshRun } from "./AppShell";
+import {
+  runDiagnosticsText,
+  runProgressLabel,
+  runStatusMeta,
+  shouldRefreshRun,
+} from "./AppShell";
 
 describe("顶部最近 run 状态条", () => {
   it("pending/running/completed 使用真实生命周期文案", () => {
@@ -36,5 +41,15 @@ describe("顶部最近 run 状态条", () => {
     expect(shouldRefreshRun("pending")).toBe(true);
     expect(shouldRefreshRun("running")).toBe(true);
     expect(shouldRefreshRun(null)).toBe(true);
+  });
+
+  it("运行查询展示 wrapper warning 与 debug screenshot 信息", () => {
+    expect(
+      runDiagnosticsText({
+        warnings: ["入口未渲染"],
+        debugScreenshots: ["/tmp/xhs-source.png"],
+      }),
+    ).toBe("告警：入口未渲染；调试截图：/tmp/xhs-source.png");
+    expect(runDiagnosticsText(null)).toBeNull();
   });
 });

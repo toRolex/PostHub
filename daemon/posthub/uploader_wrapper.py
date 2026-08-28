@@ -11,22 +11,28 @@
   DOM seam 选择内容声明；声明入口不可用时显式失败而不是静默丢弃；
 - 请求 teardown 清空队列，避免声明跨请求串扰。
 
-小红书上游当前没有 source 字段执行代码，因此只委托官方函数并保留声明上下文
-seam；本 issue 不复制小红书发布流程或另造执行引擎。
+小红书上游当前没有 source 字段执行代码，因此由 PostHub 子类在官方
+`check_original_declaration` 调用点补充 DOM seam；发布流程仍完全委托官方实现。
 """
 
 from __future__ import annotations
 
 import re
+import tempfile
 import threading
+import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import myUtils.postVideo as _post_video_mod
 from flask import has_request_context, request
+from patchright.async_api import TimeoutError as PatchrightTimeoutError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
 from uploader.ks_uploader.main import KSVideo as _OriginalKSVideo
 from uploader.tencent_uploader.main import TencentVideo as _OriginalTencentVideo
@@ -296,6 +302,19 @@ def _declaration_item_for_effective(item: EffectiveBatchItem) -> dict[str, Any]:
     return {"platform": item.platform_type, "fields": selected}
 
 
+def _declaration_item_for_payload(effective: Mapping[str, Any]) -> dict[str, Any]:
+    """把持久化 effective payload 转为直接 wrapper 调用所需的 context。"""
+    platform_type = effective.get("type")
+    if not isinstance(platform_type, int) or isinstance(platform_type, bool):
+        raise TypeError(f"effective item 平台非法：{platform_type!r}")
+    fields = effective.get("platformFields")
+    if not fields:
+        selected: dict[str, Any] = {}
+    else:
+        selected = select_for_platform(resolve_platform_fields(fields), platform_type)
+    return {"platform": platform_type, "fields": selected}
+
+
 def _pop_for(platform: int) -> dict | None:
     """按 FIFO 取一条匹配平台的声明；若无匹配则返回 None。"""
     q = _queue()
@@ -358,20 +377,27 @@ def _active_fields(platform: int) -> dict[str, Any]:
     return _fields_for(getattr(_local, "active", None), platform)
 
 
+def _restore_thread_local(name: str, previous: Any) -> None:
+    if previous is _MISSING:
+        try:
+            delattr(_local, name)
+        except AttributeError:
+            pass
+    else:
+        setattr(_local, name, previous)
+
+
 @contextmanager
 def _declaration_context(item: dict | None) -> Iterator[None]:
     previous = getattr(_local, "active", _MISSING)
+    previous_diagnostics = getattr(_local, "diagnostics", _MISSING)
     _local.active = item
+    _local.diagnostics = {"warnings": [], "debugScreenshots": []}
     try:
         yield
     finally:
-        if previous is _MISSING:
-            try:
-                del _local.active
-            except AttributeError:
-                pass
-        else:
-            _local.active = previous
+        _restore_thread_local("active", previous)
+        _restore_thread_local("diagnostics", previous_diagnostics)
 
 
 class _DouYinVideoWithDeclaration(_OriginalDouYinVideo):
@@ -386,12 +412,148 @@ class _DouYinVideoWithDeclaration(_OriginalDouYinVideo):
 
 
 class _XiaoHongShuVideoWithStrategy(_OriginalXiaoHongShuVideo):
-    """小红书 scheduled 薄 wrapper；发布循环仍由官方入口执行。"""
+    """小红书 scheduled/source 薄 wrapper；发布循环仍由官方类实现。"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         args, kwargs = _select_xhs_publish_date(args, kwargs)
         _ensure_publish_strategy(args, kwargs)
         super().__init__(*args, **kwargs)
+
+    async def check_original_declaration(self, page: Any) -> None:
+        source = _active_fields(1).get("source")
+        if source:
+            await _apply_xhs_source_declaration(page, source)
+        # 保留上游“声明原创”行为；本 issue 只在其前面补 source seam。
+        await super().check_original_declaration(page)
+
+
+XHS_SOURCE_ENTRY_SELECTORS = (
+    'text="笔记内容声明"',
+    'text="创作来源"',
+)
+XHS_SOURCE_OPTION_SELECTOR = 'text="{source}"'
+XHS_SOURCE_OPTION_SELECTORS = (
+    XHS_SOURCE_OPTION_SELECTOR,
+    'label:has-text("{source}")',
+)
+# 只用于区分“候选文案发生变化”和两个精确 selector 都未命中。
+XHS_SOURCE_CANDIDATE_SELECTOR = '[role="option"]'
+
+
+@dataclass(frozen=True)
+class XhsSourceApplyResult:
+    """小红书 source DOM seam 的可查询结果。"""
+
+    status: Literal["applied", "warning"]
+    reason: str | None = None
+    warning: str | None = None
+    debug_screenshot: str | None = None
+
+
+class WrapperExecutionError(RuntimeError):
+    """官方执行失败，同时携带当前 item 已采集的 wrapper 诊断。"""
+
+    def __init__(self, message: str, diagnostics: Mapping[str, list[str]]) -> None:
+        super().__init__(message)
+        self.diagnostics = {
+            "warnings": list(diagnostics.get("warnings", [])),
+            "debugScreenshots": list(diagnostics.get("debugScreenshots", [])),
+        }
+
+
+def _diagnostics() -> dict[str, list[str]]:
+    current = getattr(_local, "diagnostics", None)
+    if current is None:
+        current = {"warnings": [], "debugScreenshots": []}
+        _local.diagnostics = current
+    return current
+
+
+def _record_warning(message: str) -> None:
+    _diagnostics()["warnings"].append(message)
+
+
+def _record_debug_screenshot(path: str) -> None:
+    _diagnostics()["debugScreenshots"].append(path)
+
+
+def consume_diagnostics() -> dict[str, list[str]]:
+    """取出当前发布 item 的 wrapper 诊断，并清空当前线程上下文。"""
+    current = getattr(_local, "diagnostics", None) or {}
+    result = {
+        "warnings": list(current.get("warnings", [])),
+        "debugScreenshots": list(current.get("debugScreenshots", [])),
+    }
+    _local.diagnostics = {"warnings": [], "debugScreenshots": []}
+    return result
+
+
+async def _capture_xhs_debug_screenshot(page: Any) -> str | None:
+    path = (
+        Path(tempfile.gettempdir())
+        / "posthub-debug"
+        / f"xhs-source-{uuid.uuid4().hex}.png"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        await page.screenshot(path=str(path), full_page=True)
+    except Exception as exc:  # noqa: BLE001 - 诊断失败不覆盖原 warning
+        _record_warning(f"小红书内容声明 debug screenshot 失败：{exc}")
+        return None
+    _record_debug_screenshot(str(path))
+    return str(path)
+
+
+XHS_DOM_WAIT_TIMEOUT_MS = 1_000
+
+
+async def _visible_first_locator(page: Any, selectors: tuple[str, ...]) -> Any:
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            await locator.wait_for(
+                state="visible",
+                timeout=XHS_DOM_WAIT_TIMEOUT_MS,
+            )
+        except (PatchrightTimeoutError, PlaywrightTimeoutError, TimeoutError):
+            continue
+        if await locator.count() and await locator.is_visible():
+            return locator
+    return None
+
+
+async def _apply_xhs_source_declaration(page: Any, source: str) -> XhsSourceApplyResult:
+    """通过两组稳定 selector 尝试选择小红书“笔记内容声明”。
+
+    source 入口或候选变化时不静默成功：发布继续交给官方流程，但返回并记录
+    warning 与 debug screenshot，供 accepted-run 详情如实展示。
+    """
+    entry = await _visible_first_locator(page, XHS_SOURCE_ENTRY_SELECTORS)
+    if entry is None:
+        warning = "小红书内容声明入口未渲染，未能应用 source"
+        _record_warning(warning)
+        screenshot = await _capture_xhs_debug_screenshot(page)
+        return XhsSourceApplyResult("warning", "entry_missing", warning, screenshot)
+
+    await entry.click()
+    option_selectors = tuple(
+        selector.format(source=source) for selector in XHS_SOURCE_OPTION_SELECTORS
+    )
+    option = await _visible_first_locator(page, option_selectors)
+    if option is not None:
+        await option.click()
+        return XhsSourceApplyResult("applied")
+
+    candidates = await _visible_first_locator(page, (XHS_SOURCE_CANDIDATE_SELECTOR,))
+    if candidates is not None:
+        reason = "candidate_missing"
+        warning = f"小红书内容声明候选已变化，未找到：{source}"
+    else:
+        reason = "option_selectors_missed"
+        warning = f"小红书内容声明双 selector 均未命中：{source}"
+    _record_warning(warning)
+    screenshot = await _capture_xhs_debug_screenshot(page)
+    return XhsSourceApplyResult("warning", reason, warning, screenshot)
 
 
 async def _apply_tencent_content_declaration(page: Any, declaration: str) -> None:
@@ -500,20 +662,24 @@ def _invoke_tencent_command(command: dict[str, Any]) -> None:
     )
 
 
-def _invoke_xhs_command(command: dict[str, Any]) -> None:
+def _invoke_xhs_command(command: dict[str, Any]) -> dict[str, list[str]]:
     """将一个 effective command 映射到官方小红书函数。"""
-    with _xhs_file_context(command["fileList"], command["accountList"]):
-        _ORIGINAL_POST_VIDEO_XHS(
-            title=command["title"],
-            files=command["fileList"],
-            tags=command["tags"],
-            account_file=command["accountList"],
-            category=command.get("category"),
-            enableTimer=command.get("enableTimer", False),
-            videos_per_day=command.get("videosPerDay", 1),
-            daily_times=command.get("dailyTimes"),
-            start_days=command.get("startDays", 0),
-        )
+    try:
+        with _xhs_file_context(command["fileList"], command["accountList"]):
+            _ORIGINAL_POST_VIDEO_XHS(
+                title=command["title"],
+                files=command["fileList"],
+                tags=command["tags"],
+                account_file=command["accountList"],
+                category=command.get("category"),
+                enableTimer=command.get("enableTimer", False),
+                videos_per_day=command.get("videosPerDay", 1),
+                daily_times=command.get("dailyTimes"),
+                start_days=command.get("startDays", 0),
+            )
+    except Exception as exc:
+        raise WrapperExecutionError(str(exc), consume_diagnostics()) from exc
+    return consume_diagnostics()
 
 
 def _invoke_ks_command(command: dict[str, Any]) -> None:
@@ -534,12 +700,17 @@ def _invoke_ks_command(command: dict[str, Any]) -> None:
 def _execute_effective_group(
     items: list[EffectiveBatchItem],
     invoke: Any,
-) -> None:
-    """把账号粒度命令交给官方函数，适配器不承担官方内部遍历。"""
+) -> dict[str, list[str]]:
+    """把账号粒度命令交给官方函数，并汇总 wrapper 诊断。"""
     adapter = PublishExecutionAdapter(invoke)
+    diagnostics = {"warnings": [], "debugScreenshots": []}
     for item in items:
         with _declaration_context(_declaration_item_for_effective(item)):
-            adapter.execute_item(item)
+            result = adapter.execute_item(item)
+        if isinstance(result, Mapping):
+            diagnostics["warnings"].extend(result.get("warnings", []))
+            diagnostics["debugScreenshots"].extend(result.get("debugScreenshots", []))
+    return diagnostics
 
 
 def _inject_declaration_to_douyin(
@@ -625,25 +796,33 @@ def _inject_declaration_to_xhs(
     videos_per_day: int = 1,
     daily_times: Any = None,
     start_days: int = 0,
-) -> None:
-    """委托官方小红书发布函数，避免替换后回调自身造成递归。"""
+) -> dict[str, list[str]]:
+    """委托官方小红书发布函数并返回 source wrapper 诊断。"""
     effective_group = _pop_effective_group_for_request(1)
     if effective_group:
-        _execute_effective_group(effective_group, _invoke_xhs_command)
-        return None
+        return _execute_effective_group(effective_group, _invoke_xhs_command)
 
-    with _xhs_file_context(files, account_file), _declaration_context(_pop_for(1)):
-        return _ORIGINAL_POST_VIDEO_XHS(
-            title=title,
-            files=files,
-            tags=tags,
-            account_file=account_file,
-            category=category,
-            enableTimer=enableTimer,
-            videos_per_day=videos_per_day,
-            daily_times=daily_times,
-            start_days=start_days,
-        )
+    diagnostics = {"warnings": [], "debugScreenshots": []}
+    try:
+        with _xhs_file_context(files, account_file), _declaration_context(_pop_for(1)):
+            try:
+                _ORIGINAL_POST_VIDEO_XHS(
+                    title=title,
+                    files=files,
+                    tags=tags,
+                    account_file=account_file,
+                    category=category,
+                    enableTimer=enableTimer,
+                    videos_per_day=videos_per_day,
+                    daily_times=daily_times,
+                    start_days=start_days,
+                )
+            finally:
+                # 诊断保存在线程本地，必须在 declaration context 退出前取走。
+                diagnostics = consume_diagnostics()
+    except Exception as exc:
+        raise WrapperExecutionError(str(exc), diagnostics) from exc
+    return diagnostics
 
 
 def _inject_effective_to_ks(
@@ -673,6 +852,44 @@ def _inject_effective_to_ks(
         daily_times=daily_times,
         start_days=start_days,
     )
+
+
+def execute_effective_item(effective: Mapping[str, Any]) -> Any:
+    """生产 accepted-run dispatcher：按官方平台交给 PostHub wrapper。"""
+    platform_type = effective.get("type")
+    common = {
+        "title": effective["title"],
+        "files": effective["fileList"],
+        "tags": effective.get("tags", []),
+        "account_file": effective["accountList"],
+        "category": effective.get("category"),
+        "enableTimer": effective.get("enableTimer", False),
+        "videos_per_day": effective.get("videosPerDay", 1),
+        "daily_times": effective.get("dailyTimes"),
+        "start_days": effective.get("startDays", 0),
+    }
+    wrapper = {
+        1: _inject_declaration_to_xhs,
+        2: _inject_declaration_to_tencent,
+        3: _inject_declaration_to_douyin,
+        4: _inject_effective_to_ks,
+    }.get(platform_type)
+    if wrapper is None:
+        raise ValueError(f"effective item 平台非法：{platform_type!r}")
+
+    set_pending_declarations([_declaration_item_for_payload(effective)])
+    try:
+        if platform_type == 2:
+            common["is_draft"] = effective.get("isDraft", False)
+        elif platform_type == 3:
+            common.update(
+                thumbnail_path=effective.get("thumbnail", ""),
+                productLink=effective.get("productLink", ""),
+                productTitle=effective.get("productTitle", ""),
+            )
+        return wrapper(**common)
+    finally:
+        set_pending_declarations([])
 
 
 _INSTALLED = False

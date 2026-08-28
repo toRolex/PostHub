@@ -4,7 +4,7 @@ import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useRunStore } from "../stores/runs";
-import type { RunSummary } from "../api/official";
+import type { RunDiagnostics, RunSummary } from "../api/official";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -50,6 +50,17 @@ export function runProgressLabel(
   return null;
 }
 
+export function runDiagnosticsText(
+  diagnostics: RunDiagnostics | null | undefined,
+): string | null {
+  if (!diagnostics) return null;
+  const entries = [
+    ...diagnostics.warnings.map((warning) => `告警：${warning}`),
+    ...diagnostics.debugScreenshots.map((path) => `调试截图：${path}`),
+  ];
+  return entries.length > 0 ? entries.join("；") : null;
+}
+
 export function runStatusMeta(status: "pending" | "running" | "completed" | null) {
   if (status === "pending") {
     return { dot: "bg-meta", text: "text-fg-2", label: "最近运行 待执行" };
@@ -73,12 +84,22 @@ function Topbar() {
   const runStatus = useRunStore((s) => s.status);
   const runId = useRunStore((s) => s.runId);
   const runSummary = useRunStore((s) => s.summary);
+  const runSnapshot = useRunStore((s) => s.snapshot);
   const acceptedItemCount = useRunStore((s) => s.itemCount);
   const daemonMeta = connected
     ? { dot: "bg-success", text: "text-success-deep", label: "守护进程 已连通" }
     : { dot: "bg-danger", text: "text-danger-deep", label: "守护进程 未连接" };
   const runMeta = runStatusMeta(runStatus);
   const progress = runProgressLabel(runSummary, acceptedItemCount);
+  const runDiagnostics = runSnapshot?.items.reduce<RunDiagnostics>(
+    (all, item) => {
+      all.warnings.push(...(item.diagnostics?.warnings ?? []));
+      all.debugScreenshots.push(...(item.diagnostics?.debugScreenshots ?? []));
+      return all;
+    },
+    { warnings: [], debugScreenshots: [] },
+  );
+  const diagnosticsText = runDiagnosticsText(runDiagnostics);
   return (
     <header className="flex h-11 shrink-0 items-center gap-4 border-b border-border-soft bg-bg px-4">
       <Status meta={daemonMeta} />
@@ -89,6 +110,16 @@ function Topbar() {
             label: progress ? `${runMeta.label} · ${progress}` : runMeta.label,
           }}
         />
+      )}
+      {diagnosticsText && (
+        <span
+          role="status"
+          aria-label="运行诊断"
+          title={diagnosticsText}
+          className="max-w-[min(48vw,560px)] truncate text-caption text-danger-deep"
+        >
+          {diagnosticsText}
+        </span>
       )}
       {runId && <span className="ml-auto font-mono text-caption text-meta">run {runId.slice(0, 8)}</span>}
     </header>

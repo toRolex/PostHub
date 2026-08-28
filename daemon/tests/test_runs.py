@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import threading
@@ -13,12 +14,13 @@ import pytest
 from flask import Flask
 
 import sau_backend
+from posthub import uploader_wrapper
 from posthub.composition import compose_posthub_backend, shutdown_posthub_backend
 from posthub.publish_adapter import (
     normalize_publish_payload,
     normalize_publish_payloads,
 )
-from posthub.runs import RunStore, RunWorker
+from posthub.runs import FailClosedUploader, RunStore, RunWorker
 
 
 @pytest.fixture
@@ -31,7 +33,7 @@ def run_app(tmp_path: Path):
         methods=["POST"],
     )
     official_db = tmp_path / "official" / "db" / "database.db"
-    compose_posthub_backend(app, official_db)
+    compose_posthub_backend(app, official_db, uploader=FailClosedUploader())
     with sqlite3.connect(official_db) as conn:
         conn.execute(
             """
@@ -663,3 +665,142 @@ def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payloa
         "2026-08-29T14:37:00"
     ]
     assert detail["items"][1]["submitted"]["dailyTimes"] == ["14:37"]
+
+
+def test_run_detail_returns_xhs_wrapper_warning_and_debug_screenshot(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner-a")
+    assert claimed is not None
+    _, item_id, _ = claimed
+
+    diagnostics = {
+        "warnings": ["小红书内容声明候选已变化，未找到：笔记含AI合成内容"],
+        "debugScreenshots": ["/tmp/posthub-debug/xhs-source-test.png"],
+    }
+    assert store.finish_item(
+        run_id,
+        item_id,
+        owner_token="owner-a",
+        diagnostics=diagnostics,
+    )
+
+    assert store.get_run(run_id)["items"][0]["diagnostics"] == diagnostics
+
+
+def test_worker_persists_wrapper_diagnostics_for_run_query(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    diagnostics = {
+        "warnings": ["小红书内容声明入口未渲染，未能应用 source"],
+        "debugScreenshots": ["/tmp/posthub-debug/xhs-source-test.png"],
+    }
+    worker = RunWorker(store, uploader=lambda _effective: diagnostics)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert detail["items"][0]["diagnostics"] == diagnostics
+
+
+def test_xhs_wrapper_exception_keeps_dom_diagnostics_in_run_detail(
+    monkeypatch, tmp_path: Path
+) -> None:
+    payload = {
+        "fileList": ["xhs.mp4"],
+        "accountList": ["xhs.json"],
+        "type": 1,
+        "title": "小红书 AI 声明",
+        "tags": [],
+        "platformFields": {"xiaohongshu": {"source": "ai_synthesized"}},
+    }
+    account = {
+        "id": 1,
+        "type": 1,
+        "filePath": "xhs.json",
+        "userName": "小红书测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    item = normalize_publish_payload(payload, [account]).effective[0]
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run([item])
+
+    async def fake_apply(_page: object, _source: str) -> object:
+        uploader_wrapper._record_warning("小红书内容声明候选已变化")
+        uploader_wrapper._record_debug_screenshot("/tmp/xhs-source-debug.png")
+        return uploader_wrapper.XhsSourceApplyResult(
+            "warning",
+            "candidate_missing",
+            "小红书内容声明候选已变化",
+            "/tmp/xhs-source-debug.png",
+        )
+
+    async def no_original_check(self: object, _page: object) -> None:
+        return None
+
+    def official_xhs(**_kwargs: object) -> None:
+        video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+        asyncio.run(video.check_original_declaration(object()))
+        raise RuntimeError("官方小红书发布失败")
+
+    monkeypatch.setattr(uploader_wrapper, "_apply_xhs_source_declaration", fake_apply)
+    monkeypatch.setattr(
+        uploader_wrapper._OriginalXiaoHongShuVideo,
+        "check_original_declaration",
+        no_original_check,
+    )
+    monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_XHS", official_xhs)
+
+    def uploader(_effective: object) -> object:
+        uploader_wrapper.set_pending_effective_items([item])
+        try:
+            return uploader_wrapper._inject_declaration_to_xhs(
+                "小红书 AI 声明", ["xhs.mp4"], [], ["xhs.json"]
+            )
+        finally:
+            uploader_wrapper.set_pending_effective_items([])
+
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert detail["items"][0]["status"] == "failed"
+    assert detail["items"][0]["error"] == "官方小红书发布失败"
+    assert detail["items"][0]["diagnostics"] == {
+        "warnings": ["小红书内容声明候选已变化"],
+        "debugScreenshots": ["/tmp/xhs-source-debug.png"],
+    }

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from flask import Flask
+from patchright.async_api import TimeoutError as PatchrightTimeoutError
 
 import sau_backend
 from posthub import uploader_wrapper
@@ -778,3 +780,254 @@ def test_run_detail_keeps_submitted_and_effective_timer_snapshots(tmp_path) -> N
     assert item["submitted"] == payload
     assert item["effective"]["dailyTimes"] == ["14:37"]
     assert item["effective"]["publishDatetimes"] == ["2026-08-29T14:37:00"]
+
+
+class _StubLocator:
+    def __init__(
+        self,
+        *,
+        available: bool,
+        visible: bool = True,
+        appears_on_wait: bool = False,
+    ) -> None:
+        self.available = available
+        self.visible = visible
+        self.appears_on_wait = appears_on_wait
+        self.wait_calls = 0
+        self.clicks = 0
+
+    async def wait_for(self, *, state: str, timeout: float) -> None:
+        assert state == "visible"
+        assert timeout > 0
+        self.wait_calls += 1
+        if self.appears_on_wait or (self.available and self.visible):
+            self.available = True
+            self.visible = True
+            return
+        raise TimeoutError("stub locator did not render")
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self) -> int:
+        return 1 if self.available else 0
+
+    async def is_visible(self) -> bool:
+        return self.visible
+
+    async def click(self) -> None:
+        self.clicks += 1
+
+
+class _XhsSourceStubPage:
+    def __init__(self, locators: dict[str, _StubLocator]) -> None:
+        self.locators = locators
+        self.requested: list[str] = []
+        self.screenshot_paths: list[str] = []
+
+    def locator(self, selector: str) -> _StubLocator:
+        self.requested.append(selector)
+        return self.locators.get(selector, _StubLocator(available=False))
+
+    async def screenshot(self, *, path: str, full_page: bool = False) -> None:
+        assert full_page is True
+        self.screenshot_paths.append(path)
+
+
+def test_xhs_ai_synthesized_source_stub_applies_and_returns_applied_result() -> None:
+    source = "笔记含AI合成内容"
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    exact = uploader_wrapper.XHS_SOURCE_OPTION_SELECTOR.format(source=source)
+    page = _XhsSourceStubPage(
+        {
+            entry: _StubLocator(available=True),
+            exact: _StubLocator(available=True),
+        }
+    )
+
+    result = asyncio.run(uploader_wrapper._apply_xhs_source_declaration(page, source))
+
+    assert result.status == "applied"
+    assert result.reason is None
+    assert page.locators[entry].clicks == 1
+    assert page.locators[exact].clicks == 1
+    assert page.screenshot_paths == []
+
+
+def test_xhs_source_waits_for_entry_and_option_to_render() -> None:
+    source = "笔记含AI合成内容"
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    exact = uploader_wrapper.XHS_SOURCE_OPTION_SELECTOR.format(source=source)
+    entry_locator = _StubLocator(available=False, appears_on_wait=True)
+    option_locator = _StubLocator(available=False, appears_on_wait=True)
+    page = _XhsSourceStubPage({entry: entry_locator, exact: option_locator})
+
+    result = asyncio.run(uploader_wrapper._apply_xhs_source_declaration(page, source))
+
+    assert result.status == "applied"
+    assert entry_locator.wait_calls == 1
+    assert option_locator.wait_calls == 1
+
+
+class _PatchrightTimeoutLocator:
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, *, state: str, timeout: float) -> None:
+        raise PatchrightTimeoutError("patchright timeout")
+
+    async def count(self) -> int:
+        return 0
+
+    async def is_visible(self) -> bool:
+        return False
+
+
+class _PatchrightTimeoutPage:
+    def __init__(self) -> None:
+        self.screenshot_paths: list[str] = []
+
+    def locator(self, _selector: str) -> _PatchrightTimeoutLocator:
+        return _PatchrightTimeoutLocator()
+
+    async def screenshot(self, *, path: str, full_page: bool = False) -> None:
+        assert full_page is True
+        self.screenshot_paths.append(path)
+
+
+def test_xhs_source_catches_patchright_timeout_as_entry_warning() -> None:
+    page = _PatchrightTimeoutPage()
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "entry_missing"
+    assert len(page.screenshot_paths) == 1
+
+
+def test_xhs_source_entry_missing_returns_explicit_warning_and_debug_screenshot() -> (
+    None
+):
+    page = _XhsSourceStubPage({})
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "entry_missing"
+    assert result.warning
+    assert len(page.screenshot_paths) == 1
+    assert set(uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS) <= set(page.requested)
+
+
+def test_xhs_source_candidate_change_returns_explicit_warning() -> None:
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    page = _XhsSourceStubPage(
+        {
+            entry: _StubLocator(available=True),
+            # 页面仍有候选区域，但线上文案已变化。
+            uploader_wrapper.XHS_SOURCE_CANDIDATE_SELECTOR: _StubLocator(
+                available=True
+            ),
+        }
+    )
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "candidate_missing"
+    assert "候选" in result.warning
+    assert len(page.screenshot_paths) == 1
+
+
+def test_xhs_source_double_option_selectors_missed_returns_explicit_result() -> None:
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    page = _XhsSourceStubPage({entry: _StubLocator(available=True)})
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "option_selectors_missed"
+    expected_selectors = {
+        selector.format(source="笔记含AI合成内容")
+        for selector in uploader_wrapper.XHS_SOURCE_OPTION_SELECTORS
+    }
+    assert expected_selectors <= set(page.requested)
+    assert len(page.screenshot_paths) == 1
+
+
+def test_xhs_class_hook_applies_source_without_touching_wechat_selector(
+    monkeypatch,
+) -> None:
+    source = "笔记含AI合成内容"
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    exact = uploader_wrapper.XHS_SOURCE_OPTION_SELECTOR.format(source=source)
+    page = _XhsSourceStubPage(
+        {
+            entry: _StubLocator(available=True),
+            exact: _StubLocator(available=True),
+        }
+    )
+
+    async def fake_original_check(self: Any, _page: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        uploader_wrapper._OriginalXiaoHongShuVideo,
+        "check_original_declaration",
+        fake_original_check,
+    )
+    video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+    with uploader_wrapper._declaration_context(
+        {"platform": 1, "fields": {"source": source}}
+    ):
+        asyncio.run(video.check_original_declaration(page))
+        diagnostics = uploader_wrapper.consume_diagnostics()
+
+    assert diagnostics == {"warnings": [], "debugScreenshots": []}
+    assert page.locators[exact].clicks == 1
+    assert 'text="内容声明"' not in page.requested
+
+
+def test_xhs_direct_wrapper_returns_dom_diagnostics_after_context_cleanup(
+    monkeypatch,
+) -> None:
+    """非 HTTP 兼容入口也必须把 wrapper 诊断交给调用方。"""
+    page = _XhsSourceStubPage({})
+    source = "笔记含AI合成内容"
+
+    async def fake_original_check(self: Any, _page: Any) -> None:
+        return None
+
+    def fake_official(**_kwargs: Any) -> None:
+        video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+        asyncio.run(video.check_original_declaration(page))
+
+    monkeypatch.setattr(
+        uploader_wrapper._OriginalXiaoHongShuVideo,
+        "check_original_declaration",
+        fake_original_check,
+    )
+    monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_XHS", fake_official)
+    uploader_wrapper.set_pending_effective_items([])
+    uploader_wrapper.set_pending_declarations(
+        [{"platform": 1, "fields": {"source": source}}]
+    )
+    try:
+        diagnostics = uploader_wrapper._inject_declaration_to_xhs(
+            "标题", ["video.mp4"], [], ["account.json"]
+        )
+    finally:
+        uploader_wrapper.set_pending_declarations([])
+
+    assert diagnostics["warnings"] == ["小红书内容声明入口未渲染，未能应用 source"]
+    assert len(diagnostics["debugScreenshots"]) == 1

@@ -590,3 +590,52 @@
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - 本轮未发现新的业务 concern；仅保留既有 jsdom navigation stderr。下一步提交本轮中文 summarizing commit，关闭 #86/#88/#90 并清理对应 worktrees。
 
+## Issue #92：贯通小红书内容声明 DOM wrapper
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-92` 的 `afk/issue-92` 分支工作，基线为当前 `develop`（已含 #90）；不修改官方 `sau_backend.py` / `uploader/*`，不混入视频号、retry 或独立调度。
+- 先锁定 `platform_fields.xiaohongshu.source` 的 `ai_synthesized` canonical context 与 XHS 上传类 DOM seam；以 stub page 覆盖成功、入口缺失、候选变化、双 selector 均未命中。
+- 诊断采用 item 级 warning/debug screenshot 结果，不把 warning 当成功；RunStore 持久化并通过 run detail 返回，前端运行详情展示。真实账号验收只针对小红书路径，独立于视频号 selector/fixture。
+- 严格 TDD：先写 XHS DOM stub、normalization、run detail/API/store 展示失败测试，再做最小 wrapper、诊断持久化与 UI 展示；每个垂直切片后立即定向验证。
+
+### 已确认事实
+
+- #90 已把 canonical declaration context 固定为 `{"platform": 1, "fields": {"source": "笔记含AI合成内容"}}` 的消费形状；本 issue 放行 XHS `source`，`origin` 仍因无可靠 seam 保持拒绝。
+- 上游 `XiaoHongShuVideo.upload_video_content(page)` 在 `set_thumbnail` 后调用 `check_original_declaration(page)`；上游方法只处理「声明原创」且找不到时静默 info，未提供 `source` 参数。本 issue 只能通过 PostHub 子类方法覆写/委托，不改上游文件。
+- accepted-run 基线仅持久化 `error`，本 issue 新增可选 item diagnostics，要求旧 run schema/API 继续可读。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已完成基线、#90 canonical declaration、`uploader_wrapper.py`、`runs.py`、现有 DOM/fixture/详情/测试及 issue #92 验收读取；确认工作树起始干净、HEAD 与 `develop` 同为 `8b65a6b`。
+- 已用 `uv run` 读取上游 XHS `upload_video_content`：source 注入的最小 seam 位于 `set_thumbnail` 与原 `check_original_declaration` 之间；wrapper 只扩展 source，保留官方其余发布流程。
+- 已完成红绿垂直切片与全量测试；待写最终记录并提交中文语义原子 commit。
+
+### 验证
+
+- Red：新增 XHS `ai_synthesized` normalization、DOM stub 四态结果、run diagnostics 持久化/worker 查询与 AppShell 展示测试；分别确认 source 未放行、helper/run API/UI 缺失时失败。
+- Green：normalization 放行 XHS `source`、保留 `origin` fail-closed；XHS 子类覆写官方 `check_original_declaration`，用入口双 selector、候选探针与双 option selector 产生 `applied` 或明确 warning，并保存 debug screenshot 路径；官方发布循环仍由上游函数执行。
+- Green：RunStore 增加可迁移的 `diagnostics_json`，worker 接收 uploader 返回的 warning/screenshot 诊断，`/postRuns/{runId}` 返回 item diagnostics；前端 RunSnapshot 类型与顶部状态条展示 warning 和 screenshot 信息。
+- 定向验证：daemon XHS/adapter/runs → `126 passed`；Python 相关 `ruff check` → `All checks passed`。
+- 全量验证：daemon `uv run pytest -q` → `173 passed`；相关 Python `ruff check` → `All checks passed`；web `pnpm test -- --run` → `20 files / 211 tests passed`（保留既有 jsdom navigation stderr）；web `pnpm run build` → tsc 与 Vite 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 tests`。
+- 验收边界：XHS stub 成功/入口缺失/候选变化/双 option selector 未命中均有明确 result；真实账号验收未在本环境执行，且未借用视频号 selector/fixture。官方 `daemon/sau_backend.py` 与 `uploader/*` 未修改。
+- Deviations：无业务偏离；仅按既有项目约定补齐本地空 `src-tauri/resources/{daemon,bin,browser}` 目录供 Cargo 测试，未进入 Git。
+- 收口复核 Red：新增非 HTTP 兼容入口诊断回归；`cd daemon && uv run pytest tests/test_scheduled_wrapper.py -q -k 'direct_wrapper_returns_dom_diagnostics'` → `1 failed`，确认 `_declaration_context` 退出后直接调用路径丢失 warning/screenshot。
+- 收口复核 Green：直接调用路径在 declaration context 内先消费 diagnostics，异常路径同样封装进 `WrapperExecutionError`；同一测试 → `1 passed`。未改官方源码或 selector/fixture。
+- 再次 Red：stub 增加“点击后入口/候选延迟渲染”回归；`cd daemon && uv run pytest tests/test_scheduled_wrapper.py -q -k 'waits_for_entry'` → `1 failed`，确认立即 `count/is_visible` 会在真实下拉渲染前误报未命中。
+- Green：`_visible_first_locator` 对入口、候选及候选区域统一使用 1 秒可见等待，兼容 Playwright 与 stub 超时；同步修正 stub 对已存在可见节点的等待语义；XHS 定向测试 → `4 passed`。
+- 收口复核 Red：发现运行详情仅在顶部状态条聚合诊断，未在对应 item 详情展示；新增 `PublishView.test.ts` 先锁定 item 级 warning/screenshot 文案，缺少 helper 时 `2 failed`。
+- Green：发布详情新增 item 级诊断文案，保留旧 run 无 diagnostics 的兼容行为；新增测试 → `2 passed`。
+- Runtime verify：临时组合 Flask socket 经真实 HTTP `/postRuns` 受理 XHS `ai_synthesized`；stub DOM 成功路径返回 item `success` 且 diagnostics 为空，入口存在但双 selector 未命中路径返回 item `success`、warning 与实际 debug screenshot 路径；空数组探针返回 JSON `400`。未使用真实账号，服务与临时数据已清理。
+- 最终复验：daemon `uv run pytest -q` → `176 passed`；变更 Python 文件 `ruff check` 与 `ruff format --check` → 全部通过；web `pnpm test -- --run` → `21 files / 213 tests passed`，`pnpm run build` 通过；Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- 提交前约束：仅修改 PostHub wrapper/adapter、run diagnostics、前端 API/详情及测试；官方 `daemon/sau_backend.py` SHA-256 仍为 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`，未 push、未建 PR、未 merge、未关闭 issue。
+- 收口复核 Red：确认真实 patchright 页面抛出的 `patchright.async_api.TimeoutError` 与原先仅捕获的 Playwright 异常不是同一类型；新增 patchright stub 回归先失败。
+- Green：wrapper 显式捕获 patchright 与 Playwright 两类超时；定向 patchright 测试 → `1 passed`。
+- 收口复核 Red：确认 production composition 的 accepted-run worker 仍默认 FailClosed，HTTP 受理后不会进入 XHS wrapper；新增默认 dispatcher 注入契约先失败。
+- Green：新增 `execute_effective_item` 按官方平台将持久化 effective payload 派发至 PostHub wrapper，并由组合入口默认注入；测试 fixture 显式保留 fail-closed seam。组合与 run 定向测试 → `23 passed`。
+- 最终复验更新：dispatcher/patchright 修补后 daemon `uv run pytest -q` → `178 passed`；相关 Python `ruff check` 与 `ruff format --check` → 全部通过；web `21 files / 213 tests passed`、build 通过；Tauri lib `17 passed`、bin `0 tests`。
+

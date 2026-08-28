@@ -240,10 +240,17 @@ export interface RunSummary {
   completedCount: number;
 }
 
+export interface RunDiagnostics {
+  warnings: string[];
+  debugScreenshots: string[];
+}
+
 export interface RunItemSnapshot {
   itemId: string;
   status: RunItemStatus;
   error: string | null;
+  /** DOM wrapper 的 warning / debug screenshot；旧 daemon 响应可能没有。 */
+  diagnostics?: RunDiagnostics;
   /** 受理时的调用方 payload 快照；旧 daemon 响应可能没有。 */
   submitted?: PostVideoRequest;
   /** 账号粒度 effective payload；抖音 timer 含 naive ISO publishDatetimes。 */

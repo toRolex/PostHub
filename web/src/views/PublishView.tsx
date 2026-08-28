@@ -8,6 +8,7 @@ import { useRunStore } from "../stores/runs";
 import { parseTags } from "../domain/tags";
 import { resolveDouyinDeclaration } from "../domain/declarations";
 import { normalizeDailyTimes } from "../domain/time";
+import type { RunDiagnostics } from "../api/official";
 import type { Platform, PlatformFields } from "../api/types";
 import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
@@ -473,6 +474,16 @@ function runItemStatusLabel(status: string): string {
   }[status] ?? status;
 }
 
+export function runItemDiagnostics(
+  diagnostics: RunDiagnostics | null | undefined,
+): string[] {
+  if (!diagnostics) return [];
+  return [
+    ...diagnostics.warnings.map((warning) => `告警：${warning}`),
+    ...diagnostics.debugScreenshots.map((path) => `调试截图：${path}`),
+  ];
+}
+
 /** 最近 accepted run 详情：展示首次受理时冻结的最终 effective 声明。 */
 function RunDetailPanel() {
   const snapshot = useRunStore((s) => s.snapshot);
@@ -504,6 +515,16 @@ function RunDetailPanel() {
                 </span>
               )}
               {item.error && <span className="text-danger-deep">{item.error}</span>}
+              {runItemDiagnostics(item.diagnostics).map((diagnostic, index) => (
+                <span
+                  key={`${diagnostic}-${index}`}
+                  role="status"
+                  aria-label="运行诊断"
+                  className="text-danger-deep"
+                >
+                  {diagnostic}
+                </span>
+              ))}
             </div>
           );
         })}

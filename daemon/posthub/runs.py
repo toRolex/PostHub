@@ -31,6 +31,28 @@ DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
 
 
+def _serialize_diagnostics(diagnostics: Mapping[str, Any] | None) -> str | None:
+    if not diagnostics:
+        return None
+    warnings = diagnostics.get("warnings", [])
+    screenshots = diagnostics.get("debugScreenshots", [])
+    if not isinstance(warnings, (list, tuple)) or not all(
+        isinstance(value, str) for value in warnings
+    ):
+        raise ValueError("run diagnostics.warnings 必须是字符串数组")
+    if not isinstance(screenshots, (list, tuple)) or not all(
+        isinstance(value, str) for value in screenshots
+    ):
+        raise ValueError("run diagnostics.debugScreenshots 必须是字符串数组")
+    return json.dumps(
+        {
+            "warnings": list(warnings),
+            "debugScreenshots": list(screenshots),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
@@ -74,6 +96,7 @@ class RunStore:
                     submitted_json TEXT NOT NULL,
                     effective_json TEXT NOT NULL,
                     error TEXT,
+                    diagnostics_json TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -89,6 +112,8 @@ class RunStore:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_owner TEXT")
             if "lease_until" not in columns:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_until TEXT")
+            if "diagnostics_json" not in columns:
+                conn.execute("ALTER TABLE run_items ADD COLUMN diagnostics_json TEXT")
 
     def create_run(self, items: Iterable[EffectiveBatchItem]) -> str:
         effective_items = list(items)
@@ -248,20 +273,23 @@ class RunStore:
         *,
         owner_token: str,
         error: str | None = None,
+        diagnostics: Mapping[str, Any] | None = None,
     ) -> bool:
         """仅允许持有当前 lease 的 worker 完成 item；返回是否完成。"""
         if not owner_token:
             raise ValueError("worker owner token 不能为空")
         now = _now()
         status = "failed" if error is not None else "success"
+        diagnostics_json = _serialize_diagnostics(diagnostics)
         with self._lock, self._connect() as conn:
             updated = conn.execute(
                 """
                 UPDATE run_items
-                SET status = ?, error = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
+                SET status = ?, error = ?, diagnostics_json = ?, lease_owner = NULL,
+                    lease_until = NULL, updated_at = ?
                 WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
                 """,
-                (status, error, now, item_id, run_id, owner_token),
+                (status, error, diagnostics_json, now, item_id, run_id, owner_token),
             )
             if updated.rowcount != 1:
                 return False
@@ -294,7 +322,8 @@ class RunStore:
                 return None
             items = conn.execute(
                 """
-                SELECT id, ordinal, status, error, submitted_json, effective_json
+                SELECT id, ordinal, status, error, diagnostics_json, submitted_json,
+                       effective_json
                 FROM run_items WHERE run_id = ? ORDER BY ordinal
                 """,
                 (run_id,),
@@ -324,6 +353,11 @@ class RunStore:
                     "submitted": json.loads(item["submitted_json"]),
                     # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
                     "effective": json.loads(item["effective_json"]),
+                    **(
+                        {"diagnostics": json.loads(item["diagnostics_json"])}
+                        if item["diagnostics_json"]
+                        else {}
+                    ),
                 }
                 for item in items
             ],
@@ -350,7 +384,7 @@ class RunWorker:
     def __init__(
         self,
         store: RunStore,
-        uploader: Callable[[Mapping[str, Any]], None] | None = None,
+        uploader: Callable[[Mapping[str, Any]], Any] | None = None,
         step_delay: float = 0.02,
         *,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
@@ -408,14 +442,20 @@ class RunWorker:
             if self._stop.is_set():
                 self.store.release_item(run_id, item_id, owner_token=self._owner_token)
                 return
-            error = self._execute_with_lease_heartbeat(run_id, item_id, effective)
+            error, diagnostics = self._execute_with_lease_heartbeat(
+                run_id, item_id, effective
+            )
             self.store.finish_item(
-                run_id, item_id, owner_token=self._owner_token, error=error
+                run_id,
+                item_id,
+                owner_token=self._owner_token,
+                error=error,
+                diagnostics=diagnostics,
             )
 
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
-    ) -> str | None:
+    ) -> tuple[str | None, Mapping[str, Any] | None]:
         """执行可能阻塞的 uploader，同时持续续租当前 item。"""
         finished = threading.Event()
         heartbeat: threading.Thread | None = None
@@ -437,15 +477,21 @@ class RunWorker:
             )
             heartbeat.start()
         error: str | None = None
+        diagnostics: Mapping[str, Any] | None = None
         try:
-            self.uploader(effective)
+            result = self.uploader(effective)
+            if isinstance(result, Mapping):
+                diagnostics = result
         except Exception as exc:  # noqa: BLE001 - item 必须落终态
             error = str(exc)
+            candidate = getattr(exc, "diagnostics", None)
+            if isinstance(candidate, Mapping):
+                diagnostics = candidate
         finally:
             finished.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
-        return error
+        return error, diagnostics
 
 
 def _read_publish_accounts(db_path: Path) -> list[dict[str, Any]]:
@@ -471,7 +517,7 @@ def register_run_routes(
     official_db_path: Path,
     run_db_path: Path,
     *,
-    uploader: Callable[[Mapping[str, Any]], None] | None = None,
+    uploader: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> RunWorker:
     """注册 accepted-run 路由并启动独立 worker；重复注册保持幂等。"""
     existing = app.extensions.get(_RUN_SERVICE_MARKER)
