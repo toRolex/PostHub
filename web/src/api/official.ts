@@ -247,6 +247,7 @@ export interface RunItemDiagnostic {
   reason?: string;
   message?: string;
   selector?: string;
+  entrySelector?: string;
   selectors?: string[];
   requestedValue?: string;
   displayValue?: string;

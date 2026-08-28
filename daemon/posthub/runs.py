@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -29,6 +30,7 @@ _RUN_SERVICE_MARKER = "_posthub_run_service"
 DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -133,7 +135,8 @@ class RunStore:
             conn.execute(
                 """
                 UPDATE run_items
-                SET status = 'pending', lease_owner = NULL, lease_until = NULL, updated_at = ?
+                SET status = 'pending', lease_owner = NULL, lease_until = NULL,
+                    diagnostics_json = '[]', updated_at = ?
                 WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= ?)
                 """,
                 (now, now),
@@ -180,7 +183,8 @@ class RunStore:
             updated = conn.execute(
                 """
                 UPDATE run_items
-                SET status = 'running', lease_owner = ?, lease_until = ?, updated_at = ?
+                SET status = 'running', lease_owner = ?, lease_until = ?,
+                    diagnostics_json = '[]', updated_at = ?
                 WHERE id = ? AND status = 'pending'
                 """,
                 (owner_token, lease_until, now, row["id"]),
@@ -202,7 +206,8 @@ class RunStore:
             released = conn.execute(
                 """
                 UPDATE run_items
-                SET status = 'pending', lease_owner = NULL, lease_until = NULL, updated_at = ?
+                SET status = 'pending', lease_owner = NULL, lease_until = NULL,
+                    diagnostics_json = '[]', updated_at = ?
                 WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
                 """,
                 (now, item_id, run_id, owner_token),
@@ -444,10 +449,24 @@ class RunWorker:
             if self._stop.is_set():
                 self.store.release_item(run_id, item_id, owner_token=self._owner_token)
                 return
-            error = self._execute_with_lease_heartbeat(run_id, item_id, effective)
-            self.store.finish_item(
-                run_id, item_id, owner_token=self._owner_token, error=error
-            )
+            try:
+                error = self._execute_with_lease_heartbeat(run_id, item_id, effective)
+            except Exception as exc:
+                error = str(exc)
+                logger.exception("执行 item 异常：run=%s item=%s", run_id, item_id)
+            try:
+                finished = self.store.finish_item(
+                    run_id, item_id, owner_token=self._owner_token, error=error
+                )
+            except Exception:
+                logger.exception("完成 item 失败：run=%s item=%s", run_id, item_id)
+            else:
+                if not finished:
+                    logger.warning(
+                        "完成 item 失败：lease 已丢失或 item 状态已变化，run=%s item=%s",
+                        run_id,
+                        item_id,
+                    )
 
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
@@ -456,16 +475,34 @@ class RunWorker:
         finished = threading.Event()
         heartbeat: threading.Thread | None = None
         if self.lease_seconds > 0:
-            interval = max(0.01, min(self.lease_seconds / 3, 1.0))
+            # 首次续租不能等一个完整 interval，否则短 lease 可能在 uploader
+            # 刚开始阻塞时就过期；更密的探测也降低调度抖动导致的重复领取窗口。
+            interval = max(0.005, min(self.lease_seconds / 10, 1.0))
 
             def renew() -> None:
-                while not finished.wait(interval):
-                    if not self.store.renew_lease(
-                        run_id,
-                        item_id,
-                        owner_token=self._owner_token,
-                        lease_seconds=self.lease_seconds,
-                    ):
+                while not finished.is_set():
+                    try:
+                        renewed = self.store.renew_lease(
+                            run_id,
+                            item_id,
+                            owner_token=self._owner_token,
+                            lease_seconds=self.lease_seconds,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "续租 item 异常：run=%s item=%s",
+                            run_id,
+                            item_id,
+                        )
+                        return
+                    if not renewed:
+                        logger.warning(
+                            "续租 item 失败：lease 已丢失或 item 状态已变化，run=%s item=%s",
+                            run_id,
+                            item_id,
+                        )
+                        return
+                    if finished.wait(interval):
                         return
 
             heartbeat = threading.Thread(
@@ -473,6 +510,7 @@ class RunWorker:
             )
             heartbeat.start()
         error: str | None = None
+        diagnostics_error: str | None = None
         from posthub.uploader_wrapper import (
             clear_declaration_diagnostics,
             get_declaration_diagnostics,
@@ -484,17 +522,45 @@ class RunWorker:
         except Exception as exc:  # noqa: BLE001 - item 必须落终态
             error = str(exc)
         finally:
-            diagnostics = get_declaration_diagnostics()
-            if diagnostics:
-                self.store.record_item_diagnostics(
+            try:
+                diagnostics = get_declaration_diagnostics()
+                if diagnostics:
+                    try:
+                        persisted = self.store.record_item_diagnostics(
+                            run_id,
+                            item_id,
+                            owner_token=self._owner_token,
+                            diagnostics=diagnostics,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 终态清理不能被 DB 打断
+                        diagnostics_error = str(exc)
+                    else:
+                        if not persisted:
+                            diagnostics_error = "record_item_diagnostics 返回 False"
+                    if diagnostics_error:
+                        logger.warning(
+                            "诊断写入失败：run=%s item=%s account=%s reason=%s error=%s",
+                            run_id,
+                            item_id,
+                            diagnostics[0].get("account", "unknown"),
+                            diagnostics[0].get("reason", "unknown"),
+                            diagnostics_error,
+                        )
+            except Exception as exc:
+                diagnostics_error = str(exc)
+                logger.exception(
+                    "读取 item 诊断失败：run=%s item=%s error=%s",
                     run_id,
                     item_id,
-                    owner_token=self._owner_token,
-                    diagnostics=diagnostics,
+                    diagnostics_error,
                 )
-            finished.set()
-            if heartbeat is not None:
-                heartbeat.join(timeout=1.0)
+            finally:
+                # 无论诊断 DB 是否可写，都必须停止 lease heartbeat 并返回 item 终态。
+                finished.set()
+                if heartbeat is not None:
+                    heartbeat.join(timeout=1.0)
+        if diagnostics_error and error is None:
+            error = f"诊断写入失败：{diagnostics_error}"
         return error
 
 

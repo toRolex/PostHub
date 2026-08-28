@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from patchright.async_api import TimeoutError as PatchrightTimeoutError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from posthub import uploader_wrapper
 
@@ -28,11 +30,19 @@ class StubLocator:
         visible: bool = True,
         present: bool = True,
         click_error: Exception | None = None,
+        post_click_text: str | None = None,
+        inner_text_error: Exception | None = None,
+        count_error: Exception | None = None,
+        visible_error: Exception | None = None,
     ) -> None:
         self.text = text
         self.visible = visible
         self.present = present
         self.click_error = click_error
+        self.post_click_text = post_click_text
+        self.inner_text_error = inner_text_error
+        self.count_error = count_error
+        self.visible_error = visible_error
         self.clicks = 0
 
     @property
@@ -40,17 +50,25 @@ class StubLocator:
         return self
 
     async def count(self) -> int:
+        if self.count_error is not None:
+            raise self.count_error
         return 1 if self.present else 0
 
     async def is_visible(self) -> bool:
+        if self.visible_error is not None:
+            raise self.visible_error
         return self.visible
 
     async def click(self) -> None:
         self.clicks += 1
         if self.click_error is not None:
             raise self.click_error
+        if self.post_click_text is not None:
+            self.text = self.post_click_text
 
     async def inner_text(self) -> str:
+        if self.inner_text_error is not None:
+            raise self.inner_text_error
         return self.text
 
 
@@ -72,7 +90,9 @@ class StubPage:
 
     def get_by_text(self, text: str, *, exact: bool = False) -> StubLocator:
         assert exact
-        return self.options.get(text, StubLocator(text=text, visible=False))
+        return self.options.get(
+            text, StubLocator(text=text, visible=False, present=False)
+        )
 
     async def screenshot(self, *, path: str, full_page: bool = True) -> None:
         assert full_page
@@ -167,7 +187,7 @@ def test_wechat_missing_entry_warns_screenshots_and_fails_closed(
         }
     )
 
-    with pytest.raises(RuntimeError, match="入口未渲染"):
+    with pytest.raises(RuntimeError, match="存在但不可见"):
         run(
             uploader_wrapper._apply_tencent_content_declaration(
                 page, "无需标注", account_file="missing.json", debug_dir=tmp_path
@@ -177,7 +197,8 @@ def test_wechat_missing_entry_warns_screenshots_and_fails_closed(
     diagnostics = uploader_wrapper.get_declaration_diagnostics()
     assert diagnostics[0]["level"] == "warning"
     assert diagnostics[0]["account"] == "missing.json"
-    assert diagnostics[0]["reason"] == "entry_unavailable"
+    assert diagnostics[0]["reason"] == "entry_present_hidden"
+    assert diagnostics[0]["selector"] == 'text="内容声明"'
     assert diagnostics[0]["screenshot"] == page.screenshots[0]
 
 
@@ -198,8 +219,35 @@ def test_wechat_missing_option_warns_screenshots_and_fails_closed(
 
     diagnostics = uploader_wrapper.get_declaration_diagnostics()
     assert diagnostics[0]["reason"] == "option_unavailable"
-    assert diagnostics[0]["selector"] == 'text="内容声明"'
+    assert diagnostics[0]["selectors"] == [
+        "get_by_text(text='含AI生成内容', exact=True)",
+        'text="含AI生成内容"',
+    ]
     assert diagnostics[0]["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_present_hidden_option_is_not_reported_as_unmatched(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={"含AI生成内容": StubLocator(text="含AI生成内容", visible=False)},
+    )
+
+    with pytest.raises(RuntimeError, match="选项存在但不可见"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page,
+                "含AI生成内容",
+                account_file="hidden-option.json",
+                debug_dir=tmp_path,
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "option_present_hidden"
+    assert diagnostic["selector"] == "get_by_text(text='含AI生成内容', exact=True)"
+    assert diagnostic["screenshot"] == page.screenshots[0]
 
 
 def test_wechat_entry_click_failure_warns_screenshots_and_fails_closed(
@@ -249,6 +297,77 @@ def test_wechat_option_click_failure_warns_screenshots_and_fails_closed(
 
     diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
     assert diagnostic["reason"] == "option_click_failed"
+    assert diagnostic["selector"] == "get_by_text(text='含AI生成内容', exact=True)"
+    assert diagnostic["entrySelector"] == 'text="内容声明"'
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_empty_display_value_after_click_fails_closed(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={"无需标注": StubLocator(text="无需标注", post_click_text="")},
+    )
+
+    with pytest.raises(RuntimeError, match="最终展示值"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page, "无需标注", account_file="empty-display.json", debug_dir=tmp_path
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["level"] == "warning"
+    assert diagnostic["reason"] == "display_value_unverified"
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_display_value_read_failure_fails_closed(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={
+            "含AI生成内容": StubLocator(
+                text="含AI生成内容", inner_text_error=RuntimeError("detached")
+            )
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="最终展示值"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page,
+                "含AI生成内容",
+                account_file="display-read-fail.json",
+                debug_dir=tmp_path,
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "display_value_unverified"
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_display_value_mismatch_fails_closed(tmp_path: Path) -> None:
+    page = StubPage(
+        entries={'text="内容声明"': StubLocator(text="内容声明")},
+        options={
+            "无需标注": StubLocator(text="无需标注", post_click_text="含营销广告")
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="最终展示值"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page, "无需标注", account_file="mismatch.json", debug_dir=tmp_path
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "display_value_mismatch"
+    assert diagnostic["displayValue"] == "含营销广告"
     assert diagnostic["screenshot"] == page.screenshots[0]
 
 
@@ -287,3 +406,107 @@ def test_wechat_both_entry_selectors_missing_are_explicitly_reported() -> None:
         'text="内容声明"',
         'text="添加声明"',
     ]
+
+
+@pytest.mark.parametrize(
+    "timeout_error",
+    [
+        pytest.param(PlaywrightTimeoutError("playwright timeout"), id="playwright"),
+        pytest.param(PatchrightTimeoutError("patchright timeout"), id="patchright"),
+    ],
+)
+def test_wechat_recoverable_entry_probe_timeout_falls_back_to_second_selector(
+    tmp_path: Path, timeout_error: Exception
+) -> None:
+    page = StubPage(
+        entries={
+            'text="内容声明"': StubLocator(text="内容声明", count_error=timeout_error),
+            'text="添加声明"': StubLocator(text="添加声明"),
+        },
+        options={"无需标注": StubLocator(text="无需标注")},
+    )
+
+    run(
+        uploader_wrapper._apply_tencent_content_declaration(
+            page, "无需标注", account_file="fallback.json", debug_dir=tmp_path
+        )
+    )
+
+    assert uploader_wrapper.get_declaration_diagnostics()[0]["selector"] == (
+        'text="添加声明"'
+    )
+
+
+def test_wechat_entry_probe_programming_error_is_reported_not_downgraded(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={
+            'text="内容声明"': StubLocator(
+                text="内容声明", count_error=RuntimeError("locator bug")
+            ),
+            'text="添加声明"': StubLocator(text="添加声明"),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="locator bug"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page, "无需标注", account_file="probe-error.json", debug_dir=tmp_path
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "entry_probe_failed"
+    assert diagnostic["selector"] == 'text="内容声明"'
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_present_hidden_entry_is_not_reported_as_unmatched(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={
+            'text="内容声明"': StubLocator(text="内容声明", visible=False),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="存在但不可见"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page, "无需标注", account_file="hidden.json", debug_dir=tmp_path
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "entry_present_hidden"
+    assert diagnostic["selector"] == 'text="内容声明"'
+    assert diagnostic["screenshot"] == page.screenshots[0]
+
+
+def test_wechat_option_probe_programming_error_is_reported_not_downgraded(
+    tmp_path: Path,
+) -> None:
+    page = StubPage(
+        entries={
+            'text="内容声明"': StubLocator(text="内容声明"),
+            'text="无需标注"': StubLocator(
+                text="无需标注", count_error=RuntimeError("option locator bug")
+            ),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="option locator bug"):
+        run(
+            uploader_wrapper._apply_tencent_content_declaration(
+                page,
+                "无需标注",
+                account_file="option-probe-error.json",
+                debug_dir=tmp_path,
+            )
+        )
+
+    diagnostic = uploader_wrapper.get_declaration_diagnostics()[0]
+    assert diagnostic["reason"] == "option_probe_failed"
+    assert diagnostic["selector"] == 'text="无需标注"'
+    assert diagnostic["screenshot"] == page.screenshots[0]

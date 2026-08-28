@@ -8,6 +8,7 @@ import { useRunStore } from "../stores/runs";
 import { parseTags } from "../domain/tags";
 import { resolveDouyinDeclaration } from "../domain/declarations";
 import { normalizeDailyTimes } from "../domain/time";
+import type { RunItemDiagnostic } from "../api/official";
 import type { Platform, PlatformFields } from "../api/types";
 import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
@@ -473,6 +474,43 @@ function runItemStatusLabel(status: string): string {
   }[status] ?? status;
 }
 
+function RunDiagnosticList({ diagnostics }: { diagnostics: RunItemDiagnostic[] }) {
+  return (
+    <ul aria-label="运行诊断" className="mt-2 flex w-full flex-col gap-1.5">
+      {diagnostics.map((diagnostic, index) => (
+        <li
+          key={`${diagnostic.kind}-${diagnostic.reason ?? "unknown"}-${index}`}
+          className={cn(
+            "rounded border px-2 py-1.5 text-caption",
+            diagnostic.level === "warning"
+              ? "border-warning bg-warning-tint text-warning-deep"
+              : "border-border-soft bg-bg-2 text-muted",
+          )}
+        >
+          <p className="font-medium">
+            {diagnostic.level === "warning" ? "警告" : "信息"}：
+            {diagnostic.message ?? diagnostic.reason ?? diagnostic.kind}
+          </p>
+          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
+            {diagnostic.account && <span>账号：{diagnostic.account}</span>}
+            {diagnostic.entrySelector && (
+              <span>入口 selector：{diagnostic.entrySelector}</span>
+            )}
+            {diagnostic.selector && <span>selector：{diagnostic.selector}</span>}
+            {diagnostic.requestedValue && <span>请求值：{diagnostic.requestedValue}</span>}
+            {diagnostic.displayValue && <span>展示值：{diagnostic.displayValue}</span>}
+          </div>
+          {diagnostic.screenshot && (
+            <p className="mt-0.5 break-all text-meta">
+              调试截图：<code>{diagnostic.screenshot}</code>
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** 最近 accepted run 详情：展示首次受理时冻结的最终 effective 声明。 */
 function RunDetailPanel() {
   const snapshot = useRunStore((s) => s.snapshot);
@@ -504,6 +542,9 @@ function RunDetailPanel() {
                 </span>
               )}
               {item.error && <span className="text-danger-deep">{item.error}</span>}
+              {item.diagnostics && item.diagnostics.length > 0 && (
+                <RunDiagnosticList diagnostics={item.diagnostics} />
+              )}
             </div>
           );
         })}
