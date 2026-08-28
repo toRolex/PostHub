@@ -734,3 +734,14 @@
 - 最终验证：web `pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build`（tsc + Vite）通过；涉及 Python `ruff check` / `ruff format --check` 与 `git diff --check` 通过。
 - Runtime verify：隔离 Flask/Werkzeug socket 通过 `/postRuns` 驱动真实 worker；fake page 模拟官方先打开菜单，`no_label` 完成恢复、点击和真实 `inner_text()` 校验，详情为 `success` 且诊断含账号/selector/displayValue。候选缺失探针返回 `completed/failed`、`reason=option_unavailable`、warning、双候选 selector 与可访问 screenshot 路径。
 - 官方边界：`daemon/sau_backend.py` SHA-256 仍为 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `uploader/*`。真实账号、Windows 进程树仍未验证，保留 concern；未 push、PR、merge、关闭 issue。
+
+### AFK Merger 本轮收口（2026-08-28）
+
+- 合并边界：#89 的视频号整点降级、跨日 resolution 与窗口提醒已在 develop 父提交 `c64613d` 保留，本轮不重复 merge；#91 从 `afk/issue-91` 合入，保留 DOM wrapper 诊断、RunStore diagnostics、worker 生命周期与前端详情改动。
+- 合并前边界：#93 为独立待合入分支 `afk/issue-93`，当前 tip 为 `19a35d7`，其部分成功运行/轮询与迁移边界改动尚未随 #91 合入。
+- 笔记冲突仅删除三处冲突标记，逐侧保留 #89 完整记录及 #91 全部 Implementer/Reviewer 记录；`daemon/tests/test_runs.py` 与 `web/src/views/PublishView.tsx` 保留双方测试/实现后完成暂存。
+- merge commit：`77d36b3`（`Merge branch 'afk/issue-91' into develop`）；未使用 `-X`、未 push、未建 PR、未修改 GitHub Issue、未删除 worktree/分支。
+- daemon：`cd daemon && uv run pytest -q` → `199 passed in 4.79s`。
+- web：`cd web && pnpm test -- --run` → `20 files / 219 tests passed`；仅输出既有 jsdom `navigation (except hash changes)` stderr。
+- web build：`cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过，`1706 modules transformed`，`built in 988ms`。
+- Tauri：本轮未改 `src-tauri`，按用户条件跳过 Cargo 测试。
