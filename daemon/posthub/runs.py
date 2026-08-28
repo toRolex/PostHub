@@ -35,6 +35,41 @@ logger = logging.getLogger(__name__)
 LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
 
 
+class DuplicateSubmissionError(ValueError):
+    """同一受理请求内包含重复的视频×账号组合。"""
+
+
+class ActiveRunConflict(RuntimeError):
+    """视频×账号已被另一个尚未结束的 run 占用。"""
+
+    def __init__(self, existing_run_id: str, description: str) -> None:
+        self.existing_run_id = existing_run_id
+        super().__init__(f"已有相同视频×账号的运行正在执行：{description}")
+
+
+def _dedupe_key(effective: Mapping[str, Any]) -> tuple[str, str, str]:
+    file_list = effective.get("fileList")
+    account_list = effective.get("accountList")
+    if (
+        not isinstance(file_list, list)
+        or len(file_list) != 1
+        or not isinstance(file_list[0], str)
+        or not isinstance(account_list, list)
+        or len(account_list) != 1
+        or not isinstance(account_list[0], str)
+    ):
+        raise ValueError("effective item 必须恰好包含一个视频和一个账号")
+    file_path = file_list[0]
+    account_path = account_list[0]
+    return (
+        json.dumps(
+            [file_path, account_path], ensure_ascii=False, separators=(",", ":")
+        ),
+        file_path,
+        account_path,
+    )
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
@@ -90,6 +125,7 @@ class RunStore:
                     error_summary TEXT,
                     error_detail TEXT,
                     diagnostics_json TEXT NOT NULL DEFAULT '[]',
+                    dedupe_key TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -119,6 +155,53 @@ class RunStore:
                 conn.execute(
                     "ALTER TABLE run_items ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "dedupe_key" not in columns:
+                conn.execute("ALTER TABLE run_items ADD COLUMN dedupe_key TEXT")
+            legacy_items = conn.execute(
+                "SELECT id, effective_json, status FROM run_items WHERE dedupe_key IS NULL"
+            ).fetchall()
+            active_keys: set[str] = set()
+            for row in legacy_items:
+                try:
+                    key, file_path, account_path = _dedupe_key(
+                        json.loads(row["effective_json"])
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if row["status"] in {"pending", "running"} and key in active_keys:
+                    migration_error = (
+                        "数据库迁移发现重复活动视频×账号，已隔离 item："
+                        f"{file_path} × {account_path}"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE run_items
+                        SET status = 'failed', error = ?, error_summary = ?,
+                            error_detail = ?, dedupe_key = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            migration_error,
+                            migration_error,
+                            migration_error,
+                            key,
+                            _now(),
+                            row["id"],
+                        ),
+                    )
+                    continue
+                conn.execute(
+                    "UPDATE run_items SET dedupe_key = ? WHERE id = ?", (key, row["id"])
+                )
+                if row["status"] in {"pending", "running"}:
+                    active_keys.add(key)
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_run_items_active_dedupe
+                ON run_items(dedupe_key)
+                WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'running')
+                """
+            )
             legacy_errors = conn.execute(
                 """
                 SELECT id, error FROM run_items
@@ -179,6 +262,7 @@ class RunStore:
         diagnostics_json = (
             "diagnostics_json" if "diagnostics_json" in item_columns else "'[]'"
         )
+        dedupe_key = "dedupe_key" if "dedupe_key" in item_columns else "NULL"
         lease_owner = "lease_owner" if "lease_owner" in item_columns else "NULL"
         lease_until = "lease_until" if "lease_until" in item_columns else "NULL"
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -204,6 +288,7 @@ class RunStore:
                 error_summary TEXT,
                 error_detail TEXT,
                 diagnostics_json TEXT NOT NULL DEFAULT '[]',
+                dedupe_key TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 lease_owner TEXT,
@@ -216,10 +301,10 @@ class RunStore:
             f"""
             INSERT INTO run_items
               (id, run_id, ordinal, status, submitted_json, effective_json, error,
-               error_summary, error_detail, diagnostics_json, created_at, updated_at,
-               lease_owner, lease_until)
+               error_summary, error_detail, diagnostics_json, dedupe_key, created_at,
+               updated_at, lease_owner, lease_until)
             SELECT id, run_id, ordinal, status, submitted_json, effective_json, error,
-                   {error_summary}, {error_detail}, {diagnostics_json},
+                   {error_summary}, {error_detail}, {diagnostics_json}, {dedupe_key},
                    created_at, updated_at, {lease_owner}, {lease_until}
             FROM run_items_old
             """
@@ -238,31 +323,65 @@ class RunStore:
         effective_items = list(items)
         if not effective_items:
             raise ValueError("run 至少需要一个 item")
+
+        dedupe_items: list[tuple[EffectiveBatchItem, str, str, str]] = []
+        seen: set[str] = set()
+        for item in effective_items:
+            key, file_path, account_path = _dedupe_key(item.effective)
+            if key in seen:
+                raise DuplicateSubmissionError(
+                    f"同一提交中存在重复视频×账号：{file_path} × {account_path}"
+                )
+            seen.add(key)
+            dedupe_items.append((item, key, file_path, account_path))
+
         run_id = str(uuid.uuid4())
         now = _now()
         with self._lock, self._connect() as conn:
+            # 进程内锁只保护同一 RunStore；跨连接的单飞行由 SQLite 事务与
+            # partial unique index 共同保证，不能用内存锁替代。
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT INTO runs (id, status, created_at, updated_at) VALUES (?, 'pending', ?, ?)",
                 (run_id, now, now),
             )
-            for ordinal, item in enumerate(effective_items):
-                conn.execute(
-                    """
-                    INSERT INTO run_items
-                      (id, run_id, ordinal, status, submitted_json, effective_json,
-                       created_at, updated_at)
-                    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        run_id,
-                        ordinal,
-                        json.dumps(item.submitted, ensure_ascii=False),
-                        json.dumps(item.effective, ensure_ascii=False),
-                        now,
-                        now,
-                    ),
-                )
+            for ordinal, (item, key, file_path, account_path) in enumerate(
+                dedupe_items
+            ):
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO run_items
+                          (id, run_id, ordinal, status, submitted_json, effective_json,
+                           dedupe_key, created_at, updated_at)
+                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            run_id,
+                            ordinal,
+                            json.dumps(item.submitted, ensure_ascii=False),
+                            json.dumps(item.effective, ensure_ascii=False),
+                            key,
+                            now,
+                            now,
+                        ),
+                    )
+                except sqlite3.IntegrityError as err:
+                    existing = conn.execute(
+                        """
+                        SELECT run_id FROM run_items
+                        WHERE dedupe_key = ? AND status IN ('pending', 'running')
+                        ORDER BY created_at, ordinal
+                        LIMIT 1
+                        """,
+                        (key,),
+                    ).fetchone()
+                    if existing is None:
+                        raise
+                    raise ActiveRunConflict(
+                        existing["run_id"], f"{file_path} × {account_path}"
+                    ) from err
         return run_id
 
     def recover_incomplete(self) -> None:
@@ -835,8 +954,19 @@ def register_run_routes(
                 payloads, _read_publish_accounts(official_db_path)
             )
             run_id = store.create_run(normalized.effective)
-        except (NormalizationError, sqlite3.Error) as err:
+        except ActiveRunConflict as err:
+            return jsonify(
+                {
+                    "code": 409,
+                    "msg": str(err),
+                    "data": {"existingRunId": err.existing_run_id},
+                }
+            ), 409
+        except (DuplicateSubmissionError, NormalizationError, ValueError) as err:
             return jsonify({"code": 400, "msg": str(err), "data": None}), 400
+        except sqlite3.Error as err:
+            logger.exception("受理 run 写入失败")
+            return jsonify({"code": 500, "msg": str(err), "data": None}), 500
         return jsonify(
             {
                 "code": 200,

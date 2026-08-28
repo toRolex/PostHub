@@ -66,6 +66,8 @@ export interface BatchItemResult {
   ok: boolean;
   /** 失败原因（成功时为「批量发布任务已提交」之类的固定文案）。 */
   msg: string;
+  /** 409 时后端返回的已有活动 run，可供 UI 打开。 */
+  existingRunId?: string;
 }
 
 /** itemKey 唯一拼接点：filePath + "|" + cookie，不 escape。 */

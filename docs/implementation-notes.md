@@ -802,3 +802,43 @@
 - 最终验证：`cd daemon && uv run pytest -q` → `204 passed`；`cd web && pnpm test -- --run` → `20 files / 225 tests passed`；`cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过（`1706 modules transformed`）。
 - `rg` 冲突标记为 0，`git diff --check` 通过；Tauri 未触及，按要求跳过。web 测试保留既有 jsdom navigation stderr。
 - 真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern；未 push、未建 PR、未修改 GitHub Issue、未删除 worktree/分支。
+
+## Issue #94：批内重复阻断与单飞行 409
+
+### 目标与计划
+
+- 只处理同一提交内的视频×账号重复硬阻断，以及跨提交活动 run 的数据库级单飞行；不引入跨提交成功记录软警示、retry 或新的调度语义。
+- TDD 垂直切片：先锁定重复提交在持久化前返回 400，再锁定跨连接 SQLite 并发提交只有一个成功、另一个保留 existingRunId 返回 409，最后接通前端错误保真与打开已有 run 操作。
+- 继续复用现有 `RunStore`/`/postRuns`/official API seam；不使用内存锁作为跨连接约束，不修改官方源码，不 push、建 PR、merge 或关闭 issue。
+
+### 初始状态与 Red
+
+- 已确认工作目录为 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-94`、分支 `afk/issue-94`；已有未提交实现与测试继续复用，未 reset/stash/覆盖。
+- 已读取 `CONTEXT.md`、父 issue #80、阻塞 issue #86、现有 #93 合并记录及当前全部差异。
+- 先运行既有/新增后端定向测试：`cd daemon && uv run pytest tests/test_runs.py -q` → `4 failed, 30 passed`。失败全部为既有多 item 测试沿用同一 `video.mp4 × douyin.json`，与本 issue 新增硬阻断契约冲突；未发现实现路径的异常失败。
+
+### 当前实现
+
+- `RunStore` 新增 `dedupe_key`、活动 item partial unique index，并在 `BEGIN IMMEDIATE` 事务内写入；同批重复先在内存校验并抛 `DuplicateSubmissionError`，数据库冲突映射 `ActiveRunConflict`。
+- `/postRuns` 将同批重复映射 JSON 400；活动组合冲突映射 HTTP 409，响应保留 `code` 和 `data.existingRunId`。
+- 前端官方错误对象保留 HTTP status/code/data；单视频与矩阵批量受理都显示“本次未受理”，不写 accepted run，且提供“打开已有 run”按钮。
+
+### TDD 收口与边界修复
+
+- Green：修正 #94 引入硬阻断后既有多 item fixture 的同批素材重复，改为使用不同视频路径，保持原有顺序/失败隔离断言；后端定向 `36 passed`。
+- Green：补充 `/postRuns` 409 响应契约、事务冲突回滚、前端 `openRun` 查询切换回归；矩阵批量反馈也提供“打开已有 run”操作。
+- Red → Green：发现旧 runs schema 迁移遇到重复活动 item 时，原逻辑会留下无 `dedupe_key` 的 pending 项绕过唯一约束；迁移现将重复项隔离为带错误详情的 failed，并保留首项占用键，补充 key 释放回归。
+- 运行验证：隔离真实 `run_backend.py` HTTP 服务观察到同批重复返回 `code=400/data=null`；并发两个 `/postRuns` 请求分别返回 `200 已受理` 与 `409`，409 的 `data.existingRunId` 与已受理 runId 一致。验证使用安全 fake/无真实平台账号，服务已停止。
+
+### 最终验证
+
+- `cd daemon && uv run pytest -q` → `209 passed`。
+- `cd web && pnpm test -- --run` → `20 files / 229 tests passed`；保留既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 resources 目录，未进入 Git。
+- `daemon/posthub/runs.py`、`daemon/tests/test_runs.py` Ruff check/format check 通过；`git diff --check` 通过。
+
+### Deviations
+
+- 旧库若已有重复活动 item，采用迁移时保守隔离重复项而非继续并发执行，避免其绕过数据库单飞行约束；原始 run 与错误详情仍保留可查询。
+- 真实平台账号与 Windows 环境未驱动；当前 macOS 仅验证本机 HTTP/安全 fake seam。

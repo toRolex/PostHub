@@ -315,6 +315,45 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(s.itemResults!.every((r) => r.ok)).toBe(true);
   });
 
+  it("409 冲突显示本次未受理并保留已有 run，不写入本地 accepted run", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "已有相同视频×账号的运行正在执行",
+            data: { existingRunId: "run-existing" },
+          },
+          false,
+          409,
+        ),
+      ),
+    );
+    const { addItem } = useBatchPublishStore.getState();
+    addItem({
+      filePath: "a.mp4",
+      title: "t",
+      caption: "",
+      tags: "",
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
+      mode: "immediate",
+    });
+
+    await expect(useBatchPublishStore.getState().submit()).rejects.toThrow(
+      "已有相同视频×账号的运行正在执行",
+    );
+
+    expect(useRunStore.getState().runId).toBeNull();
+    expect(useBatchPublishStore.getState().itemResults).toEqual([
+      expect.objectContaining({
+        ok: false,
+        msg: "本次未受理：已有运行 run-existing",
+        existingRunId: "run-existing",
+      }),
+    ]);
+  });
+
   it("submit 失败（请求级错误）-> 每项独立反馈失败 + 抛错", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ code: 400, msg: "Expected a JSON array", data: null }, false, 400),

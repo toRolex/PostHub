@@ -152,6 +152,38 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(s.results.wechat?.ok).toBe(true);
   });
 
+  it("409 冲突显示本次未受理并保留已有 run，不能生成本地成功状态", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "已有相同视频×账号的运行正在执行",
+            data: { existingRunId: "run-existing" },
+          },
+          false,
+          409,
+        ),
+      ),
+    );
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+
+    await usePublishStore.getState().submit();
+
+    expect(useRunStore.getState().runId).toBeNull();
+    expect(usePublishStore.getState().results.douyin).toEqual({
+      ok: false,
+      msg: "本次未受理：已有运行 run-existing",
+      existingRunId: "run-existing",
+    });
+  });
+
   it("setPlatforms 自动为已选平台填充默认账号", () => {
     usePublishStore
       .getState()

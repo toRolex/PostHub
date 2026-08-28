@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
+import {
+  buildBatchItemsFromMatrix,
+  existingRunIdFromError,
+  officialApi,
+} from "../api/official";
 import type { PlatformFields } from "../api/types";
 import {
   buildBatchItemRefs,
@@ -214,10 +218,19 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
       {
         begin: { submitting: true },
         end: { submitting: false },
-        // 请求级错误：每项独立标识失败 + 透传 msg
-        onError: (message) => ({
-          itemResults: expandItemResults(s.items, false, message),
-        }),
+        // 请求级错误：每项独立标识失败；409 明确本次未受理并保留已有 run。
+        onError: (message, error) => {
+          const existingRunId = existingRunIdFromError(error);
+          return {
+            itemResults: existingRunId
+              ? expandItemResults(
+                  s.items,
+                  false,
+                  `本次未受理：已有运行 ${existingRunId}`,
+                ).map((item) => ({ ...item, existingRunId }))
+              : expandItemResults(s.items, false, message),
+          };
+        },
         rethrow: true,
       },
     );

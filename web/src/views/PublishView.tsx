@@ -605,6 +605,8 @@ function RunDetailPanel() {
 function FeedbackPanel() {
   const results = usePublishStore((s) => s.results);
   const submitting = usePublishStore((s) => s.submitting);
+  const openRun = useRunStore((s) => s.openRun);
+  const daemonUrl = useDaemonStore((s) => s.url);
   const keys = Object.keys(results) as Platform[];
   if (keys.length === 0) return null;
   return (
@@ -634,6 +636,16 @@ function FeedbackPanel() {
                 </span>
               </p>
               {!r.ok && <p className="mt-0.5 break-words text-danger-deep">{r.msg}</p>}
+              {r.existingRunId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-1 h-7 px-2"
+                  onClick={() => void openRun(daemonUrl, r.existingRunId!)}
+                >
+                  打开已有 run
+                </Button>
+              )}
             </div>
           </div>
         );
