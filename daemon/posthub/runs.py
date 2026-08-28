@@ -10,6 +10,7 @@ import json
 import logging
 import sqlite3
 import threading
+import traceback
 import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
@@ -31,6 +32,7 @@ DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
 logger = logging.getLogger(__name__)
+LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
 
 
 def _now() -> str:
@@ -41,6 +43,15 @@ def _lease_until(seconds: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=max(0.0, seconds))).isoformat(
         timespec="milliseconds"
     )
+
+
+def _error_summary(error: str | None) -> str | None:
+    if error is None:
+        return None
+    if error == "":
+        return ""
+    # 某些上游异常把换行编码成两个字符 ``\\n``，摘要仍只取首行。
+    return error.replace("\\n", "\n").splitlines()[0][:160]
 
 
 class RunStore:
@@ -63,7 +74,7 @@ class RunStore:
                 """
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed')),
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures')),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     completed_at TEXT
@@ -76,6 +87,8 @@ class RunStore:
                     submitted_json TEXT NOT NULL,
                     effective_json TEXT NOT NULL,
                     error TEXT,
+                    error_summary TEXT,
+                    error_detail TEXT,
                     diagnostics_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -84,10 +97,20 @@ class RunStore:
                 CREATE INDEX IF NOT EXISTS idx_run_items_status ON run_items(status);
                 """
             )
+            runs_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+            ).fetchone()[0]
+            if "completed_with_failures" not in runs_sql:
+                self._migrate_runs_table(conn)
+
             columns = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
             }
+            if "error_summary" not in columns:
+                conn.execute("ALTER TABLE run_items ADD COLUMN error_summary TEXT")
+            if "error_detail" not in columns:
+                conn.execute("ALTER TABLE run_items ADD COLUMN error_detail TEXT")
             if "lease_owner" not in columns:
                 conn.execute("ALTER TABLE run_items ADD COLUMN lease_owner TEXT")
             if "lease_until" not in columns:
@@ -96,6 +119,120 @@ class RunStore:
                 conn.execute(
                     "ALTER TABLE run_items ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            legacy_errors = conn.execute(
+                """
+                SELECT id, error FROM run_items
+                WHERE error IS NOT NULL AND error_summary IS NULL
+                """
+            ).fetchall()
+            for row in legacy_errors:
+                conn.execute(
+                    "UPDATE run_items SET error_summary = ? WHERE id = ?",
+                    (_error_summary(row["error"]), row["id"]),
+                )
+            conn.execute(
+                """
+                UPDATE run_items
+                SET error_detail = error
+                WHERE error IS NOT NULL AND error_detail IS NULL
+                """
+            )
+            # 旧版本会把含失败 item 的 run 误记为 completed；崩溃恢复也
+            # 可能遗留没有活动 item 的 running。首次打开时按 item 事实纠正，
+            # 避免历史详情继续显示为“已完成”或永久轮询“执行中”。
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'completed_with_failures'
+                WHERE status = 'completed'
+                  AND EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                  )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = CASE WHEN EXISTS (
+                        SELECT 1 FROM run_items
+                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                    ) THEN 'completed_with_failures' ELSE 'completed' END,
+                    completed_at = COALESCE(completed_at, updated_at)
+                WHERE status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id
+                        AND run_items.status IN ('pending', 'running')
+                  )
+                """
+            )
+
+    @staticmethod
+    def _migrate_runs_table(conn: sqlite3.Connection) -> None:
+        """重建旧 runs/run_items，更新 runs 的 CHECK 并保持外键指向。"""
+        item_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
+        }
+        error_summary = "error_summary" if "error_summary" in item_columns else "NULL"
+        error_detail = "error_detail" if "error_detail" in item_columns else "NULL"
+        diagnostics_json = (
+            "diagnostics_json" if "diagnostics_json" in item_columns else "'[]'"
+        )
+        lease_owner = "lease_owner" if "lease_owner" in item_columns else "NULL"
+        lease_until = "lease_until" if "lease_until" in item_columns else "NULL"
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("ALTER TABLE run_items RENAME TO run_items_old")
+        conn.execute("ALTER TABLE runs RENAME TO runs_old")
+        conn.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE run_items (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+                submitted_json TEXT NOT NULL,
+                effective_json TEXT NOT NULL,
+                error TEXT,
+                error_summary TEXT,
+                error_detail TEXT,
+                diagnostics_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                lease_owner TEXT,
+                lease_until TEXT
+            );
+            """
+        )
+        conn.execute("INSERT INTO runs SELECT * FROM runs_old")
+        conn.execute(
+            f"""
+            INSERT INTO run_items
+              (id, run_id, ordinal, status, submitted_json, effective_json, error,
+               error_summary, error_detail, diagnostics_json, created_at, updated_at,
+               lease_owner, lease_until)
+            SELECT id, run_id, ordinal, status, submitted_json, effective_json, error,
+                   {error_summary}, {error_detail}, {diagnostics_json},
+                   created_at, updated_at, {lease_owner}, {lease_until}
+            FROM run_items_old
+            """
+        )
+        conn.execute("DROP TABLE run_items_old")
+        conn.execute("DROP TABLE runs_old")
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_run_items_status ON run_items(status);
+            """
+        )
+        conn.execute("PRAGMA foreign_keys = ON")
 
     def create_run(self, items: Iterable[EffectiveBatchItem]) -> str:
         effective_items = list(items)
@@ -156,6 +293,23 @@ class RunStore:
                   )
                 """,
                 (now,),
+            )
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = CASE WHEN EXISTS (
+                        SELECT 1 FROM run_items
+                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                    ) THEN 'completed_with_failures' ELSE 'completed' END,
+                    updated_at = ?, completed_at = COALESCE(completed_at, ?)
+                WHERE status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id
+                        AND run_items.status IN ('pending', 'running')
+                  )
+                """,
+                (now, now),
             )
 
     def claim_next_item(
@@ -287,20 +441,34 @@ class RunStore:
         *,
         owner_token: str,
         error: str | None = None,
+        error_summary: str | None = None,
+        error_detail: str | None = None,
     ) -> bool:
         """仅允许持有当前 lease 的 worker 完成 item；返回是否完成。"""
         if not owner_token:
             raise ValueError("worker owner token 不能为空")
         now = _now()
         status = "failed" if error is not None else "success"
+        summary = error_summary if error_summary is not None else _error_summary(error)
+        detail = error_detail if error_detail is not None else error
         with self._lock, self._connect() as conn:
             updated = conn.execute(
                 """
                 UPDATE run_items
-                SET status = ?, error = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
+                SET status = ?, error = ?, error_summary = ?, error_detail = ?,
+                    lease_owner = NULL, lease_until = NULL, updated_at = ?
                 WHERE id = ? AND run_id = ? AND status = 'running' AND lease_owner = ?
                 """,
-                (status, error, now, item_id, run_id, owner_token),
+                (
+                    status,
+                    summary,
+                    summary,
+                    detail,
+                    now,
+                    item_id,
+                    run_id,
+                    owner_token,
+                ),
             )
             if updated.rowcount != 1:
                 return False
@@ -312,12 +480,20 @@ class RunStore:
                 (run_id,),
             ).fetchone()[0]
             if remaining == 0:
+                failed = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM run_items
+                    WHERE run_id = ? AND status = 'failed'
+                    """,
+                    (run_id,),
+                ).fetchone()[0]
+                final_status = "completed_with_failures" if failed else "completed"
                 conn.execute(
                     """
-                    UPDATE runs SET status = 'completed', updated_at = ?, completed_at = ?
+                    UPDATE runs SET status = ?, updated_at = ?, completed_at = ?
                     WHERE id = ?
                     """,
-                    (now, now, run_id),
+                    (final_status, now, now, run_id),
                 )
             else:
                 conn.execute(
@@ -333,8 +509,8 @@ class RunStore:
                 return None
             items = conn.execute(
                 """
-                SELECT id, ordinal, status, error, submitted_json, effective_json,
-                       diagnostics_json
+                SELECT id, ordinal, status, error, error_summary, error_detail,
+                       diagnostics_json, submitted_json, effective_json
                 FROM run_items WHERE run_id = ? ORDER BY ordinal
                 """,
                 (run_id,),
@@ -359,8 +535,17 @@ class RunStore:
             "items": [
                 {
                     "itemId": item["id"],
+                    "seq": item["ordinal"] + 1,
                     "status": item["status"],
-                    "error": item["error"],
+                    "error": item["error_summary"]
+                    if item["error_summary"] is not None
+                    else item["error"],
+                    "errorSummary": item["error_summary"]
+                    if item["error_summary"] is not None
+                    else item["error"],
+                    "errorDetail": item["error_detail"]
+                    if item["error_detail"] is not None
+                    else item["error"],
                     "diagnostics": json.loads(item["diagnostics_json"] or "[]"),
                     "submitted": json.loads(item["submitted_json"]),
                     # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
@@ -450,13 +635,20 @@ class RunWorker:
                 self.store.release_item(run_id, item_id, owner_token=self._owner_token)
                 return
             try:
-                error = self._execute_with_lease_heartbeat(run_id, item_id, effective)
+                error, detail = self._execute_with_lease_heartbeat(
+                    run_id, item_id, effective
+                )
             except Exception as exc:
                 error = str(exc)
+                detail = traceback.format_exc()
                 logger.exception("执行 item 异常：run=%s item=%s", run_id, item_id)
             try:
                 finished = self.store.finish_item(
-                    run_id, item_id, owner_token=self._owner_token, error=error
+                    run_id,
+                    item_id,
+                    owner_token=self._owner_token,
+                    error=error,
+                    error_detail=detail,
                 )
             except Exception:
                 logger.exception("完成 item 失败：run=%s item=%s", run_id, item_id)
@@ -470,14 +662,26 @@ class RunWorker:
 
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """执行可能阻塞的 uploader，同时持续续租当前 item。"""
         finished = threading.Event()
         heartbeat: threading.Thread | None = None
         if self.lease_seconds > 0:
-            # 首次续租不能等一个完整 interval，否则短 lease 可能在 uploader
-            # 刚开始阻塞时就过期；更密的探测也降低调度抖动导致的重复领取窗口。
-            interval = max(0.005, min(self.lease_seconds / 10, 1.0))
+            # 先由 worker 线程同步续租，再启动 heartbeat，避免新线程尚未调度
+            # 时短 lease 已过期并被另一个 worker 回收。
+            heartbeat_lease_seconds = max(self.lease_seconds, 1.0)
+            try:
+                renewed = self.store.renew_lease(
+                    run_id,
+                    item_id,
+                    owner_token=self._owner_token,
+                    lease_seconds=heartbeat_lease_seconds,
+                )
+            except sqlite3.Error as exc:
+                return LEASE_LOST_ERROR, f"{LEASE_LOST_ERROR}: {exc}"
+            if not renewed:
+                return LEASE_LOST_ERROR, LEASE_LOST_ERROR
+            interval = max(0.005, min(heartbeat_lease_seconds / 10, 1.0))
 
             def renew() -> None:
                 while not finished.is_set():
@@ -486,8 +690,14 @@ class RunWorker:
                             run_id,
                             item_id,
                             owner_token=self._owner_token,
-                            lease_seconds=self.lease_seconds,
+                            lease_seconds=heartbeat_lease_seconds,
                         )
+                    except sqlite3.Error:
+                        # 短暂 SQLite 锁竞争不能让 heartbeat 静默退出；下一轮
+                        # 继续续租，直到 uploader 完成或 lease owner 失效。
+                        if finished.wait(interval):
+                            return
+                        continue
                     except Exception:
                         logger.exception(
                             "续租 item 异常：run=%s item=%s",
@@ -510,6 +720,7 @@ class RunWorker:
             )
             heartbeat.start()
         error: str | None = None
+        detail: str | None = None
         diagnostics_error: str | None = None
         from posthub.uploader_wrapper import (
             clear_declaration_diagnostics,
@@ -521,6 +732,7 @@ class RunWorker:
             self.uploader(effective)
         except Exception as exc:  # noqa: BLE001 - item 必须落终态
             error = str(exc)
+            detail = traceback.format_exc()
         finally:
             try:
                 diagnostics = get_declaration_diagnostics()
@@ -561,7 +773,8 @@ class RunWorker:
                     heartbeat.join(timeout=1.0)
         if diagnostics_error and error is None:
             error = f"诊断写入失败：{diagnostics_error}"
-        return error
+            detail = diagnostics_error
+        return error, detail
 
 
 def _read_publish_accounts(db_path: Path) -> list[dict[str, Any]]:

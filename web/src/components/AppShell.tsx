@@ -4,7 +4,7 @@ import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useRunStore } from "../stores/runs";
-import type { RunSummary } from "../api/official";
+import type { RunStatus, RunSummary } from "../api/official";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -37,8 +37,29 @@ async function loadDaemonUrl(): Promise<string> {
   }
 }
 
-export function shouldRefreshRun(status: "pending" | "running" | "completed" | null): boolean {
-  return status !== "completed";
+export const RUN_POLL_INITIAL_MS = 2_000;
+export const RUN_POLL_MAX_MS = 10_000;
+
+export function shouldRefreshRun(status: RunStatus | null): boolean {
+  return status !== "completed" && status !== "completed_with_failures";
+}
+
+export function shouldRestartRunPolling(
+  previousRunId: string | null,
+  currentRunId: string | null,
+  currentStatus: RunStatus | null,
+): boolean {
+  return (
+    currentRunId !== null &&
+    currentRunId !== previousRunId &&
+    shouldRefreshRun(currentStatus)
+  );
+}
+
+export function nextRunPollDelay(previousMs: number, changed: boolean): number {
+  return changed
+    ? RUN_POLL_INITIAL_MS
+    : Math.min(RUN_POLL_MAX_MS, Math.max(RUN_POLL_INITIAL_MS, previousMs * 2));
 }
 
 export function runProgressLabel(
@@ -50,7 +71,7 @@ export function runProgressLabel(
   return null;
 }
 
-export function runStatusMeta(status: "pending" | "running" | "completed" | null) {
+export function runStatusMeta(status: RunStatus | null) {
   if (status === "pending") {
     return { dot: "bg-meta", text: "text-fg-2", label: "最近运行 待执行" };
   }
@@ -61,6 +82,9 @@ export function runStatusMeta(status: "pending" | "running" | "completed" | null
       label: "最近运行 执行中",
       pulse: true,
     };
+  }
+  if (status === "completed_with_failures") {
+    return { dot: "bg-warn", text: "text-warn-deep", label: "最近运行 部分成功" };
   }
   if (status === "completed") {
     return { dot: "bg-success", text: "text-success-deep", label: "最近运行 已完成" };
@@ -179,27 +203,93 @@ function ShellView() {
 export function AppShell() {
   useEffect(() => {
     let disposed = false;
+    let runPollTimer: number | undefined;
+    let runPollDelay = RUN_POLL_INITIAL_MS;
+    let runPollGeneration = 0;
+
+    const runFingerprint = (): string => {
+      const state = useRunStore.getState();
+      return JSON.stringify({
+        runId: state.runId,
+        status: state.status,
+        snapshot: state.snapshot
+          ? {
+              updatedAt: state.snapshot.updatedAt,
+              summary: state.snapshot.summary,
+              items: state.snapshot.items.map((item) => ({
+                seq: item.seq,
+                status: item.status,
+                errorSummary: item.errorSummary ?? item.error,
+              })),
+            }
+          : null,
+      });
+    };
+
+    const scheduleRunPoll = (delay: number, generation = runPollGeneration): void => {
+      if (disposed || runPollTimer !== undefined) return;
+      runPollTimer = window.setTimeout(async () => {
+        runPollTimer = undefined;
+        if (
+          disposed ||
+          generation !== runPollGeneration ||
+          !shouldRefreshRun(useRunStore.getState().status)
+        ) {
+          return;
+        }
+        const before = runFingerprint();
+        // refresh 在网络异常时保留原快照；因此比较前后快照即可决定退避，
+        // 网络错误不会停止后续重试，也不会清空用户已经看到的状态。
+        await useRunStore.getState().refresh(useDaemonStore.getState().url);
+        if (
+          disposed ||
+          generation !== runPollGeneration ||
+          !shouldRefreshRun(useRunStore.getState().status)
+        ) {
+          return;
+        }
+        const changed = before !== runFingerprint();
+        runPollDelay = nextRunPollDelay(runPollDelay, changed);
+        scheduleRunPoll(runPollDelay, generation);
+      }, delay);
+    };
+
+    const unsubscribeRunStore = useRunStore.subscribe((state, previousState) => {
+      if (
+        disposed ||
+        !shouldRestartRunPolling(previousState.runId, state.runId, state.status)
+      ) {
+        return;
+      }
+      // 终态会停止当前链；新 accepted run 到达后必须建立新的 2 秒轮询链，
+      // 否则用户提交第二个 run 时不会再获取其终态。
+      runPollGeneration += 1;
+      runPollDelay = RUN_POLL_INITIAL_MS;
+      if (runPollTimer !== undefined) {
+        window.clearTimeout(runPollTimer);
+        runPollTimer = undefined;
+      }
+      scheduleRunPoll(RUN_POLL_INITIAL_MS, runPollGeneration);
+    });
+
     void (async () => {
       const url = await loadDaemonUrl();
       if (disposed) return;
       void useAccountsStore.getState().fetchAccounts();
       void useDaemonStore.getState().probeDaemon();
       void useRunStore.getState().restoreLatestRun(url);
+      scheduleRunPoll(RUN_POLL_INITIAL_MS);
     })();
     const { pollIntervalMs } = useDaemonStore.getState();
     const healthTimer = window.setInterval(
       () => void useDaemonStore.getState().probeDaemon(),
       pollIntervalMs,
     );
-    const runTimer = window.setInterval(() => {
-      if (shouldRefreshRun(useRunStore.getState().status)) {
-        void useRunStore.getState().refresh(useDaemonStore.getState().url);
-      }
-    }, pollIntervalMs);
     return () => {
       disposed = true;
+      unsubscribeRunStore();
       window.clearInterval(healthTimer);
-      window.clearInterval(runTimer);
+      if (runPollTimer !== undefined) window.clearTimeout(runPollTimer);
     };
   }, []);
 

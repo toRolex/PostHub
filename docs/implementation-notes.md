@@ -598,6 +598,27 @@
 - TDD 垂直切片：先锁定纯时间值对象，再锁定 daemon effective/执行快照与单 item 失败隔离，最后锁定 preview/detail 与 warning 展示。
 - 不修改官方源码或 `uploader/*`，不混入 DOM/retry；窗口风险只产生 item 级 warning，不进入阻断型 ValidationError。
 
+## Issue #93：展示多 item 部分成功与详情状态
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-93` 的 `afk/issue-93` 分支实现；前置 #86 已在当前基线合入。不 reset/rebase/amend，不 push、PR、merge、关闭 issue。
+- 先在既有 accepted-run 的 RunStore/worker/API、runs store/AppShell 与发布页运行详情 seam 写失败测试，再按垂直切片实现：worker 失败不中断后续 item；持久化短摘要/详细错误、seq 与 `completed_with_failures`；前端状态文案、详情和轮询节奏/网络错误保留。
+- 不恢复旧 scheduler，不引入 retry/409 API 或新的官方执行逻辑；只扩展 PostHub-owned accepted-run 状态支持，不修改官方源码。
+
+### 预确认 seams
+
+- `RunWorker` 注入 fake uploader：连续 success/failure/success 的执行顺序与终态。
+- `RunStore.get_run` / `/postRuns/{runId}`：item 按 seq 返回，错误摘要可直接显示、详细错误可查询，run 汇总以持久化 item 为事实来源。
+- `useRunStore` 与 `AppShell`：`completed_with_failures` 终态、2 秒起步/无变化退避至 10 秒、网络异常保留最后快照并继续刷新。
+- 发布页 `RunDetailPanel`：按 seq 展示 item 状态，失败项短错误摘要与详细错误可展开查看。
+
+### 当前盘点
+
+- 当前 runs schema 仅允许 run status `pending/running/completed`，item 只有单一 `error` 字段；worker 已捕获单 item 异常并继续循环，但 run 始终聚合为 `completed`。
+- 前端 `RunStatus` 仅有 `pending/running/completed`；AppShell 使用 daemon 固定 poll interval，已在 completed 停止；RunDetailPanel 以 itemId 截断展示，未显示 seq 或详细错误。
+- 当前工作树初始干净；按用户要求不等待调研，下一步先补后端连续三项与错误详情失败测试，再补前端状态/轮询失败测试。
+
 ### Deviations
 
 - 暂无。
@@ -745,3 +766,30 @@
 - web：`cd web && pnpm test -- --run` → `20 files / 219 tests passed`；仅输出既有 jsdom `navigation (except hash changes)` stderr。
 - web build：`cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过，`1706 modules transformed`，`built in 988ms`。
 - Tauri：本轮未改 `src-tauri`，按用户条件跳过 Cargo 测试。
+
+- Red：在 `daemon/tests/test_runs.py` 增加 fake success/failure/success、短错误摘要/详细错误、1-based `seq`、旧 runs schema 迁移回归；在 web API/store/AppShell 测试增加 `completed_with_failures`、网络错误保留快照、2s/10s 轮询退避回归。
+- Green：RunStore 扩展 `completed_with_failures` 聚合状态，增加 `error_summary/error_detail` 迁移列；worker 每 item 捕获 traceback 后继续 claim 后续 item；查询 API 返回 `seq`、摘要和详细错误，保留旧 `error` 兼容字段。
+- Green：AppShell run polling 改为 2 秒起步、无状态变化指数退避至 10 秒，部分成功视为终态；网络错误不再误触发 latest 清空状态，继续由下一轮重试。发布页详情按 `seq` 展示失败摘要，并用 `<details>` 查询完整错误。
+- Green：为短 lease worker 增加执行前同步续租，并将 heartbeat 续租窗口保持安全余量，避免 SQLite 调度抖动导致活动 item 被错误回收；不改变 accepted-run 的重试/调度边界。
+
+### 最终验证
+
+- daemon `cd daemon && uv run pytest -q` → `169 passed`；相关 `ruff check` → `All checks passed`，`ruff format --check` → `2 files already formatted`。
+- web `pnpm test -- --run` → `20 files / 215 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- Runtime verify：隔离 Flask socket `127.0.0.1:5439` 经真实 HTTP `/postRuns` 驱动 success/failure/success，返回 `completed_with_failures`，summary 为 `2 success / 1 failed / 3 completed`；详情按 `seq=1,2,3` 返回，失败项有短摘要和含 request-id 的完整错误。空数组与非 object item 均返回 JSON 400。
+
+### AFK Reviewer 复核（2026-08-28）
+
+- 已完整读取 `git diff develop..HEAD`；变更范围锁定 #93 的 RunStore/worker 错误详情与部分成功聚合、web API/store/AppShell 轮询和发布详情；未发现修改官方 uploader 或混入其它 issue 的业务文件。
+- 复核重点：多 item 隔离与终态聚合、旧 schema 迁移、lease/worker 失败路径、前端 stale/网络错误与轮询退避、seq/错误详情显示及类型兼容。
+- 初步结论：实现主路径与验收目标一致；先执行 daemon、web、build、Tauri 全量验证，再根据失败或边界证据决定是否追加 `refine:` 修复。真实账号、Windows 托盘生命周期无法在当前 macOS 环境验证，若无自动化证据保留为 concern。
+- 全量验证首轮：`cd daemon && uv run pytest -q` → `169 passed in 4.30s`；`cd web && pnpm test -- --run` → `20 files / 215 tests passed`（保留既有 jsdom navigation stderr）；`cd web && pnpm run build` → tsc/Vite 通过；Tauri 首轮因仓库忽略的 `src-tauri/resources/daemon` 不存在失败，按既有约定仅补本地空资源目录后重跑。
+- Tauri 复验：补齐未跟踪空 `src-tauri/resources/{daemon,bin,browser}` 后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 passed`；空目录未进入 Git。
+- 精炼前定向复核：`cd daemon && uv run pytest tests/test_runs.py -q` → `20 passed`；Python `ruff check`/`ruff format --check` → 通过；web AppShell 回归（当前 Vitest 配置仍运行全量）→ `20 files / 216 tests passed`。尝试 `pnpm exec prettier --check ...` 失败，因项目未安装 prettier，非代码失败。
+- 发现并修复 P1：终态 run 停止 timeout 链后，第二次 accepted run 不会自动建立轮询；新增 store 订阅、run generation 防旧请求重启新链，并补充回归 helper 测试。
+- 发现并修复 P2：旧 schema 中失败 run 迁移后仍显示 `completed`，且多行旧错误摘要未截短；迁移按 item 事实升级为 `completed_with_failures`，并用统一摘要规则回填 `errorSummary`，补充回归断言。
+- 修补后进入最终全量复验；不修改官方源码，不引入 retry/scheduler，不触碰其它 issue。
+- 交付前顾问复核发现两项边界：初始 lease 续租失败仍会调用外部 uploader；旧/崩溃恢复可能遗留“running 但无未完成 item”。按建议补回归并修复：初始续租异常/false 时 fail-closed 记 failed，heartbeat 遇 SQLite 短暂锁竞争继续重试；schema 初始化与 `recover_incomplete()` 均按 item 事实收敛终态并设置 `completed_at`。
+- 边界定向验证：`cd daemon && uv run pytest tests/test_runs.py -q` → `22 passed`；Python `ruff check`/`ruff format --check` → 通过；`cd web && pnpm test -- --run && pnpm run build` → `20 files / 216 tests passed`、tsc/Vite 通过。
+- 最终全量验证：`cd daemon && uv run pytest -q` → `171 passed in 4.12s`；`cd web && pnpm test -- --run` → `20 files / 216 tests passed`（仅既有 jsdom navigation stderr）；`cd web && pnpm run build` → tsc/Vite 通过；`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 passed`；相关 Python ruff check/format → 通过；`git diff --check` → 通过。
+- 结论：已发现并修复 2 个会影响后续 run/历史状态或外部执行安全的边界缺陷；真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern。准备提交 `refine:`，不 merge/push/关 issue。
