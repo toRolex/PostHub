@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import myUtils.postVideo as _post_video_mod
-from flask import has_request_context, request
+from flask import g, has_request_context, request
 from patchright.async_api import TimeoutError as PatchrightTimeoutError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
@@ -422,7 +422,10 @@ class _XiaoHongShuVideoWithStrategy(_OriginalXiaoHongShuVideo):
     async def check_original_declaration(self, page: Any) -> None:
         source = _active_fields(1).get("source")
         if source:
-            await _apply_xhs_source_declaration(page, source)
+            result = await _apply_xhs_source_declaration(page, source)
+            if result.status != "applied":
+                # source 未确认应用时必须阻断官方发布，避免 warning 被误报为成功。
+                raise RuntimeError(result.warning or "小红书内容声明未能应用 source")
         # 保留上游“声明原创”行为；本 issue 只在其前面补 source seam。
         await super().check_original_declaration(page)
 
@@ -459,6 +462,10 @@ class WrapperExecutionError(RuntimeError):
             "warnings": list(diagnostics.get("warnings", [])),
             "debugScreenshots": list(diagnostics.get("debugScreenshots", [])),
         }
+        if has_request_context():
+            # 官方旧 /postVideo 会自行捕获异常；把诊断挂到请求上下文，
+            # 由 PostHub after_request/errorhandler 继续透传给客户端。
+            g.posthub_wrapper_diagnostics = self.diagnostics
 
 
 def _diagnostics() -> dict[str, list[str]]:
@@ -494,8 +501,8 @@ async def _capture_xhs_debug_screenshot(page: Any) -> str | None:
         / "posthub-debug"
         / f"xhs-source-{uuid.uuid4().hex}.png"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         await page.screenshot(path=str(path), full_page=True)
     except Exception as exc:  # noqa: BLE001 - 诊断失败不覆盖原 warning
         _record_warning(f"小红书内容声明 debug screenshot 失败：{exc}")
@@ -525,35 +532,45 @@ async def _visible_first_locator(page: Any, selectors: tuple[str, ...]) -> Any:
 async def _apply_xhs_source_declaration(page: Any, source: str) -> XhsSourceApplyResult:
     """通过两组稳定 selector 尝试选择小红书“笔记内容声明”。
 
-    source 入口或候选变化时不静默成功：发布继续交给官方流程，但返回并记录
-    warning 与 debug screenshot，供 accepted-run 详情如实展示。
+    source 入口、候选或点击操作失败时不静默成功：先记录 warning 与 debug
+    screenshot，再由 class wrapper 阻断官方发布，供 accepted-run 详情如实展示。
     """
-    entry = await _visible_first_locator(page, XHS_SOURCE_ENTRY_SELECTORS)
-    if entry is None:
-        warning = "小红书内容声明入口未渲染，未能应用 source"
+    try:
+        entry = await _visible_first_locator(page, XHS_SOURCE_ENTRY_SELECTORS)
+        if entry is None:
+            warning = "小红书内容声明入口未渲染，未能应用 source"
+            _record_warning(warning)
+            screenshot = await _capture_xhs_debug_screenshot(page)
+            return XhsSourceApplyResult("warning", "entry_missing", warning, screenshot)
+
+        await entry.click()
+        option_selectors = tuple(
+            selector.format(source=source) for selector in XHS_SOURCE_OPTION_SELECTORS
+        )
+        option = await _visible_first_locator(page, option_selectors)
+        if option is not None:
+            await option.click()
+            return XhsSourceApplyResult("applied")
+
+        candidates = await _visible_first_locator(
+            page, (XHS_SOURCE_CANDIDATE_SELECTOR,)
+        )
+        if candidates is not None:
+            reason = "candidate_missing"
+            warning = f"小红书内容声明候选已变化，未找到：{source}"
+        else:
+            reason = "option_selectors_missed"
+            warning = f"小红书内容声明双 selector 均未命中：{source}"
         _record_warning(warning)
         screenshot = await _capture_xhs_debug_screenshot(page)
-        return XhsSourceApplyResult("warning", "entry_missing", warning, screenshot)
-
-    await entry.click()
-    option_selectors = tuple(
-        selector.format(source=source) for selector in XHS_SOURCE_OPTION_SELECTORS
-    )
-    option = await _visible_first_locator(page, option_selectors)
-    if option is not None:
-        await option.click()
-        return XhsSourceApplyResult("applied")
-
-    candidates = await _visible_first_locator(page, (XHS_SOURCE_CANDIDATE_SELECTOR,))
-    if candidates is not None:
-        reason = "candidate_missing"
-        warning = f"小红书内容声明候选已变化，未找到：{source}"
-    else:
-        reason = "option_selectors_missed"
-        warning = f"小红书内容声明双 selector 均未命中：{source}"
-    _record_warning(warning)
-    screenshot = await _capture_xhs_debug_screenshot(page)
-    return XhsSourceApplyResult("warning", reason, warning, screenshot)
+        return XhsSourceApplyResult("warning", reason, warning, screenshot)
+    except Exception as exc:  # noqa: BLE001 - DOM 变化必须可诊断且 fail-closed
+        warning = f"小红书内容声明 DOM 操作失败，未能应用 source：{exc}"
+        _record_warning(warning)
+        screenshot = await _capture_xhs_debug_screenshot(page)
+        return XhsSourceApplyResult(
+            "warning", "dom_operation_failed", warning, screenshot
+        )
 
 
 async def _apply_tencent_content_declaration(page: Any, declaration: str) -> None:

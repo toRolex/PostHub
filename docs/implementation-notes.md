@@ -639,3 +639,12 @@
 - Green：新增 `execute_effective_item` 按官方平台将持久化 effective payload 派发至 PostHub wrapper，并由组合入口默认注入；测试 fixture 显式保留 fail-closed seam。组合与 run 定向测试 → `23 passed`。
 - 最终复验更新：dispatcher/patchright 修补后 daemon `uv run pytest -q` → `178 passed`；相关 Python `ruff check` 与 `ruff format --check` → 全部通过；web `21 files / 213 tests passed`、build 通过；Tauri lib `17 passed`、bin `0 tests`。
 
+### Reviewer 继续收口（2026-08-29）
+
+- 协作复核发现两个正确性缺口：XHS source DOM 入口/候选未命中仅记录 warning 后仍继续官方发布并落 success；DOM click 异常未纳入诊断截图；worker 对 `finish_item` 异常或 `False` 无处理，可能留下 running。
+- 保守方案：source 诊断 warning 直接 fail-closed，先记录 warning/screenshot 再传播 `WrapperExecutionError`；entry/option click 与候选探针统一纳入 DOM 诊断捕获；worker 对诊断序列化异常降级为可持久化失败结果，对 finish 返回 False 记录 lease 丢失并尝试回收过期 item，避免静默继续。
+- Deviations：不把 DOM warning 当作发布成功，不尝试猜测新 selector；不在失去 lease 后强行改写其他 worker 的 item 状态。
+- Green：XHS source 未应用时阻断官方发布；DOM click/探针异常统一记录 warning 与 screenshot；旧 `/postVideo`、`/postVideoBatch` 通过响应/错误处理透传 diagnostics；worker 对 finish 异常先保留诊断重试，再无诊断失败兜底，续租/claim 异常可重试，过期 lease 在 claim 前回收。
+- 稳定性修正：lease 回归测试改用 0.5 秒 lease / 0.75 秒等待，保留“等待超过 lease、依赖 heartbeat”的断言，避免 0.12 秒 macOS 调度抖动造成假失败；连续 5 次通过。
+- 验证：daemon `uv run pytest -q` → `186 passed`；web `pnpm test -- --run` → `21 files / 213 tests passed`；web build 通过；Tauri `cargo test --all-targets` → lib `17 passed`、bin `0 tests`；相关 Python ruff check/format 全部通过。
+

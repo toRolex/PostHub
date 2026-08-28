@@ -15,6 +15,7 @@ from flask import Flask, g, jsonify, request
 
 from posthub.publish_adapter import NormalizationError, normalize_publish_payloads
 from posthub.uploader_wrapper import (
+    WrapperExecutionError,
     set_pending_declarations,
     set_pending_effective_items,
 )
@@ -103,6 +104,29 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
             set_pending_declarations([])
             return jsonify({"code": 400, "msg": str(err), "data": None}), 400
         return None
+
+    @app.after_request
+    def attach_posthub_diagnostics(response):
+        diagnostics = getattr(g, "posthub_wrapper_diagnostics", None)
+        if not diagnostics:
+            return response
+        body = response.get_json(silent=True)
+        if isinstance(body, dict):
+            body["diagnostics"] = diagnostics
+            response.set_data(json.dumps(body, ensure_ascii=False))
+            response.content_type = "application/json"
+        return response
+
+    @app.errorhandler(WrapperExecutionError)
+    def handle_wrapper_execution_error(error: WrapperExecutionError):
+        return jsonify(
+            {
+                "code": 500,
+                "msg": f"发布失败: {error}",
+                "data": None,
+                "diagnostics": error.diagnostics,
+            }
+        ), 500
 
     @app.teardown_request
     def clear_posthub_declarations(_error):

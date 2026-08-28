@@ -965,6 +965,99 @@ def test_xhs_source_double_option_selectors_missed_returns_explicit_result() -> 
     assert len(page.screenshot_paths) == 1
 
 
+class _ClickFailureLocator(_StubLocator):
+    async def click(self) -> None:
+        raise TimeoutError("element detached")
+
+
+def test_xhs_source_click_failure_returns_warning_and_debug_screenshot() -> None:
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    page = _XhsSourceStubPage({entry: _ClickFailureLocator(available=True)})
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "dom_operation_failed"
+    assert "DOM 操作失败" in result.warning
+    assert len(page.screenshot_paths) == 1
+
+
+def test_xhs_class_hook_fails_closed_when_source_is_not_applied(monkeypatch) -> None:
+    async def unexpected_original_check(self: Any, _page: Any) -> None:
+        raise AssertionError("source failure must block original declaration flow")
+
+    monkeypatch.setattr(
+        uploader_wrapper._OriginalXiaoHongShuVideo,
+        "check_original_declaration",
+        unexpected_original_check,
+    )
+    video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+    with (
+        uploader_wrapper._declaration_context(
+            {"platform": 1, "fields": {"source": "笔记含AI合成内容"}}
+        ),
+        pytest.raises(RuntimeError, match="入口未渲染"),
+    ):
+        asyncio.run(video.check_original_declaration(_XhsSourceStubPage({})))
+
+
+@pytest.mark.parametrize("endpoint", ("postVideo", "postVideoBatch"))
+def test_xhs_legacy_http_route_fails_closed_when_source_is_not_applied(
+    monkeypatch, tmp_path, endpoint: str
+) -> None:
+    """旧单发/batch seam 不得把 source warning 返回成 200 成功。"""
+    app = Flask(__name__)
+    app.add_url_rule(
+        "/postVideo",
+        endpoint="postVideo",
+        view_func=sau_backend.postVideo,
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/postVideoBatch",
+        endpoint="postVideoBatch",
+        view_func=sau_backend.postVideoBatch,
+        methods=["POST"],
+    )
+    db_path = tmp_path / "db" / "database.db"
+    compose_posthub_backend(app, db_path)
+    with __import__("sqlite3").connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO user_info (type, filePath, userName, status) VALUES (1, ?, ?, 1)",
+            ("xhs.json", "小红书测试账号"),
+        )
+        conn.commit()
+
+    def fake_official(**_kwargs: Any) -> None:
+        video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+        asyncio.run(video.check_original_declaration(_XhsSourceStubPage({})))
+
+    monkeypatch.setattr(uploader_wrapper, "_ORIGINAL_POST_VIDEO_XHS", fake_official)
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["xhs.json"],
+        "type": 1,
+        "title": "小红书声明",
+        "tags": [],
+        "platformFields": {"xiaohongshu": {"source": "ai_synthesized"}},
+    }
+
+    request_payload = [payload] if endpoint == "postVideoBatch" else payload
+    with app.test_client() as client:
+        response = client.post(f"/{endpoint}", json=request_payload)
+
+    assert response.status_code == 500
+    body = response.get_json()
+    assert body["code"] == 500
+    assert "入口未渲染" in body["msg"]
+    assert body["diagnostics"]["warnings"] == [
+        "小红书内容声明入口未渲染，未能应用 source"
+    ]
+    assert len(body["diagnostics"]["debugScreenshots"]) == 1
+
+
 def test_xhs_class_hook_applies_source_without_touching_wechat_selector(
     monkeypatch,
 ) -> None:
@@ -1023,11 +1116,13 @@ def test_xhs_direct_wrapper_returns_dom_diagnostics_after_context_cleanup(
         [{"platform": 1, "fields": {"source": source}}]
     )
     try:
-        diagnostics = uploader_wrapper._inject_declaration_to_xhs(
-            "标题", ["video.mp4"], [], ["account.json"]
-        )
+        with pytest.raises(uploader_wrapper.WrapperExecutionError) as raised:
+            uploader_wrapper._inject_declaration_to_xhs(
+                "标题", ["video.mp4"], [], ["account.json"]
+            )
     finally:
         uploader_wrapper.set_pending_declarations([])
 
+    diagnostics = raised.value.diagnostics
     assert diagnostics["warnings"] == ["小红书内容声明入口未渲染，未能应用 source"]
     assert len(diagnostics["debugScreenshots"]) == 1

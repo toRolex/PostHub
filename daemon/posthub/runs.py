@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -29,6 +30,7 @@ _RUN_SERVICE_MARKER = "_posthub_run_service"
 DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _serialize_diagnostics(diagnostics: Mapping[str, Any] | None) -> str | None:
@@ -181,6 +183,8 @@ class RunStore:
         """原子领取一个 pending item，并把 lease 绑定到 worker owner。"""
         if not owner_token:
             raise ValueError("worker owner token 不能为空")
+        # 领取前回收已过期 lease，避免 worker 启动后无人再次触发恢复。
+        self.recover_incomplete()
         now = _now()
         lease_until = _lease_until(lease_seconds)
         with self._lock, self._connect() as conn:
@@ -429,9 +433,15 @@ class RunWorker:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            claimed = self.store.claim_next_item(
-                self._owner_token, lease_seconds=self.lease_seconds
-            )
+            try:
+                claimed = self.store.claim_next_item(
+                    self._owner_token, lease_seconds=self.lease_seconds
+                )
+            except Exception:
+                # claim/recover 的瞬时数据库异常不能杀死 worker；下一轮重试。
+                _LOGGER.exception("领取 run item 失败")
+                self._stop.wait(0.1)
+                continue
             if claimed is None:
                 self._stop.wait(0.01)
                 continue
@@ -445,13 +455,74 @@ class RunWorker:
             error, diagnostics = self._execute_with_lease_heartbeat(
                 run_id, item_id, effective
             )
-            self.store.finish_item(
+            if not self._finish_item_safely(
+                run_id,
+                item_id,
+                error=error,
+                diagnostics=diagnostics,
+            ):
+                # lease 已丢失或数据库暂不可写时，不得静默继续；先尝试回收
+                # 已过期 item，当前 worker 仍可处理其他独立 item。
+                try:
+                    self.store.recover_incomplete()
+                except Exception:
+                    _LOGGER.exception("无法回收未完成的 run item")
+
+    def _finish_item_safely(
+        self,
+        run_id: str,
+        item_id: str,
+        *,
+        error: str | None,
+        diagnostics: Mapping[str, Any] | None,
+    ) -> bool:
+        """以可持久化失败结果兜底，避免 worker 因收口异常退出。"""
+        try:
+            finished = self.store.finish_item(
                 run_id,
                 item_id,
                 owner_token=self._owner_token,
                 error=error,
                 diagnostics=diagnostics,
             )
+        except Exception as exc:  # noqa: BLE001 - worker 必须继续收口
+            _LOGGER.warning("run item 首次收口失败，准备重试：%s", exc)
+            try:
+                # 先用原诊断重试；瞬时数据库异常不应让 warning/screenshot 丢失。
+                finished = self.store.finish_item(
+                    run_id,
+                    item_id,
+                    owner_token=self._owner_token,
+                    error=error,
+                    diagnostics=diagnostics,
+                )
+            except Exception as retry_exc:  # noqa: BLE001 - 继续尝试可持久化兜底
+                fallback_error = error or "发布结果无法正常持久化"
+                fallback_error = f"{fallback_error}；诊断持久化失败：{retry_exc}"
+                _LOGGER.warning(
+                    "run item 诊断重试失败，降级为无诊断失败结果：%s", retry_exc
+                )
+                try:
+                    finished = self.store.finish_item(
+                        run_id,
+                        item_id,
+                        owner_token=self._owner_token,
+                        error=fallback_error,
+                        diagnostics=None,
+                    )
+                except Exception:
+                    _LOGGER.exception("run item 降级收口失败")
+                    return False
+
+        if not finished:
+            _LOGGER.warning(
+                "run item 收口未完成：lease 已丢失或 item 已被其他 worker 接管，"
+                "run_id=%s item_id=%s",
+                run_id,
+                item_id,
+            )
+            return False
+        return True
 
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
@@ -460,16 +531,32 @@ class RunWorker:
         finished = threading.Event()
         heartbeat: threading.Thread | None = None
         if self.lease_seconds > 0:
-            interval = max(0.01, min(self.lease_seconds / 3, 1.0))
+            interval = max(0.005, min(self.lease_seconds / 4, 1.0))
 
             def renew() -> None:
-                while not finished.wait(interval):
-                    if not self.store.renew_lease(
-                        run_id,
-                        item_id,
-                        owner_token=self._owner_token,
-                        lease_seconds=self.lease_seconds,
-                    ):
+                while not finished.is_set():
+                    try:
+                        renewed = self.store.renew_lease(
+                            run_id,
+                            item_id,
+                            owner_token=self._owner_token,
+                            lease_seconds=self.lease_seconds,
+                        )
+                    except Exception:
+                        # 续租瞬时失败时继续重试；否则当前 uploader 阻塞期间
+                        # lease 可能过期，下一 worker 会重复执行该 item。
+                        _LOGGER.exception("续租 run item 失败")
+                        if finished.wait(interval):
+                            return
+                        continue
+                    if not renewed:
+                        _LOGGER.warning(
+                            "续租 run item 未完成：lease 已丢失，run_id=%s item_id=%s",
+                            run_id,
+                            item_id,
+                        )
+                        return
+                    if finished.wait(interval):
                         return
 
             heartbeat = threading.Thread(

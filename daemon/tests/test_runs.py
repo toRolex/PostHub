@@ -448,18 +448,19 @@ def test_blocked_uploader_renews_lease_before_another_worker_can_claim(
     first = RunWorker(
         store,
         uploader=blocked_uploader,
-        lease_seconds=0.12,
+        # 给 macOS 调度抖动留出余量；等待时间仍超过 lease，实际验证续租。
+        lease_seconds=0.5,
         stop_timeout=0.01,
     )
     second = RunWorker(
         store,
         uploader=lambda effective: second_calls.append(effective),
-        lease_seconds=0.12,
+        lease_seconds=0.5,
     )
     first.start()
     try:
         assert entered.wait(1)
-        time.sleep(0.35)
+        time.sleep(0.75)
         second.start()
         time.sleep(0.05)
         assert second_calls == []
@@ -733,6 +734,167 @@ def test_worker_persists_wrapper_diagnostics_for_run_query(tmp_path: Path) -> No
     assert detail["items"][0]["diagnostics"] == diagnostics
 
 
+def test_worker_turns_malformed_diagnostics_into_failed_terminal_item(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    worker = RunWorker(
+        store,
+        uploader=lambda _effective: {"warnings": [object()]},
+    )
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    item = detail["items"][0]
+    assert item["status"] == "failed"
+    assert "诊断持久化失败" in item["error"]
+    assert "diagnostics" not in item
+
+
+def test_worker_falls_back_when_finish_item_raises(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    original_finish = store.finish_item
+    attempts = 0
+
+    def finish_once_raises(*args: object, **kwargs: object) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database temporarily unavailable")
+        return original_finish(*args, **kwargs)
+
+    store.finish_item = finish_once_raises  # type: ignore[method-assign]
+    worker = RunWorker(store, uploader=lambda _effective: None)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    item = detail["items"][0]
+    assert attempts == 2
+    assert item["status"] == "success"
+    assert item["error"] is None
+
+
+def test_worker_retry_preserves_diagnostics_after_transient_finish_failure(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    original_finish = store.finish_item
+    attempts = 0
+    diagnostics = {
+        "warnings": ["小红书内容声明候选已变化"],
+        "debugScreenshots": ["/tmp/xhs-source.png"],
+    }
+
+    def finish_once_raises(*args: object, **kwargs: object) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database temporarily unavailable")
+        return original_finish(*args, **kwargs)
+
+    store.finish_item = finish_once_raises  # type: ignore[method-assign]
+    worker = RunWorker(store, uploader=lambda _effective: diagnostics)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert attempts == 2
+    assert detail["items"][0]["status"] == "success"
+    assert detail["items"][0]["diagnostics"] == diagnostics
+
+
+def test_worker_does_not_silently_continue_after_finish_item_returns_false(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    original_finish = store.finish_item
+    attempts = 0
+
+    def finish_once_false(*args: object, **kwargs: object) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        return original_finish(*args, **kwargs)
+
+    store.finish_item = finish_once_false  # type: ignore[method-assign]
+    worker = RunWorker(store, uploader=lambda _effective: None)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and attempts < 1:
+            time.sleep(0.01)
+        assert attempts >= 1
+        # false 表示当前 worker 已失去 item 所有权；它不能假设该 item 已完成。
+        assert store.get_run(run_id)["items"][0]["status"] == "running"
+    finally:
+        worker.stop()
+
+
 def test_xhs_wrapper_exception_keeps_dom_diagnostics_in_run_detail(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -799,7 +961,7 @@ def test_xhs_wrapper_exception_keeps_dom_diagnostics_in_run_detail(
         worker.stop()
 
     assert detail["items"][0]["status"] == "failed"
-    assert detail["items"][0]["error"] == "官方小红书发布失败"
+    assert detail["items"][0]["error"] == "小红书内容声明候选已变化"
     assert detail["items"][0]["diagnostics"] == {
         "warnings": ["小红书内容声明候选已变化"],
         "debugScreenshots": ["/tmp/xhs-source-debug.png"],
