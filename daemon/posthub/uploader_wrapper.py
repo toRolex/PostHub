@@ -19,14 +19,19 @@ from __future__ import annotations
 
 import re
 import threading
+import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import myUtils.postVideo as _post_video_mod
+import uploader.tencent_uploader.main as _tencent_mod
 from flask import has_request_context, request
+from patchright.async_api import TimeoutError as PatchrightTimeoutError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
 from uploader.ks_uploader.main import KSVideo as _OriginalKSVideo
 from uploader.tencent_uploader.main import TencentVideo as _OriginalTencentVideo
@@ -50,6 +55,78 @@ _IMMEDIATE = "immediate"
 
 _local = threading.local()
 _MISSING = object()
+_WECHAT_CONTENT_DECLARATION_ENTRY_SELECTORS = (
+    'text="内容声明"',
+    'text="添加声明"',
+)
+_RECOVERABLE_LOCATOR_ERROR = (PlaywrightTimeoutError, PatchrightTimeoutError)
+
+
+def clear_declaration_diagnostics() -> None:
+    """清空当前 item 的 DOM 诊断，避免复用上一个 item 的结果。"""
+    _local.declaration_diagnostics = []
+
+
+def get_declaration_diagnostics() -> list[dict[str, Any]]:
+    """返回当前 item 的结构化声明诊断副本。"""
+    return [dict(item) for item in getattr(_local, "declaration_diagnostics", [])]
+
+
+def _record_declaration_diagnostic(**diagnostic: Any) -> None:
+    diagnostics = getattr(_local, "declaration_diagnostics", None)
+    if diagnostics is None:
+        diagnostics = []
+        _local.declaration_diagnostics = diagnostics
+    diagnostics.append(diagnostic)
+
+
+def _tencent_account_label(account_file: Any) -> str:
+    return str(account_file) if account_file is not None else "unknown"
+
+
+async def _capture_tencent_declaration_failure(
+    page: Any,
+    *,
+    reason: str,
+    message: str,
+    account_file: Any,
+    debug_dir: Path | str | None,
+    **extra: Any,
+) -> str | None:
+    """记录视频号 DOM 失败并尽力保存截图；失败本身仍由调用方抛出。"""
+    root = (
+        Path(debug_dir)
+        if debug_dir is not None
+        else Path(getattr(_tencent_mod, "BASE_DIR", "."))
+    )
+    screenshot = root / "debug" / f"wechat-declaration-{uuid.uuid4().hex}.png"
+    screenshot_path: str | None = str(screenshot)
+    try:
+        screenshot.parent.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=screenshot_path, full_page=True)
+    except Exception as exc:  # noqa: BLE001 - 诊断失败不能覆盖原始 DOM 错误
+        screenshot_path = None
+        message = f"{message}；截图失败：{exc}"
+
+    diagnostic: dict[str, Any] = {
+        "level": "warning",
+        "kind": "wechat_content_declaration",
+        "account": _tencent_account_label(account_file),
+        "reason": reason,
+        "message": message,
+        "screenshot": screenshot_path,
+        **extra,
+    }
+    _record_declaration_diagnostic(**diagnostic)
+    _tencent_mod.tencent_logger.warning(
+        "视频号内容声明诊断："
+        f"account={diagnostic['account']} reason={reason} "
+        f"selector={extra.get('selector') or extra.get('selectors')} "
+        f"screenshot={screenshot_path} message={message}"
+    )
+    return screenshot_path
+
+
 _CONTEXT_FIELD_TYPES: dict[int, dict[str, type]] = {
     1: {"source": str, "origin": bool},
     2: {"declaration": str, "origin": bool},
@@ -398,20 +475,310 @@ class _XiaoHongShuVideoWithStrategy(_OriginalXiaoHongShuVideo):
         super().__init__(*args, **kwargs)
 
 
-async def _apply_tencent_content_declaration(page: Any, declaration: str) -> None:
-    """视频号内容声明 DOM seam。
+async def _apply_tencent_content_declaration(
+    page: Any,
+    declaration: str,
+    *,
+    account_file: Any = None,
+    debug_dir: Path | str | None = None,
+) -> None:
+    """通过视频号两个已知入口 selector 设置内容声明。
 
-    上游 ``TencentVideo`` 当前只尝试少量回避项；PostHub 解析出的具体文案由
-    这里负责选择。找不到入口或选项时抛出明确异常，禁止返回“发布成功”却丢声明。
+    入口、候选或点击出现 DOM 异常时记录 warning + debug screenshot 并抛错，
+    禁止把“未设置声明”伪装成发布成功。诊断保存在当前 item thread-local，
+    由 RunWorker 在 item 终态前持久化到可查询详情。
     """
-    entry = page.locator('text="内容声明"').first
-    if not await entry.count() or not await entry.is_visible():
-        raise RuntimeError("视频号内容声明入口不可用，未能应用 PostHub 声明")
-    await entry.click()
-    option = page.get_by_text(declaration, exact=True).first
-    if not await option.count() or not await option.is_visible():
-        raise RuntimeError(f"视频号内容声明选项不可用：{declaration}")
-    await option.click()
+    entry = None
+    entry_selector: str | None = None
+    present_hidden: list[str] = []
+    probe_failures: list[tuple[str, Exception]] = []
+    for selector in _WECHAT_CONTENT_DECLARATION_ENTRY_SELECTORS:
+        try:
+            candidate = page.locator(selector).first
+            count = await candidate.count()
+            if not count:
+                continue
+            try:
+                visible = await candidate.is_visible()
+            except _RECOVERABLE_LOCATOR_ERROR as exc:
+                probe_failures.append((selector, exc))
+                continue
+            if visible:
+                entry = candidate
+                entry_selector = selector
+                break
+            present_hidden.append(selector)
+        except _RECOVERABLE_LOCATOR_ERROR as exc:
+            probe_failures.append((selector, exc))
+            continue
+        except Exception as exc:
+            message = f"视频号内容声明入口探测失败：selector={selector}；{exc}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="entry_probe_failed",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=selector,
+                error=str(exc),
+            )
+            raise RuntimeError(message) from exc
+
+    if entry is None or entry_selector is None:
+        if probe_failures:
+            selector, error = probe_failures[0]
+            message = f"视频号内容声明入口探测失败：selector={selector}；{error}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="entry_probe_failed",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=selector,
+                selectors=list(_WECHAT_CONTENT_DECLARATION_ENTRY_SELECTORS),
+                error=str(error),
+            )
+        elif present_hidden:
+            selector = present_hidden[0]
+            message = f"视频号内容声明入口存在但不可见：selector={selector}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="entry_present_hidden",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=selector,
+                selectors=present_hidden,
+            )
+        else:
+            message = "视频号内容声明入口不可用，双 selector 均未命中"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="entry_selectors_unmatched",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selectors=list(_WECHAT_CONTENT_DECLARATION_ENTRY_SELECTORS),
+            )
+        raise RuntimeError(message)
+
+    try:
+        await entry.click()
+    except Exception as exc:
+        message = f"视频号内容声明入口点击失败：{exc}；selector={entry_selector}"
+        await _capture_tencent_declaration_failure(
+            page,
+            reason="entry_click_failed",
+            message=message,
+            account_file=account_file,
+            debug_dir=debug_dir,
+            selector=entry_selector,
+        )
+        raise RuntimeError(message) from exc
+
+    option = None
+    option_selector: str | None = None
+    option_present_hidden: list[str] = []
+    option_probe_failures: list[tuple[str, Exception]] = []
+    option_factories = (
+        (
+            f"get_by_text(text='{declaration}', exact=True)",
+            lambda: page.get_by_text(declaration, exact=True).first,
+        ),
+        (
+            f'text="{declaration}"',
+            lambda: page.locator(f'text="{declaration}"').first,
+        ),
+    )
+
+    async def probe_option() -> tuple[
+        Any | None, str | None, list[str], list[tuple[str, Exception]]
+    ]:
+        option = None
+        option_selector: str | None = None
+        option_present_hidden: list[str] = []
+        option_probe_failures: list[tuple[str, Exception]] = []
+        for selector, make_option in option_factories:
+            try:
+                option_locator = make_option()
+                count = await option_locator.count()
+                if not count:
+                    continue
+                try:
+                    visible = await option_locator.is_visible()
+                except _RECOVERABLE_LOCATOR_ERROR as exc:
+                    option_probe_failures.append((selector, exc))
+                    continue
+                if visible:
+                    option = option_locator
+                    option_selector = selector
+                    break
+                option_present_hidden.append(selector)
+            except _RECOVERABLE_LOCATOR_ERROR as exc:
+                option_probe_failures.append((selector, exc))
+                continue
+            except Exception as exc:
+                message = f"视频号内容声明候选探测失败：selector={selector}；{exc}"
+                await _capture_tencent_declaration_failure(
+                    page,
+                    reason="option_probe_failed",
+                    message=message,
+                    account_file=account_file,
+                    debug_dir=debug_dir,
+                    selector=selector,
+                    requestedValue=declaration,
+                    error=str(exc),
+                )
+                raise RuntimeError(message) from exc
+        return option, option_selector, option_present_hidden, option_probe_failures
+
+    (
+        option,
+        option_selector,
+        option_present_hidden,
+        option_probe_failures,
+    ) = await probe_option()
+    if (
+        option is None
+        and option_selector is None
+        and not option_present_hidden
+        and not option_probe_failures
+    ):
+        # 官方 apply_original_statement() 可能已打开菜单但因旧候选不匹配
+        # 没有选择；第一次点击会将菜单关闭，再点一次恢复菜单后重探测。
+        try:
+            await entry.click()
+        except Exception as exc:
+            message = f"视频号内容声明入口点击失败：{exc}；selector={entry_selector}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="entry_click_failed",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=entry_selector,
+            )
+            raise RuntimeError(message) from exc
+        (
+            option,
+            option_selector,
+            option_present_hidden,
+            option_probe_failures,
+        ) = await probe_option()
+
+    if option is None or option_selector is None:
+        if option_probe_failures:
+            selector, error = option_probe_failures[0]
+            message = f"视频号内容声明候选探测失败：selector={selector}；{error}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="option_probe_failed",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=selector,
+                requestedValue=declaration,
+                error=str(error),
+            )
+        elif option_present_hidden:
+            selector = option_present_hidden[0]
+            message = f"视频号内容声明选项存在但不可见：selector={selector}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="option_present_hidden",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selector=selector,
+                selectors=option_present_hidden,
+                requestedValue=declaration,
+            )
+        else:
+            message = f"视频号内容声明选项不可用：{declaration}"
+            await _capture_tencent_declaration_failure(
+                page,
+                reason="option_unavailable",
+                message=message,
+                account_file=account_file,
+                debug_dir=debug_dir,
+                selectors=[selector for selector, _make_option in option_factories],
+                requestedValue=declaration,
+            )
+        raise RuntimeError(message)
+
+    try:
+        await option.click()
+    except Exception as exc:
+        message = f"视频号内容声明选项点击失败：{declaration}；{exc}"
+        await _capture_tencent_declaration_failure(
+            page,
+            reason="option_click_failed",
+            message=message,
+            account_file=account_file,
+            debug_dir=debug_dir,
+            selector=option_selector,
+            entrySelector=entry_selector,
+            requestedValue=declaration,
+        )
+        raise RuntimeError(message) from exc
+
+    try:
+        # 点击后只读取真实 DOM 的最终文案；不能用请求值充当已选择事实。
+        display_value = (await option.inner_text()).strip()
+    except Exception as exc:
+        message = f"视频号内容声明最终展示值读取失败：{declaration}；{exc}"
+        await _capture_tencent_declaration_failure(
+            page,
+            reason="display_value_unverified",
+            message=message,
+            account_file=account_file,
+            debug_dir=debug_dir,
+            selector=option_selector,
+            entrySelector=entry_selector,
+            requestedValue=declaration,
+            error=str(exc),
+        )
+        raise RuntimeError(message) from exc
+
+    if not display_value:
+        message = f"视频号内容声明最终展示值为空：{declaration}"
+        await _capture_tencent_declaration_failure(
+            page,
+            reason="display_value_unverified",
+            message=message,
+            account_file=account_file,
+            debug_dir=debug_dir,
+            selector=option_selector,
+            entrySelector=entry_selector,
+            requestedValue=declaration,
+        )
+        raise RuntimeError(message)
+    if display_value != declaration:
+        message = f"视频号内容声明最终展示值与请求值不一致：请求={declaration}，实际={display_value}"
+        await _capture_tencent_declaration_failure(
+            page,
+            reason="display_value_mismatch",
+            message=message,
+            account_file=account_file,
+            debug_dir=debug_dir,
+            selector=option_selector,
+            entrySelector=entry_selector,
+            requestedValue=declaration,
+            displayValue=display_value,
+        )
+        raise RuntimeError(message)
+
+    _record_declaration_diagnostic(
+        level="info",
+        kind="wechat_content_declaration",
+        account=_tencent_account_label(account_file),
+        selector=entry_selector,
+        requestedValue=declaration,
+        displayValue=display_value,
+    )
+    _tencent_mod.tencent_logger.info(
+        f"视频号内容声明已选择：{display_value}（selector={entry_selector}，账号={_tencent_account_label(account_file)}）"
+    )
 
 
 class _TencentVideoWithDeclaration(_OriginalTencentVideo):
@@ -425,7 +792,11 @@ class _TencentVideoWithDeclaration(_OriginalTencentVideo):
     async def apply_original_statement(self, page: Any) -> None:
         await super().apply_original_statement(page)
         if self.posthub_declaration:
-            await _apply_tencent_content_declaration(page, self.posthub_declaration)
+            await _apply_tencent_content_declaration(
+                page,
+                self.posthub_declaration,
+                account_file=self.account_file,
+            )
 
 
 class _KSVideoWithStrategy(_OriginalKSVideo):

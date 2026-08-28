@@ -639,3 +639,98 @@
 - `cd daemon && uv run --with ruff ruff check ...`（5 个 issue 89 Python 文件）→ `All checks passed!`；`ruff format --check` → `5 files already formatted`；`git diff --check` 通过。
 - Runtime socket：临时 `POSTHUB_BASE_DIR` 启动真实 `run_backend.py`，插入隔离视频号账号；合法 `23:30` `/postVideo` 请求穿过 normalization 后因隔离环境缺 cookie 返回 JSON `500`，未触发真实账号发布；非法 `24:00` 在 normalization 阶段返回 JSON `400`，明确指出 `dailyTimes`，未进入官方执行。
 - 结果：仅精炼 `BatchPreviewDialog` 的 timer cell 显式分支、`resolveWechatTimer` 的条件分支并追加本记录；不新增 timer/run history 主干。timer `RunDetailPanel` 的数据源 concern 仍保留，结论 `DONE_WITH_CONCERNS`。
+
+- 已确认目标 worktree 分支为 `afk/issue-91`，HEAD 与 `develop` 同为 `8b65a6b`，初始工作树干净；已有项目约定 implementation notes 位于 `docs/implementation-notes.md`，本节追加维护。
+- 已完成前置调研派发，等待只读结果；下一步读取相关源码和 fixture 后，先新增失败测试并记录实际 Red 输出。
+
+### 验证
+
+- 尚未开始。
+
+### 下一步
+
+- 建立视频号 DOM wrapper 的最小 fake page/账号日志测试，先验证 no_label 与 ai_generated stub 成功路径及所有 fail-closed warning/detail 约束。
+- Red：新增 stub page 的 6 个视频号 DOM/诊断测试；首轮因 pytest 环境无 async 插件失败，改为项目现有同步 pytest 约定后，继续暴露 helper 无 account/debug/diagnostics seam。
+- Green（DOM seam）：`uploader_wrapper.py` 增加「内容声明」/「添加声明」双入口 selector fallback，支持 `no_label → 无需标注` 与 `ai_generated → 含AI生成内容`，候选/入口未渲染/双 selector 未命中/点击异常均 warning + debug screenshot + 显式抛错；成功诊断记录真实账号、命中 selector、最终显示值。
+- Green（item 诊断）：`RunStore.run_items` 增加迁移安全的 `diagnostics_json`，`get_run()` 返回 item diagnostics；`RunWorker` 在每个 item 前清理 wrapper 诊断、执行后持久化 warning/debug 信息，避免跨 item 泄漏。视频号定向与 runs 相关测试 → `69 passed`。
+- 最终验证：`cd daemon && uv run pytest -q` → `174 passed`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `4 files already formatted`。
+- 最终验证：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- 最终验证：Tauri 首次因忽略的 `src-tauri/resources/{daemon,bin,browser}` 缺失失败；补齐本地空目录后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未纳入 Git。
+- API 契约：`web/src/api/official.ts` 增加可选 `RunItemDiagnostic` 类型，兼容旧 daemon；详情 payload 的 `diagnostics` 包含 warning、selector、账号、最终显示值和 screenshot 路径。
+- 官方源码边界：未修改 `daemon/sau_backend.py` 或官方 `uploader/*`；未混入 XHS/retry；未 push、PR、merge、关闭 issue、reset、rebase、amend。
+
+## AFK Reviewer 复核：f152fc3
+
+### 复核发现与修复
+
+- Red：新增同一 item 内连续处理两个视频号账号的诊断累积测试；原 helper 每次调用都会清空 thread-local，导致前一个账号的 selector/最终显示值丢失。
+- Green：将诊断清理边界收敛到 RunWorker 的 item 起止；移除 DOM helper 内的清理，并在官方 HTTP 发布请求 before/teardown 清理，避免跨 item/请求泄漏，同时保留同一 item 多账号诊断。
+- 补齐入口点击失败与候选点击失败的 warning、debug screenshot、fail-closed 测试覆盖。
+
+### Deviations
+
+- 与实现提交原计划不同：helper 不再承担每次 DOM 调用的清理职责，因为一个 effective item 可包含多个账号；采用 item/request 生命周期边界，避免丢诊断。
+
+### 验证
+
+- 定向视频号测试：`9 passed`。
+- 提交前继续运行 daemon 全量、web test/build；Tauri 仅在本轮改动触及相关桌面代码时运行。
+- 复核后 daemon 全量：`uv run pytest -q` → `177 passed`；定向 Python ruff check/format check → 通过。
+- 复核后 web：`pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → tsc 与 Vite build 通过；仅有既有 jsdom navigation stderr。
+- 运行实例：隔离 `POSTHUB_BASE_DIR` 启动 `run_backend.py`，`GET /getAccounts` 返回 200；空 `/postRuns` 返回 400；隔离账号 accepted run 进入 completed/failed，RunStore detail 返回 `diagnostics: []` 与 fail-closed error。真实浏览器发布未驱动，避免无 dry-run 的外部发布副作用。
+- Tauri：本轮未改 `src-tauri`，按改动范围跳过。
+
+### AFK Implementer 收口（2026-08-28）
+
+- 继续审计 `f152fc3` 与其未提交改动；未 reset、stash、覆盖或 amend，当前仅保留 #91 的 wrapper、路由、测试和本笔记差异。
+- 复验定向测试：`cd daemon && uv run pytest tests/test_wechat_declaration.py tests/test_runs.py -q` → `28 passed`。
+- 复验后端全量：`cd daemon && uv run pytest -q` → `177 passed in 5.23s`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `5 files already formatted`；`git diff --check` 通过。
+- 复验前端全量：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。仅有既有 jsdom navigation stderr。
+- 真实账号验收 concern：本轮未驱动真实账号，不能宣称平台最终显示值已实测；当前代码记录的候选 selector 为 `text="内容声明"` / `text="添加声明"`，成功诊断记录实际命中的 selector、账号和候选 `inner_text()`，待真实页面验收时逐项回填最终显示值。
+- Tauri：本轮未改 `src-tauri`，按改动范围跳过；未 push、未建 PR、未 merge、未关闭 issue。
+
+### AFK Implementer 继续收口（2026-08-28）
+
+- 状态复核：当前 worktree 为 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-91`、分支 `afk/issue-91`，HEAD `7c23b88`；只保留未提交的 `daemon/tests/test_wechat_declaration.py` 红测试，未 reset、stash、覆盖或 amend 既有 commit。
+- 复验既有 Red：`cd daemon && uv run pytest tests/test_wechat_declaration.py -q` → `3 failed, 9 passed`；失败为点击后空展示值、最终文案读取异常、展示值不匹配仍被请求值 fallback 伪装成功。
+- 收口门槛：selector fallback 只允许明确可恢复的 Playwright locator probe 异常；entry 必须区分 selector unmatched、present-hidden、probe failed；点击后必须由 DOM 真实展示值验证；RunStore diagnostics 写入/lease/cleanup 失败不得打断 worker 终态；claim/recover/retry 清空旧 diagnostics；发布详情展示 warning 与 screenshot 路径。
+- 下一步：先补上述边界失败测试，再做最小 wrapper/RunWorker/RunStore/UI 实现；保留官方源码边界与真实账号验收 concern。
+- 补充 Red：selector 编程异常不得被 fallback 吞掉、明确 Playwright timeout 可继续尝试第二 selector、present-hidden 与 selector unmatched 分流、候选 probe 编程异常显式诊断；RunWorker 诊断写入返回 False/抛 DB 异常时 item 必须 failed，claim/recover 重试清空旧 diagnostics，finish lease 丢失只告警且不打断 worker cleanup。
+- Green（DOM）：selector fallback 仅捕获 `PlaywrightTimeoutError` 作为可恢复 probe 异常；generic DOM/程序异常记录 `entry_probe_failed`/`option_probe_failed`、账号、selector、reason、screenshot 后原因抛出；入口诊断区分 `entry_selectors_unmatched`、`entry_present_hidden`、`entry_probe_failed`。
+- Green（事实校验）：点击候选后只读取真实 DOM `inner_text()`；读取异常、空值、与请求值不一致均 warning + screenshot + fail-closed，不再以请求值伪造 `displayValue`。
+- Green（worker/store）：recover、claim、release 清空旧 diagnostics；诊断持久化返回 False/抛异常转 item failed；finish 返回 False 或抛异常记录 run/item/lease 告警，heartbeat 的 `finished` 仍在 finally 执行。
+- Green（web）：最近运行详情新增可访问的诊断列表，展示 warning/info、账号、selector、请求值、展示值与 debug screenshot 路径。
+- 定向验证：`cd daemon && uv run pytest tests/test_runs.py tests/test_wechat_declaration.py -q` → `40 passed`；相关 Ruff check 通过、format check 通过。
+- Web 验证：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过；保留既有 jsdom navigation stderr。
+- Deviations：为避免真实浏览器断连/程序 bug 被伪装为 selector 未命中，仅把明确 `PlaywrightTimeoutError` 视为可恢复 probe；其余异常立即 fail-closed。真实账号与 Windows 进程树仍未驱动，保留 concern。
+- Runtime verify：通过临时 Flask/Werkzeug 本机 socket 发送真实 HTTP `/postRuns`；注入安全 fake page 使视频号 `no_label` 候选缺失，受理返回 `200/status=pending`，查询返回 `completed`、item `failed`、`reason=option_unavailable`、`account=wechat.json`、`selector=text="内容声明"`，debug screenshot 文件存在；日志实际包含 account/reason/selector/screenshot。未驱动真实账号或外部发布。
+- 兼容性补强：实测发现官方发布链路使用 `patchright`，其 `TimeoutError` 与 `playwright.TimeoutError` 非同一类；wrapper 现将两者都限定为可恢复 locator probe 异常，并补充双类回归，避免真实页面 timeout 被误报为程序故障或吞掉。
+- 最终验证：`cd daemon && uv run pytest -q` → `190 passed in 4.45s`；定向 wrapper/runs → `41 passed`；相关 Ruff check/format check 与 `git diff --check` 通过。web 已验证 `pnpm test -- --run` → `20 files / 210 tests passed`，`pnpm run build` → tsc/Vite 通过。
+- 真实账号 selector/最终显示值与 Windows 进程树仍无法在当前 macOS 环境验证；不伪装通过。未 push、PR、merge、关闭 issue。
+
+### AFK Implementer 最终边界收口（2026-08-28）
+
+- Red：补充候选缺失与候选 present-hidden 诊断契约；原实现把候选缺失错误记录为入口 selector，并把 present-hidden 与 unmatched 合并。
+- Green：候选诊断分别记录 `get_by_text(text=..., exact=True)` / `text=...` 真实探测 selector；候选存在但不可见使用 `option_present_hidden`，候选均未命中保留 `option_unavailable`；候选点击/最终展示值失败记录候选 selector 与入口 `entrySelector`。
+- Green（lease）：heartbeat 首次循环立即续租，缩短探测间隔，并对续租异常/lease 丢失明确记录 run/item 日志，降低短 lease 调度抖动造成重复领取的窗口。
+- 定向回归：`cd daemon && uv run pytest tests/test_wechat_declaration.py tests/test_runs.py -q` → `42 passed`；daemon 全量 → `191 passed in 6.05s`。
+- Web 回归：`cd web && pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过；保留既有 jsdom navigation stderr。
+- 运行验证：启动隔离临时数据目录的 Flask HTTP 服务，通过真实 `POST /postRuns` 提交视频号 `no_label`，安全 fake page 让入口命中、候选缺失；查询 `GET /postRuns/<runId>` 得 `status=completed`、item `failed`、`reason=option_unavailable`、账号 `wechat.json`、两个候选 selector 与可访问 screenshot 路径。另以 `{}` 探测返回 400，GET `/postRuns` 返回 405。
+- 一次性验证启动修正：组合入口的 `uploader` 不是公开参数，验证服务改为组合后替换已注册 worker 的安全 fake uploader；未修改生产组合 API。
+- 真实账号 selector/最终展示值与 Windows 进程树仍无法在当前 macOS 验证；不伪装通过。未 push、未建 PR、未 merge、未关闭 issue。
+
+
+### AFK Reviewer 重试复核（2026-08-28）
+
+- 基线复验：`git diff develop..HEAD` 仅含 #91 wrapper、runs/routes、诊断测试、前端 API/详情和本笔记；官方 `daemon/sau_backend.py`、`uploader/*` 未修改。
+- daemon 全量 → `191 passed in 4.38s`；web 全量 → `20 files / 210 tests passed`；`pnpm run build` 的 `tsc --noEmit` 与 Vite build 通过；定向 Ruff/format 与 `git diff --check` 通过。
+- 发现 P1：视频号 wrapper 先调用官方 `apply_original_statement()`；官方在找不到旧「无需声明/不声明/无」选项时可能已打开「内容声明」菜单但未选择，随后 PostHub helper 再次点击入口会关闭菜单，导致 `no_label`/`ai_generated` 被误报候选缺失并 fail-closed。需补菜单状态回退测试并在 helper 中最小重试入口。
+- Deviations：不改变官方源码或 selector 宏观策略；仅让候选缺失后的第二次入口点击恢复官方 helper 可能留下的已打开菜单，真实候选仍按 DOM 校验，真实账号/Windows 仍未验证。
+
+### AFK Reviewer 修复与运行验收（2026-08-28）
+
+- Red/Green：新增官方菜单残留状态 stub，原 helper 在菜单已打开时二次点击后候选不可见；将候选探测抽为可重入 probe，候选双 selector 均未命中且无 hidden/probe error 时重开入口再探测；仍保留 generic 异常 fail-closed 与最终 DOM 文案校验。
+- 定向回归：`cd daemon && uv run pytest tests/test_wechat_declaration.py tests/test_runs.py -q` → `43 passed in 4.67s`；daemon 全量 → `192 passed in 6.03s`。
+- 最终验证：web `pnpm test -- --run` → `20 files / 210 tests passed`；`pnpm run build`（tsc + Vite）通过；涉及 Python `ruff check` / `ruff format --check` 与 `git diff --check` 通过。
+- Runtime verify：隔离 Flask/Werkzeug socket 通过 `/postRuns` 驱动真实 worker；fake page 模拟官方先打开菜单，`no_label` 完成恢复、点击和真实 `inner_text()` 校验，详情为 `success` 且诊断含账号/selector/displayValue。候选缺失探针返回 `completed/failed`、`reason=option_unavailable`、warning、双候选 selector 与可访问 screenshot 路径。
+- 官方边界：`daemon/sau_backend.py` SHA-256 仍为 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `uploader/*`。真实账号、Windows 进程树仍未验证，保留 concern；未 push、PR、merge、关闭 issue。

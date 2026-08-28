@@ -175,6 +175,7 @@ def test_query_observes_item_lifecycle_and_fail_closed_completed_run(
             "itemId": completed["items"][0]["itemId"],
             "status": "failed",
             "error": "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam",
+            "diagnostics": [],
             "submitted": immediate_payload(),
             "effective": {
                 "fileList": ["video.mp4"],
@@ -741,3 +742,283 @@ def test_platform_rejection_only_fails_current_item_and_next_item_runs(
     assert [item["status"] for item in detail["items"]] == ["failed", "success"]
     assert detail["items"][0]["error"] == "平台拒绝当前 item"
     assert detail["items"][1]["error"] is None
+
+
+def test_item_detail_persists_dom_warning_and_debug_screenshot(
+    tmp_path: Path,
+) -> None:
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号声明",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [account],
+    )
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("dom-worker")
+    assert claimed is not None
+    _, item_id, _ = claimed
+
+    diagnostics = [
+        {
+            "level": "warning",
+            "kind": "wechat_content_declaration",
+            "account": "wechat.json",
+            "reason": "option_unavailable",
+            "selector": 'text="添加声明"',
+            "screenshot": "/tmp/wechat-declaration.png",
+        }
+    ]
+    assert store.record_item_diagnostics(
+        run_id,
+        item_id,
+        owner_token="dom-worker",
+        diagnostics=diagnostics,
+    )
+
+    detail = store.get_run(run_id)
+    assert detail["items"][0]["diagnostics"] == diagnostics
+
+
+@pytest.mark.parametrize("reset_mode", ["release", "recover"])
+def test_claim_and_recover_clear_previous_item_diagnostics(
+    tmp_path: Path, reset_mode: str
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号声明",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [account],
+    )
+    run_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item(
+        "diagnostic-worker", lease_seconds=0 if reset_mode == "recover" else 60
+    )
+    assert claimed is not None
+    _, item_id, _ = claimed
+    assert store.record_item_diagnostics(
+        run_id,
+        item_id,
+        owner_token="diagnostic-worker",
+        diagnostics=[{"level": "warning", "reason": "old-item"}],
+    )
+
+    if reset_mode == "release":
+        assert store.release_item(run_id, item_id, owner_token="diagnostic-worker")
+    else:
+        store.recover_incomplete()
+
+    next_claim = store.claim_next_item("retry-worker")
+    assert next_claim is not None
+    assert store.get_run(run_id)["items"][0]["diagnostics"] == []
+
+
+def test_worker_marks_item_failed_when_diagnostic_persistence_returns_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from posthub import uploader_wrapper
+
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号声明",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [
+            {
+                "id": 1,
+                "type": 2,
+                "filePath": "wechat.json",
+                "userName": "视频号测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+
+    def uploader(_effective: dict) -> None:
+        uploader_wrapper._record_declaration_diagnostic(
+            level="warning", kind="wechat_content_declaration", reason="db-test"
+        )
+
+    monkeypatch.setattr(store, "record_item_diagnostics", lambda *args, **kwargs: False)
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert detail["items"][0]["status"] == "failed"
+    assert "诊断写入失败" in detail["items"][0]["error"]
+
+
+def test_worker_marks_item_failed_when_diagnostic_persistence_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from posthub import uploader_wrapper
+
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号声明",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [
+            {
+                "id": 1,
+                "type": 2,
+                "filePath": "wechat.json",
+                "userName": "视频号测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+
+    def uploader(_effective: dict) -> None:
+        uploader_wrapper._record_declaration_diagnostic(
+            level="warning", kind="wechat_content_declaration", reason="db-test"
+        )
+
+    def fail_record(*args: object, **kwargs: object) -> bool:
+        raise sqlite3.OperationalError("diagnostics db down")
+
+    monkeypatch.setattr(store, "record_item_diagnostics", fail_record)
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert detail["items"][0]["status"] == "failed"
+    assert "诊断写入失败" in detail["items"][0]["error"]
+
+
+def test_worker_logs_finish_lease_loss_without_interrupting_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["douyin.json"],
+            "type": 3,
+            "title": "抖音",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    run_id = store.create_run(normalized.effective)
+    entered = threading.Event()
+
+    def uploader(_effective: dict) -> None:
+        entered.set()
+
+    monkeypatch.setattr(store, "finish_item", lambda *args, **kwargs: False)
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive
+    finally:
+        worker.stop()
+
+    assert "完成 item 失败" in caplog.text
+    assert store.get_run(run_id)["items"][0]["status"] == "running"
+
+
+def test_worker_persists_wrapper_diagnostics_before_item_finishes(
+    tmp_path: Path,
+) -> None:
+    from posthub import uploader_wrapper
+
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(
+        {
+            "fileList": ["video.mp4"],
+            "accountList": ["wechat.json"],
+            "type": 2,
+            "title": "视频号声明",
+            "tags": [],
+            "enableTimer": False,
+        },
+        [account],
+    )
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run(normalized.effective)
+
+    def uploader(_effective: dict) -> None:
+        uploader_wrapper._record_declaration_diagnostic(
+            level="warning",
+            kind="wechat_content_declaration",
+            account="wechat.json",
+            reason="entry_unavailable",
+            screenshot="/tmp/debug.png",
+        )
+
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert detail["items"][0]["diagnostics"][0]["reason"] == "entry_unavailable"
+    assert detail["items"][0]["diagnostics"][0]["screenshot"] == "/tmp/debug.png"
