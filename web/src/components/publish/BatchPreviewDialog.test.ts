@@ -158,4 +158,24 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     ]);
     expect(rows[0].itemKey).toBe("video_x.mp4|w_a.json");
   });
+
+  it("视频号 timer 预览同时显示原值、最终整点、跨日原因和窗口 warning", () => {
+    const [row] = buildPreviewRows([
+      mkItem({
+        filePath: "wechat.mp4",
+        accountCookiesByPlatform: { wechat: ["w.json"] },
+        mode: "timer",
+        timeOfDay: "23:30",
+        startDays: 0,
+      }),
+    ]);
+
+    expect(row.timerResolution).toEqual({
+      originalTime: "23:30",
+      finalTime: "00:00",
+      dayCarry: 1,
+      reason: expect.stringContaining("跨日"),
+      warning: expect.stringContaining("仅提示"),
+    });
+  });
 });

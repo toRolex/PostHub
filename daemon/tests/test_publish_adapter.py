@@ -15,6 +15,7 @@ from posthub.publish_adapter import (
     NormalizationError,
     PublishExecutionAdapter,
     normalize_publish_payloads,
+    resolve_wechat_timer,
 )
 
 ACCOUNT_FIXTURES = [
@@ -1058,3 +1059,151 @@ def test_douyin_wrapper_constructor_receives_mapped_chinese_declaration(
         )
 
     assert seen["declaration"] == "无需添加自主声明"
+
+
+def test_wechat_timer_resolution_rounds_tie_break_and_reports_reason() -> None:
+    assert resolve_wechat_timer("14:29") == {
+        "originalTime": "14:29",
+        "finalTime": "14:00",
+        "dayCarry": 0,
+        "reason": "按最近整点降级：14:29 → 14:00",
+        "warning": "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+    }
+    assert resolve_wechat_timer("14:30") == {
+        "originalTime": "14:30",
+        "finalTime": "15:00",
+        "dayCarry": 0,
+        "reason": "按最近整点降级：14:30 → 15:00（30 分钟向后取整）",
+        "warning": "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+    }
+
+
+def test_wechat_timer_effective_snapshot_keeps_raw_final_reason_and_next_day_carry() -> (
+    None
+):
+    payload = {
+        "fileList": ["wechat.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "视频号定时",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["23:30"],
+        "startDays": 0,
+    }
+    accounts = [
+        {
+            "id": 1,
+            "type": 2,
+            "filePath": "wechat.json",
+            "userName": "视频号",
+            "status": 1,
+            "default_platform_fields": None,
+        }
+    ]
+
+    item = normalize_publish_payloads(
+        [payload],
+        accounts,
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=UTC).replace(tzinfo=None),
+    ).effective[0]
+
+    assert item.submitted["dailyTimes"] == ["23:30"]
+    assert item.effective["dailyTimes"] == ["00:00"]
+    assert item.effective["startDays"] == 1
+    assert item.effective["publishDatetimes"] == ["2026-08-29T00:00:00"]
+    assert item.effective["timerOriginalTime"] == "23:30"
+    assert item.effective["timerFinalTime"] == "00:00"
+    assert "跨日" in item.effective["timerDowngradeReason"]
+    assert item.effective["timerWindowWarning"].endswith("（仅提示）")
+    assert item.effective["timerResolutions"] == [
+        {
+            "originalTime": "23:30",
+            "finalTime": "00:00",
+            "dayCarry": 1,
+            "reason": "按最近整点降级：23:30 → 00:00（30 分钟向后取整），跨日 +1 天",
+            "warning": "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+        }
+    ]
+
+
+def test_wechat_multi_slot_effective_snapshot_keeps_each_resolution_and_carry() -> None:
+    payload = {
+        "fileList": ["first.mp4", "second.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "视频号多时刻",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 2,
+        "dailyTimes": ["23:30", "10:05"],
+        "startDays": 0,
+    }
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+
+    item = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=UTC).replace(tzinfo=None),
+    ).effective[0]
+
+    assert item.submitted["dailyTimes"] == ["23:30", "10:05"]
+    assert item.effective["dailyTimes"] == ["10:00", "00:00"]
+    assert item.effective["startDays"] == 0
+    assert item.effective["publishDatetimes"] == [
+        "2026-08-28T10:00:00",
+        "2026-08-29T00:00:00",
+    ]
+    assert [
+        (resolution["originalTime"], resolution["finalTime"], resolution["dayCarry"])
+        for resolution in item.effective["timerResolutions"]
+    ] == [("10:05", "10:00", 0), ("23:30", "00:00", 1)]
+
+
+def test_wechat_effective_snapshot_recomputes_from_frontend_submitted_raw_time() -> (
+    None
+):
+    """前端附带预览元数据时，daemon 仍以原始 HH:MM 作为唯一计算输入。"""
+    payload = {
+        "fileList": ["wechat.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "前端预览值",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["23:30"],
+        "startDays": 0,
+        "timerOriginalTime": "23:30",
+        "timerFinalTime": "00:00",
+        "timerDowngradeReason": "按最近整点降级：23:30 → 00:00（30 分钟向后取整），跨日 +1 天",
+        "timerWindowWarning": "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+    }
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+
+    item = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=UTC).replace(tzinfo=None),
+    ).effective[0]
+
+    assert item.submitted["dailyTimes"] == ["23:30"]
+    assert item.effective["timerOriginalTime"] == "23:30"
+    assert item.effective["timerFinalTime"] == "00:00"
+    assert item.effective["startDays"] == 1
+    assert item.effective["publishDatetimes"] == ["2026-08-29T00:00:00"]

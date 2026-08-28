@@ -590,3 +590,37 @@
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - 本轮未发现新的业务 concern；仅保留既有 jsdom navigation stderr。下一步提交本轮中文 summarizing commit，关闭 #86/#88/#90 并清理对应 worktrees。
 
+## Issue #89：贯通视频号整点降级、跨日进位与窗口提醒
+
+### 目标与计划
+
+- 仅在本 worktree 实现视频号 timer 的 PostHub-owned 降级适配：保留用户原始 HH:MM，按最近整点且 30 分钟向后 tie-break 生成最终 HH:00；23:30/23:59 进位到次日。
+- TDD 垂直切片：先锁定纯时间值对象，再锁定 daemon effective/执行快照与单 item 失败隔离，最后锁定 preview/detail 与 warning 展示。
+- 不修改官方源码或 `uploader/*`，不混入 DOM/retry；窗口风险只产生 item 级 warning，不进入阻断型 ValidationError。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已读取 `CONTEXT.md`、#88 后 `time` / `publish_adapter` / `uploader_wrapper` / `runs` 及相关测试；当前仅抖音拥有绝对 `publishDatetimes` 快照，视频号仍把 HH:MM 直接交给官方整点生成器，前端 preview/detail 未表达原值、最终值、原因。
+- 下一步：先补视频号纯时间降级与 effective 快照失败测试，确认 Red 后实现最小 seam。
+- 恢复复核：当前 issue 分支工作树已有 #89 的未提交实现与测试，未 reset/stash/覆盖；定向后端测试 `uv run pytest tests/test_publish_adapter.py tests/test_scheduled_wrapper.py tests/test_runs.py -q` → `125 passed`。初步发现前端先降级后端再次规范化会丢失原始时刻，需先以回归测试锁定并改为后端单一 authoritative normalization。
+- 只读调研与顾问复核均确认 P0：前端预降级会破坏多 dailyTimes 的原值/跨日信息；P1：单值 metadata 无法表达多时刻，单发布页缺少提交前 warning。按保守方案不改官方源码，daemon 作为唯一 effective producer，前端仅做同源预览计算。
+- Red：新增前端 builder 保留原始 HH:MM/startDays、daemon 接收带前端预览 metadata 的回归，以及视频号多时刻（`23:30`/`10:05`）逐槽位跨日快照测试；前端定向测试出现 2 项预期失败，后端新增多时刻断言先因排序顺序失败。
+- Green：前端不再改写视频号 timer 的 `dailyTimes`/`startDays`，daemon 重新从原始值生成 final `HH:00`、`publishDatetimes`；新增 `timerResolutions[]` 保留每个时刻的 original/final/dayCarry/reason/warning，兼容保留首项单值字段。补充单发布页 item 级非阻断 warning，RunDetail 优先读取 submitted 原始时刻并渲染完整 resolution 列表；更新 CONTEXT 的视频号整点策略。相关前端定向 → `218 passed`，后端三项视频号快照定向 → `2 passed`（另一个已有单项回归通过）。
+
+### 最终验证
+
+- daemon：`cd daemon && uv run pytest -q` → `173 passed`。
+- web：`cd web && pnpm test -- --run` → `20 files / 219 tests passed`；`pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- Python：相关文件 `uv run --with ruff ruff check ...` 与 `ruff format --check ...` → 全部通过。
+- Tauri：`cd src-tauri && cargo test --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 resources 目录，未入 Git。
+- Runtime socket：运行 `uv run python run_backend.py` 后，`GET /getAccounts` 返回 HTTP 200；非法视频号 `24:00` timer 返回 HTTP 400 且明确指出 `dailyTimes`，未进入发布；未触发真实账号发布。正向 fake-uploader seam 保留由定向测试覆盖。
+- 官方副本：`daemon/sau_backend.py` SHA-256 仍为 `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；未修改官方 `sau_backend.py` 或 `uploader/*`。
+
+### Deviations
+
+- 前端原先会预先改写视频号 timer，造成 daemon 无法恢复多时刻跨日信息；按保守策略收敛到 daemon authoritative normalization，前端只提交原始 HH:MM 并计算展示 metadata。
+- 真实平台账号未在 runtime 中触发，避免不可逆发布；平台拒绝隔离由 RunWorker 的 item 级 fake uploader 契约覆盖。

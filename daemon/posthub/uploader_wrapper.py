@@ -132,7 +132,11 @@ def _generate_schedule_with_start_days(
     if start_days < 0:
         raise ValueError("start_days 必须是非负整数")
 
-    snapshot = getattr(_local, "douyin_publish_datetimes", None)
+    snapshot = getattr(
+        _local,
+        "douyin_publish_datetimes",
+        getattr(_local, "wechat_publish_datetimes", None),
+    )
     if snapshot is not None:
         if len(snapshot) != total_videos:
             raise ValueError("publishDatetimes 数量必须与素材数量一致")
@@ -465,6 +469,27 @@ def _douyin_publish_datetime_context(
             _local.douyin_publish_datetimes = previous
 
 
+@contextmanager
+def _wechat_publish_datetime_context(
+    publish_datetimes: list[str] | None,
+) -> Iterator[None]:
+    previous = getattr(_local, "wechat_publish_datetimes", _MISSING)
+    if publish_datetimes is None:
+        yield
+        return
+    _local.wechat_publish_datetimes = publish_datetimes
+    try:
+        yield
+    finally:
+        if previous is _MISSING:
+            try:
+                del _local.wechat_publish_datetimes
+            except AttributeError:
+                pass
+        else:
+            _local.wechat_publish_datetimes = previous
+
+
 def _invoke_douyin_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方抖音函数；不复制官方发布循环。"""
     with _douyin_publish_datetime_context(command.get("publishDatetimes")):
@@ -486,18 +511,19 @@ def _invoke_douyin_command(command: dict[str, Any]) -> None:
 
 def _invoke_tencent_command(command: dict[str, Any]) -> None:
     """将一个 effective command 映射到官方视频号函数。"""
-    _ORIGINAL_POST_VIDEO_TENCENT(
-        title=command["title"],
-        files=command["fileList"],
-        tags=command["tags"],
-        account_file=command["accountList"],
-        category=command.get("category"),
-        enableTimer=command.get("enableTimer", False),
-        videos_per_day=command.get("videosPerDay", 1),
-        daily_times=command.get("dailyTimes"),
-        start_days=command.get("startDays", 0),
-        is_draft=command.get("isDraft", False),
-    )
+    with _wechat_publish_datetime_context(command.get("publishDatetimes")):
+        _ORIGINAL_POST_VIDEO_TENCENT(
+            title=command["title"],
+            files=command["fileList"],
+            tags=command["tags"],
+            account_file=command["accountList"],
+            category=command.get("category"),
+            enableTimer=command.get("enableTimer", False),
+            videos_per_day=command.get("videosPerDay", 1),
+            daily_times=command.get("dailyTimes"),
+            start_days=command.get("startDays", 0),
+            is_draft=command.get("isDraft", False),
+        )
 
 
 def _invoke_xhs_command(command: dict[str, Any]) -> None:

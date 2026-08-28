@@ -665,8 +665,11 @@ def test_timer_http_single_and_batch_use_fake_uploader_contract(
         "scheduled",
     ]
     assert all(isinstance(call["publish_date"], datetime) for call in calls)
-    assert all(call["publish_date"].hour == 10 for call in calls)
-    expected_minute = 30 if isinstance(daily_times[0], str) else 0
+    expected_hour = 11 if platform == 2 and isinstance(daily_times[0], str) else 10
+    assert all(call["publish_date"].hour == expected_hour for call in calls)
+    expected_minute = (
+        0 if platform == 2 else (30 if isinstance(daily_times[0], str) else 0)
+    )
     assert all(call["publish_date"].minute == expected_minute for call in calls)
     if platform == 3:
         assert all(
@@ -778,3 +781,66 @@ def test_run_detail_keeps_submitted_and_effective_timer_snapshots(tmp_path) -> N
     assert item["submitted"] == payload
     assert item["effective"]["dailyTimes"] == ["14:37"]
     assert item["effective"]["publishDatetimes"] == ["2026-08-29T14:37:00"]
+
+
+def test_wechat_wrapper_uses_final_hour_and_cross_day_datetime_snapshot(
+    monkeypatch,
+) -> None:
+    from posthub.publish_adapter import normalize_publish_payloads
+
+    payload = {
+        "fileList": ["video.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "视频号跨日",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["23:30"],
+        "startDays": 0,
+    }
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    item = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=UTC).replace(tzinfo=None),
+    ).effective[0]
+    calls: list[dict[str, Any]] = []
+    original_class = uploader_wrapper._OriginalTencentVideo
+
+    def fake_init(self, *args: Any, **kwargs: Any) -> None:
+        calls.append({"args": args, "kwargs": kwargs})
+        self.publish_date = kwargs.get("publish_date", args[3])
+        self.publish_strategy = kwargs.get("publish_strategy")
+
+    async def fake_main(self) -> None:
+        return None
+
+    monkeypatch.setattr(original_class, "__init__", fake_init)
+    monkeypatch.setattr(original_class, "main", fake_main, raising=False)
+    uploader_wrapper.set_pending_effective_items([item])
+    try:
+        uploader_wrapper._inject_declaration_to_tencent(
+            "视频号跨日",
+            ["video.mp4"],
+            [],
+            ["wechat.json"],
+            enableTimer=True,
+            videos_per_day=1,
+            daily_times=["00:00"],
+            start_days=1,
+        )
+    finally:
+        uploader_wrapper.set_pending_effective_items([])
+
+    assert calls[0]["kwargs"]["publish_strategy"] == "scheduled"
+    assert calls[0]["args"][3] == datetime(2026, 8, 29, 0, 0, tzinfo=UTC).replace(
+        tzinfo=None
+    )

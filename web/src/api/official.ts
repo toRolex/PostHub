@@ -30,7 +30,13 @@ import { OFFICIAL_PLATFORM_TYPE } from "./types";
 import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
 import { parseTags } from "../domain/tags";
 import { buildBatchItemRefs, type BatchItem } from "../domain/batch";
-import { nearestWholeHour, normalizeDailyTimes, normalizeHHMM } from "../domain/time";
+import {
+  nearestWholeHour,
+  normalizeDailyTimes,
+  normalizeHHMM,
+  resolveWechatTimer,
+  type WechatTimerResolution,
+} from "../domain/time";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -522,6 +528,16 @@ export interface PostVideoRequest {
   productTitle?: string;
   /** 平台内容声明按平台分键透传（issue #43 / ADR-0008）。任务级覆盖账号默认。 */
   platformFields?: PlatformFields;
+  /** 视频号 timer 的原始时刻、最终整点与降级原因（PostHub-owned metadata）。 */
+  timerOriginalTime?: string;
+  timerFinalTime?: string;
+  timerDowngradeReason?: string;
+  /** 窗口风险仅提示，不阻断提交。 */
+  timerWindowWarning?: string;
+  /** 视频号各 dailyTimes 槽位的完整降级结果；首项字段保留兼容。 */
+  timerResolutions?: WechatTimerResolution[];
+  /** 绝对执行时刻快照；由 daemon 结合本地日期写入/消费。 */
+  publishDatetimes?: string[];
 }
 
 /** 前端表单（发布页语义）→ 官方 /postVideo 请求体的纯函数。 */
@@ -563,6 +579,19 @@ export function buildPostVideoRequest(input: {
     body.videosPerDay = input.timer.videosPerDay;
     body.dailyTimes = normalizeDailyTimes(input.timer.dailyTimes);
     body.startDays = input.timer.startDays;
+    if (input.platform === "wechat") {
+      const resolutions: WechatTimerResolution[] = body.dailyTimes.map(resolveWechatTimer);
+      const first = resolutions[0];
+      // 保留原始 HH:MM 和用户 startDays 交给 daemon；daemon 是最终 effective
+      // producer，避免前端先降级后端再次规范化时丢失原值或重复进位。
+      if (first) {
+        body.timerOriginalTime = first.originalTime;
+        body.timerFinalTime = first.finalTime;
+        body.timerDowngradeReason = first.reason;
+        body.timerWindowWarning = first.warning;
+        body.timerResolutions = resolutions;
+      }
+    }
   }
   // 平台声明：仅当调用方显式传入时透传。后端 `_merge_platform_fields` 会按
   // 「任务级 > 账号级 > 不传」合并，调用方未给 = 后端走账号默认。
@@ -662,11 +691,23 @@ function buildOneMatrixItem(
       `item.timeOfDay="${item.timeOfDay}" 不在 dailyTimes 池中（${Array.from(dailyTimesSet).join(", ")}）`,
     );
   }
-  return {
-    ...base,
-    enableTimer: true,
+  const timer = {
+    enableTimer: true as const,
     videosPerDay: 1,
     dailyTimes: [timeOfDay],
     startDays: item.startDays,
+  };
+  if (platform !== "wechat") return { ...base, ...timer };
+
+  const resolution = resolveWechatTimer(timeOfDay);
+  return {
+    ...base,
+    ...timer,
+    // 同一份 raw item 进入 daemon 后再产出 effective final，避免双重跨日进位。
+    timerOriginalTime: resolution.originalTime,
+    timerFinalTime: resolution.finalTime,
+    timerDowngradeReason: resolution.reason,
+    timerWindowWarning: resolution.warning,
+    timerResolutions: [resolution],
   };
 }

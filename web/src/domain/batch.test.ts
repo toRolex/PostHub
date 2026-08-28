@@ -78,6 +78,22 @@ describe("buildBatchItemRefs", () => {
 });
 
 describe("validateBatch（结构化 ValidationError，issue #57）", () => {
+  it("视频号分钟降级只产生展示 warning，不进入阻断型 ValidationError", () => {
+    const errors = validateBatch(
+      [
+        makeItem({
+          accountCookiesByPlatform: { wechat: ["w.json"] },
+          mode: "timer",
+          timeOfDay: "23:30",
+          startDays: 0,
+        }),
+      ],
+      ["23:30"],
+    );
+
+    expect(errors).toEqual([]);
+  });
+
   it("items 为空 → 单条整批错误（row=0，无 filePath）", () => {
     const errors = validateBatch([], []);
     expect(errors).toEqual([{ row: 0, filePath: "", msg: "请至少添加一条视频" }]);

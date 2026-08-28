@@ -35,7 +35,11 @@ import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
 import { PlatformLimitHint } from "./PlatformLimitHint";
 import { cn } from "../../lib/utils";
-import { normalizeHHMM } from "../../domain/time";
+import {
+  normalizeHHMM,
+  resolveWechatTimer,
+  type WechatTimerResolution,
+} from "../../domain/time";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
 export interface PreviewRow {
@@ -48,6 +52,8 @@ export interface PreviewRow {
   mode: BatchItem["mode"];
   timeOfDay?: string;
   startDays?: number;
+  /** 视频号 timer 的原始/最终时刻、跨日原因与非阻断窗口提示。 */
+  timerResolution?: WechatTimerResolution;
   /** 抖音最终有效声明；任务空值已在此处按账号默认解析。 */
   declaration?: {
     value: string | undefined;
@@ -71,6 +77,16 @@ export function buildPreviewRows(
             accountDefaults[cookie]?.douyin,
           )
         : undefined;
+    const timerResolution =
+      platform === "wechat" && item.mode === "timer" && item.timeOfDay
+        ? (() => {
+            try {
+              return resolveWechatTimer(normalizeHHMM(item.timeOfDay));
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
     return {
       itemKey: keyOf(item.filePath, cookie),
       fileName: item.filePath,
@@ -89,6 +105,7 @@ export function buildPreviewRows(
             })()
           : item.timeOfDay,
       startDays: item.startDays,
+      timerResolution,
       declaration: declaration?.value
         ? { value: declaration.value, label: declaration.label }
         : declaration,
@@ -184,12 +201,25 @@ export function BatchPreviewDialog({
                     <td className="px-3 py-2 text-fg-2">
                       {r.mode === "immediate" ? "立即" : "定时"}
                     </td>
-                    <td className="px-3 py-2 tabular-nums text-fg-2">
-                      {r.mode === "timer" ? r.timeOfDay : "—"}
+                    <td className="px-3 py-2 text-fg-2">
+                      {r.mode !== "timer" ? (
+                        "—"
+                      ) : r.timerResolution ? (
+                        <div className="space-y-0.5 text-caption">
+                          <div className="tabular-nums">原始 {r.timerResolution.originalTime}</div>
+                          <div className="tabular-nums font-medium">
+                            最终 {r.timerResolution.finalTime}
+                          </div>
+                          <div className="text-warn-deep">{r.timerResolution.reason}</div>
+                          <div className="text-warn-deep">{r.timerResolution.warning}</div>
+                        </div>
+                      ) : (
+                        <span className="tabular-nums">{r.timeOfDay}</span>
+                      )}
                     </td>
                     <td className="px-3 py-2 tabular-nums text-fg-2">
                       {r.mode === "timer" && r.startDays !== undefined
-                        ? `+${r.startDays} 天`
+                        ? `+${r.startDays + (r.timerResolution?.dayCarry ?? 0)} 天`
                         : "—"}
                     </td>
                     <td className="px-3 py-2">

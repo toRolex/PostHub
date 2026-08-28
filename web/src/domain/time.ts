@@ -98,6 +98,40 @@ export function nearestWholeHour(value: string | number | Date): RoundedHour {
   };
 }
 
+/** 视频号 timer 的原始值、最终整点、跨日和非阻断提示。 */
+export interface WechatTimerResolution {
+  originalTime: string;
+  finalTime: string;
+  dayCarry: 0 | 1;
+  reason: string;
+  warning: string;
+}
+
+/** 视频号只支持整点：最近整点，正好 30 分钟向后取整。 */
+export function resolveWechatTimer(value: string): WechatTimerResolution {
+  const minutes = parseHHMM(value);
+  const originalTime = formatHHMM(minutes);
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const roundedHour = hour + (minute >= 30 ? 1 : 0);
+  const finalTime = formatHHMM((roundedHour % 24) * 60);
+  const dayCarry: 0 | 1 = roundedHour >= 24 ? 1 : 0;
+  let reason =
+    minute === 0
+      ? `原始时刻已是整点：${originalTime}`
+      : minute < 30
+        ? `按最近整点降级：${originalTime} → ${finalTime}`
+        : `按最近整点降级：${originalTime} → ${finalTime}（30 分钟向后取整）`;
+  if (dayCarry) reason += "，跨日 +1 天";
+  return {
+    originalTime,
+    finalTime,
+    dayCarry,
+    reason,
+    warning: "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+  };
+}
+
 /** 把最近整点的午夜进位并入起始天，保持 startDays 非负整数语义。 */
 export function carryStartDays(startDays: number, dayCarry: 0 | 1): number {
   if (!Number.isInteger(startDays) || startDays < 0) {

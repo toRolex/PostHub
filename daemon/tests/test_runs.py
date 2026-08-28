@@ -663,3 +663,81 @@ def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payloa
         "2026-08-29T14:37:00"
     ]
     assert detail["items"][1]["submitted"]["dailyTimes"] == ["14:37"]
+
+
+def test_wechat_timer_run_detail_keeps_submitted_and_effective_resolution(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "fileList": ["wechat.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "视频号 run 详情",
+        "tags": [],
+        "enableTimer": True,
+        "videosPerDay": 1,
+        "dailyTimes": ["23:30"],
+        "startDays": 0,
+    }
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [payload],
+        [account],
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=UTC).replace(tzinfo=None),
+    )
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run(normalized.effective)
+
+    item = store.get_run(run_id)["items"][0]
+    assert item["submitted"]["dailyTimes"] == ["23:30"]
+    assert item["effective"]["dailyTimes"] == ["00:00"]
+    assert item["effective"]["timerOriginalTime"] == "23:30"
+    assert item["effective"]["timerFinalTime"] == "00:00"
+    assert item["effective"]["timerResolutions"][0]["dayCarry"] == 1
+
+
+def test_platform_rejection_only_fails_current_item_and_next_item_runs(
+    tmp_path: Path,
+) -> None:
+    account = {
+        "id": 1,
+        "type": 2,
+        "filePath": "wechat.json",
+        "userName": "视频号测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    first = {
+        "fileList": ["rejected.mp4"],
+        "accountList": ["wechat.json"],
+        "type": 2,
+        "title": "平台拒绝",
+        "tags": [],
+        "enableTimer": False,
+    }
+    second = {**first, "fileList": ["accepted.mp4"], "title": "后续 item"}
+    normalized = normalize_publish_payloads([first, second], [account])
+    store = RunStore(tmp_path / "runs.db")
+
+    def uploader(effective: dict) -> None:
+        if effective["title"] == "平台拒绝":
+            raise RuntimeError("平台拒绝当前 item")
+
+    run_id = store.create_run(normalized.effective)
+    worker = RunWorker(store, uploader=uploader)
+    worker.start()
+    try:
+        detail = wait_for_status_from_store(store, run_id, "completed")
+    finally:
+        worker.stop()
+
+    assert [item["status"] for item in detail["items"]] == ["failed", "success"]
+    assert detail["items"][0]["error"] == "平台拒绝当前 item"
+    assert detail["items"][1]["error"] is None

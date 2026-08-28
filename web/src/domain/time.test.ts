@@ -5,6 +5,7 @@ import {
   localTimeOf,
   nearestWholeHour,
   normalizeDailyTimes,
+  resolveWechatTimer,
   parseHHMM,
   readTimeList,
   writeTimeList,
@@ -54,5 +55,13 @@ describe("本地时间与最近整点", () => {
   it("午夜 carry 计入 startDays，不改变原有非负日数语义", () => {
     expect(carryStartDays(2, 1)).toBe(3);
     expect(carryStartDays(2, 0)).toBe(2);
+  });
+
+  it.each([
+    ["14:29", { originalTime: "14:29", finalTime: "14:00", dayCarry: 0 }],
+    ["14:30", { originalTime: "14:30", finalTime: "15:00", dayCarry: 0 }],
+    ["23:30", { originalTime: "23:30", finalTime: "00:00", dayCarry: 1 }],
+  ] as const)("视频号 %s 降级到最近整点并报告跨日", (value, expected) => {
+    expect(resolveWechatTimer(value)).toMatchObject(expected);
   });
 });

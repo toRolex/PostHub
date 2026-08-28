@@ -360,6 +360,89 @@ def generate_douyin_publish_datetimes(
     ]
 
 
+_WECHAT_TIMER_WARNING = "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）"
+
+
+def resolve_wechat_timer(value: str) -> dict[str, Any]:
+    """将视频号原始 HH:MM 降级为平台注册表支持的整点。"""
+    if not isinstance(value, str):
+        raise TypeError("视频号原始时刻必须是 HH:MM")
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if match is None:
+        raise ValueError(f"视频号原始时刻格式非法：{value!r}")
+    hour, minute = (int(part) for part in match.groups())
+    if hour > 23 or minute > 59:
+        raise ValueError(f"视频号原始时刻越界：{value!r}")
+
+    original = f"{hour:02d}:{minute:02d}"
+    rounded_hour = hour + (1 if minute >= 30 else 0)
+    final = f"{rounded_hour % 24:02d}:00"
+    day_carry = int(rounded_hour >= 24)
+    if minute == 0:
+        reason = f"原始时刻已是整点：{original}"
+    elif minute < 30:
+        reason = f"按最近整点降级：{original} → {final}"
+    else:
+        reason = f"按最近整点降级：{original} → {final}（30 分钟向后取整）"
+    if day_carry:
+        reason += "，跨日 +1 天"
+    return {
+        "originalTime": original,
+        "finalTime": final,
+        "dayCarry": day_carry,
+        "reason": reason,
+        "warning": _WECHAT_TIMER_WARNING,
+    }
+
+
+def generate_wechat_publish_datetimes(
+    total_videos: int,
+    videos_per_day: int,
+    daily_times: list[str],
+    start_days: int,
+    *,
+    now: datetime | None = None,
+) -> list[datetime]:
+    """按视频号最终整点和每个时刻的跨日进位生成绝对执行时刻。"""
+    if (
+        isinstance(total_videos, bool)
+        or not isinstance(total_videos, int)
+        or total_videos < 0
+    ):
+        raise ValueError("total_videos 必须是非负整数")
+    if (
+        isinstance(videos_per_day, bool)
+        or not isinstance(videos_per_day, int)
+        or videos_per_day <= 0
+        or videos_per_day > len(daily_times)
+    ):
+        raise ValueError("videos_per_day 必须在每日时刻数量范围内")
+    if (
+        isinstance(start_days, bool)
+        or not isinstance(start_days, int)
+        or start_days < 0
+    ):
+        raise ValueError("start_days 必须是非负整数")
+    current = _local_naive_now() if now is None else now
+    if not isinstance(current, datetime) or current.tzinfo is not None:
+        raise ValueError("now 必须是本地 naive datetime")
+
+    resolutions = [resolve_wechat_timer(raw) for raw in daily_times]
+    return [
+        datetime.combine(
+            current.date()
+            + timedelta(
+                days=video // videos_per_day
+                + start_days
+                + 1
+                + resolutions[video % videos_per_day]["dayCarry"]
+            ),
+            time.fromisoformat(resolutions[video % videos_per_day]["finalTime"]),
+        )
+        for video in range(total_videos)
+    ]
+
+
 def _validate_schedule(payload: dict[str, Any], index: int) -> bool:
     enabled = payload.get("enableTimer", False)
     if enabled is None:
@@ -585,19 +668,45 @@ def normalize_publish_payloads(
             command = deepcopy(submitted_payload)
             command["fileList"] = list(files)
             command["accountList"] = [snapshot.file_path]
-            if platform_type == 3 and command.get("enableTimer"):
+            if platform_type in {2, 3} and command.get("enableTimer"):
                 if snapshot_now is None:
                     snapshot_now = _local_naive_now()
-                command["publishDatetimes"] = [
-                    value.isoformat(timespec="seconds")
-                    for value in generate_douyin_publish_datetimes(
-                        len(files),
-                        command["videosPerDay"],
-                        command["dailyTimes"],
-                        command["startDays"],
-                        now=snapshot_now,
-                    )
-                ]
+                if platform_type == 3:
+                    command["publishDatetimes"] = [
+                        value.isoformat(timespec="seconds")
+                        for value in generate_douyin_publish_datetimes(
+                            len(files),
+                            command["videosPerDay"],
+                            command["dailyTimes"],
+                            command["startDays"],
+                            now=snapshot_now,
+                        )
+                    ]
+                else:
+                    resolutions = [
+                        resolve_wechat_timer(raw) for raw in command["dailyTimes"]
+                    ]
+                    command["publishDatetimes"] = [
+                        value.isoformat(timespec="seconds")
+                        for value in generate_wechat_publish_datetimes(
+                            len(files),
+                            command["videosPerDay"],
+                            command["dailyTimes"],
+                            command["startDays"],
+                            now=snapshot_now,
+                        )
+                    ]
+                    command["dailyTimes"] = [
+                        resolution["finalTime"] for resolution in resolutions
+                    ]
+                    first = resolutions[0]
+                    command["timerOriginalTime"] = first["originalTime"]
+                    command["timerFinalTime"] = first["finalTime"]
+                    command["timerDowngradeReason"] = first["reason"]
+                    command["timerWindowWarning"] = first["warning"]
+                    command["timerResolutions"] = resolutions
+                    if len(resolutions) == 1:
+                        command["startDays"] += first["dayCarry"]
             if selected_fields:
                 command["platformFields"] = selected_fields
             else:

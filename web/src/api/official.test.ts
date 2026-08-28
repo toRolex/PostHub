@@ -618,4 +618,32 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     // 抖音没在 platformFields 里 → 不写入键
     expect("platformFields" in douyinBody).toBe(false);
   });
+
+  it("视频号 timer 保留原始时刻，并提交最近整点与跨日进位元数据", () => {
+    const [body] = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "wechat.mp4",
+          title: "视频号",
+          caption: "",
+          tags: "",
+          accountCookiesByPlatform: { wechat: ["w.json"] },
+          mode: "timer",
+          timeOfDay: "23:30",
+          startDays: 0,
+        },
+      ],
+      ["23:30"],
+    );
+
+    expect(body).toMatchObject({
+      type: 2,
+      dailyTimes: ["23:30"],
+      startDays: 0,
+      timerOriginalTime: "23:30",
+      timerFinalTime: "00:00",
+    });
+    expect(body.timerDowngradeReason).toContain("跨日");
+    expect(body.timerWindowWarning).toContain("仅提示");
+  });
 });

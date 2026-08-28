@@ -7,7 +7,7 @@ import { usePublishStore } from "../stores/publish";
 import { useRunStore } from "../stores/runs";
 import { parseTags } from "../domain/tags";
 import { resolveDouyinDeclaration } from "../domain/declarations";
-import { normalizeDailyTimes } from "../domain/time";
+import { normalizeDailyTimes, resolveWechatTimer } from "../domain/time";
 import type { Platform, PlatformFields } from "../api/types";
 import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
@@ -333,6 +333,7 @@ function TimerSection({ errors }: { errors: string[] }) {
   const videosPerDay = usePublishStore((s) => s.videosPerDay);
   const dailyTimes = usePublishStore((s) => s.dailyTimes);
   const startDays = usePublishStore((s) => s.startDays);
+  const selectedPlatforms = usePublishStore((s) => s.selectedPlatforms);
   const setForm = usePublishStore((s) => s.setForm);
 
   // 时刻输入（HH:MM）→ string[]：逗号/空格分隔，非法项不写入。
@@ -400,6 +401,23 @@ function TimerSection({ errors }: { errors: string[] }) {
           {errors.filter((e) => e.includes("条数") || e.includes("时刻") || e.includes("起始")).map((e) => (
             <p key={e} className="text-label text-danger-deep">{e}</p>
           ))}
+          {timerEnabled && selectedPlatforms.includes("wechat") && dailyTimes.length > 0 && (
+            <div role="status" aria-live="polite" className="rounded-md bg-warn-tint px-3 py-2 text-label text-warn-deep">
+              <div className="font-medium">视频号整点降级提示（仅提醒，不阻断提交）</div>
+              {dailyTimes.map((value) => {
+                try {
+                  const resolution = resolveWechatTimer(value);
+                  return (
+                    <div key={value}>
+                      原始 {resolution.originalTime} → 最终 {resolution.finalTime}；{resolution.reason}；{resolution.warning}
+                    </div>
+                  );
+                } catch {
+                  return null;
+                }
+              })}
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -501,6 +519,25 @@ function RunDetailPanel() {
               {douyin && (
                 <span className="rounded-sm bg-accent-tint px-1.5 py-0.5 text-caption text-accent-ink">
                   抖音声明：{douyin.value ? `${douyin.value} · ${douyin.label}` : douyin.label}
+                </span>
+              )}
+              {platform === "wechat" && effective?.timerFinalTime && (
+                <span className="rounded-sm bg-warn-tint px-1.5 py-0.5 text-caption text-warn-deep">
+                  视频号定时：
+                  {effective.timerResolutions?.length ? (
+                    effective.timerResolutions.map((resolution) => (
+                      <span key={`${resolution.originalTime}-${resolution.finalTime}`} className="ml-1">
+                        原始 {resolution.originalTime} → 最终 {resolution.finalTime}；{resolution.reason}；
+                        {resolution.warning}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="ml-1">
+                      原始 {item.submitted?.dailyTimes?.join("、") ?? effective.timerOriginalTime}
+                      → 最终 {effective.timerFinalTime}；{effective.timerDowngradeReason}
+                      {effective.timerWindowWarning && `；${effective.timerWindowWarning}`}
+                    </span>
+                  )}
                 </span>
               )}
               {item.error && <span className="text-danger-deep">{item.error}</span>}
