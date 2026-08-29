@@ -19,17 +19,19 @@
 
 ### 决策一：按平台分键，不抽象成统一键
 
-PostHub 任务级 `platform_fields` JSON 字段（ADR-0001 预留位）按 **CONTEXT.md glossary 已定义的平台命名** (`wechat` / `douyin` / `xiaohongshu`) 分键：
+PostHub 任务级 `platformFields` JSON 字段按 **CONTEXT.md glossary 已定义的平台命名** (`wechat` / `douyin` / `xiaohongshu`) 分键；旧 snake_case `platform_fields` 输入不再兼容，直接拒绝：
 
 ```json
 {
-  "wechat":       { "declaration": "no_label", "origin": true },
+  "wechat":       { "declaration": "no_label" },
   "douyin":       { "declaration": "no_need" },
-  "xiaohongshu":  { "source": "self_declare", "origin": true }
+  "xiaohongshu":  { "source": "self_declare" }
 }
 ```
 
 **不**抽象成统一键（如 `content_declaration`），理由：三家平台语义不对齐（视频号 `declaration` ≈ 抖音 `declaration` ≈ 小红书 `source`，但选项不重叠），强行统一会丢精度，且违背各平台法规要求的精确语义。
+
+`origin`（声明原创）当前没有可靠的跨平台执行 seam；为避免 HTTP 200 后静默丢字段，`platformFields.*.origin` 现在 fail-closed 拒绝，不制造可靠下发承诺。
 
 ### 决策二：内部枚举 + 中文文案映射
 
@@ -68,7 +70,7 @@ social-auto-upload 上游支持度（实测）：
 
 ## 关联
 
-- ADR-0001：`platform_fields` JSON 字段位（line 131）由本 ADR 落地
+- ADR-0001：历史 `platform_fields` JSON 字段位由本 ADR 收窄为 PostHub `platformFields` 输入
 - ADR-0006：约束「不 fork 上游」由本 ADR 决策三继承
-- `CONTEXT.md` glossary 新增 5 条术语（内容声明 / 平台声明字段 / `platform_fields.<platform>` / `declaration` / `source` / `origin` / 平台默认声明）
+- `CONTEXT.md` glossary：内容声明 / 平台声明字段 / `platformFields.<platform>` / `declaration` / `source` / `origin` / 平台默认声明
 - `docs/research/2026-08-21-three-platform-aigc-declaration-fields.md`：三家 UI 调研证据

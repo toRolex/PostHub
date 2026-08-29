@@ -7,10 +7,10 @@
 - 官方 database.db **自动初始化**：db/database.db 与 user_info / file_records 表就绪
 - `/uploadSave` → `/getFiles` → `/deleteFile` 素材链往返
 - `/postVideo` 参数校验错误被**正确中继**（400 + code + 官方 msg）
-- `/postVideoBatch` 非数组请求被官方拒绝（400）
+- `/postVideoBatch` 已废弃并返回 410，不能触发官方同步执行
 
 全程**不真触发发布**：/postVideo 只走官方参数校验失败分支，/postVideoBatch 只走
-请求级错误分支。`/login`(SSE) 需真人扫码与真实浏览器，不在自动链内，其契约
+PostHub-owned 废弃边界。`/login`(SSE) 需真人扫码与真实浏览器，不在自动链内，其契约
 （URL/query 构造 + parseSse* 解析）由前端 `web/src/api/official.test.ts` 单测覆盖。
 """
 
@@ -26,8 +26,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 
@@ -192,13 +192,16 @@ def test_post_video_missing_filelist_error_relayed(backend: tuple[str, Path]) ->
     assert "文件列表" in body["msg"]
 
 
-def test_post_video_batch_non_array_rejected(backend: tuple[str, Path]) -> None:
-    """契约 smoke：/postVideoBatch 请求体非数组 → 官方 400 被中继。"""
+def test_post_video_batch_is_deprecated(backend: tuple[str, Path]) -> None:
+    """契约 smoke：旧同步 batch 入口固定返回 410，不执行官方循环。"""
     url, _ = backend
     status, body = _post_json(f"{url}/postVideoBatch", {})
-    assert status == 400
-    assert body["code"] == 400
-    assert "array" in body["msg"].lower()
+    assert status == 410
+    assert body == {
+        "code": 410,
+        "msg": "批量发布已废弃，请使用 /postRuns 受理",
+        "data": None,
+    }
 
 
 def test_delete_file_invalid_id_400(backend: tuple[str, Path]) -> None:
@@ -318,30 +321,14 @@ def test_post_video_unknown_platform_subkey_rejected(
     assert "douyin" in body["msg"] or "origin" in body["msg"]
 
 
-def test_post_video_batch_with_platform_fields_validated(
+def test_post_video_batch_does_not_validate_or_execute_payload(
     backend: tuple[str, Path],
 ) -> None:
-    """/postVideoBatch 接受 platform_fields 数组；任一项非法 → 整批 400。"""
+    """废弃 batch 入口在 normalization 前固定返回 410。"""
     url, _ = backend
-    payload = [
-        {
-            "fileList": ["a.mp4"],
-            "accountList": ["a.json"],
-            "type": 3,
-            "title": "t",
-            "platformFields": {"douyin": {"declaration": "no_need"}},
-        },
-        {
-            "fileList": ["b.mp4"],
-            "accountList": ["b.json"],
-            "type": 3,
-            "title": "u",
-            "platformFields": {"douyin": {"declaration": "bogus"}},
-        },
-    ]
-    status, body = _post_json(f"{url}/postVideoBatch", payload)
-    assert status == 400
-    assert "bogus" in body["msg"]
+    status, body = _post_json(f"{url}/postVideoBatch", [{"platform_fields": {}}])
+    assert status == 410
+    assert body["code"] == 410
 
 
 def test_update_account_defaults_roundtrip(

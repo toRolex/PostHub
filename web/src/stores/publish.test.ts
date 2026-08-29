@@ -356,7 +356,7 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(noAccount.some((e) => e.includes("账号"))).toBe(true);
   });
 
-  it("读取旧 number[] 默认定时配置并迁移为 HH:MM string[]", () => {
+  it("旧整数定时配置安全回退默认值且不再兼容写入", () => {
     localStorage.setItem(
       TIMER_PREF_KEY,
       JSON.stringify({
@@ -368,14 +368,15 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     );
 
     expect(loadTimerPref()).toEqual({
-      timerEnabled: true,
-      videosPerDay: 2,
-      dailyTimes: ["10:00", "20:00"],
-      startDays: 3,
+      timerEnabled: false,
+      videosPerDay: 1,
+      dailyTimes: ["10:00", "14:00", "20:00"],
+      startDays: 0,
     });
     expect(JSON.parse(localStorage.getItem(TIMER_PREF_KEY)!).dailyTimes).toEqual([
-      "10:00",
-      "20:00",
+      20,
+      10,
+      20,
     ]);
   });
 

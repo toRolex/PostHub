@@ -76,7 +76,18 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
 
     @app.before_request
     def prepare_posthub_declarations():
-        if request.endpoint not in {"postVideo", "postVideoBatch"}:
+        if request.endpoint == "postVideoBatch":
+            clear_declaration_diagnostics()
+            set_pending_effective_items([])
+            set_pending_declarations([])
+            return jsonify(
+                {
+                    "code": 410,
+                    "msg": "批量发布已废弃，请使用 /postRuns 受理",
+                    "data": None,
+                }
+            ), 410
+        if request.endpoint != "postVideo":
             return None
 
         clear_declaration_diagnostics()
@@ -85,15 +96,9 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
         set_pending_effective_items([])
         set_pending_declarations([])
         payload = request.get_json(silent=True)
-        if request.endpoint == "postVideoBatch":
-            if not isinstance(payload, list):
-                # 保留官方 batch envelope 的既有错误契约；该请求不会进入发布函数。
-                return None
-            items = payload
-        else:
-            # 单发 envelope 也交给统一 normalization，避免官方 data.get 对
-            # list/scalar 产生 500，并确保畸形输入在任何发布副作用前结束。
-            items = [payload]
+        # 单视频 envelope 交给统一 normalization，避免官方 data.get 对
+        # list/scalar 产生 500，并确保畸形输入在任何发布副作用前结束。
+        items = [payload]
 
         try:
             normalized = normalize_publish_payloads(

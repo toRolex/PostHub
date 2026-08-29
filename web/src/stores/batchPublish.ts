@@ -7,13 +7,7 @@ import {
   officialApi,
 } from "../api/official";
 import type { PlatformFields } from "../api/types";
-import {
-  buildBatchItemRefs,
-  keyOf,
-  validateBatch,
-  type BatchItem,
-  type BatchItemResult,
-} from "../domain/batch";
+import { validateBatch, type BatchItem } from "../domain/batch";
 import { useDaemonStore } from "./daemon";
 import { useRunStore } from "./runs";
 import { withMutation } from "./_withMutation";
@@ -31,8 +25,6 @@ interface BatchPublishState {
   /** 整批共用时刻池，'HH:MM' 字符串数组。 */
   dailyTimes: string[];
   submitting: boolean;
-  /** 上次提交反馈；null = 未提交过。 */
-  itemResults: BatchItemResult[] | null;
   /** 预览 Dialog 开关。 */
   previewOpen: boolean;
 
@@ -51,7 +43,7 @@ interface BatchPublishState {
   removeDailyTime: (hm: string) => void;
   openPreview: () => void;
   closePreview: () => void;
-  /** 提交：校验通过后调 buildBatchItemsFromMatrix，一次 POST /postVideoBatch。 */
+  /** 提交：校验通过后将完整矩阵一次 POST /postRuns 受理。 */
   submit: () => Promise<void>;
   reset: () => void;
   /** 前端校验：返回错误消息列表（空 = 通过）。 */
@@ -79,33 +71,10 @@ export const initialBatchPublishState: Omit<
   items: [],
   dailyTimes: [],
   submitting: false,
-  itemResults: null,
   previewOpen: false,
 };
 
 /* ───────────────────────── helpers ───────────────────────── */
-
-/**
- * 把 items × 平台 × 账号展开为 itemResults（每 (item, platform, account) 一条）。
- * 用于 submit 的成功 / 失败两个分支。
- */
-function expandItemResults(
-  items: BatchItem[],
-  ok: boolean,
-  msg: string,
-): BatchItemResult[] {
-  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => ({
-    itemKey: keyOf(item.filePath, cookie),
-    fileName: item.filePath,
-    platform,
-    accountCookie: cookie,
-    mode: item.mode,
-    timeOfDay: item.timeOfDay,
-    startDays: item.startDays,
-    ok,
-    msg,
-  }));
-}
 
 /* ───────────────────────── store 实现 ───────────────────────── */
 
@@ -219,35 +188,23 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
     await withMutation(
       set,
       async () => {
-        if (s.items.every((item) => item.mode === "immediate")) {
-          const accepted = await acceptWithDuplicateConfirmation(base, request);
-          useRunStore.getState().rememberAcceptedRun(accepted);
-          const itemResults = expandItemResults(s.items, true, "已受理，后台执行中");
-          set({ itemResults });
-          return;
-        }
-        await officialApi.postVideoBatch(base, request);
-        const itemResults = expandItemResults(s.items, true, "批量发布任务已提交");
-        set({ itemResults });
+        const accepted = await acceptWithDuplicateConfirmation(base, request);
+        // accepted response 只更新 RunStore；item 状态必须来自后端 run snapshot，
+        // 禁止在请求层合成成功/失败结果。
+        useRunStore.getState().rememberAcceptedRun(accepted);
       },
       {
         begin: { submitting: true },
         end: { submitting: false },
-        // 请求级错误：每项独立标识失败；409 明确本次未受理并保留已有 run。
+        // 请求失败不改变任何 item 状态；只有后端 run snapshot 才能表达 item 事实。
         onError: (message, error) => {
-          const duplicates = duplicateRecordsFromError(error);
           const existingRunId = existingRunIdFromError(error);
-          return {
-            itemResults: duplicates.length > 0
-              ? expandItemResults(s.items, false, "发现历史发布记录，已取消发布")
-              : existingRunId
-              ? expandItemResults(
-                  s.items,
-                  false,
-                  `本次未受理：已有运行 ${existingRunId}`,
-                ).map((item) => ({ ...item, existingRunId }))
-              : expandItemResults(s.items, false, message),
-          };
+          useRunStore.setState({
+            error: existingRunId
+              ? `${message}（已有运行 ${existingRunId}）`
+              : message,
+          });
+          return undefined;
         },
         rethrow: true,
       },

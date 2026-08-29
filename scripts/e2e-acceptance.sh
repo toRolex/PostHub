@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# PostHub ticket 11「验收：全链路端到端 smoke」一键验收线（可重复运行）。
+# PostHub Issue #100 最终验收线（本地可重复部分）。
 #
-# 覆盖两级验收（不触发真实发布、无需真实凭证）：
+# 覆盖自动化门（不触发真实发布、无需真实凭证）：
 #   1. 契约 smoke：隔离临时 BASE_DIR 启动官方后端 → 探活 5409 → 断言官方 code 格式、
-#      db 自动建表、/postVideo 校验错误中继、/uploadSave→/getFiles→/deleteFile 素材链往返。见 daemon/tests/test_e2e_acceptance.py。
-#   2. 壳启停：spawn 官方后端 → 探活就绪 → 退出 → 断言 5409 无残留进程。见 scripts/dev-shell-verify.sh。
-#   前端 seam 契约单测（web/src/api/official.test.ts 等）单独用 pnpm test 跑，不改数据。
+#      db 自动建表、/postVideo 校验错误、/postRuns accepted、/postVideoBatch=410 与素材链往返。
+#   2. 壳启停：spawn 官方后端 → 探活就绪 → 退出 → 断言 5409 无残留进程。
+#   3. web seam/domain tests + typecheck/build。
 #
 # 用法: bash scripts/e2e-acceptance.sh   （需在仓库根执行）
 set -euo pipefail
@@ -16,13 +16,16 @@ WEB="${REPO}/web"
 
 log() { echo "[e2e] $*"; }
 
-log "step 1/3: 契约级后端 smoke（daemon pytest，含 test_e2e_acceptance.py）"
+log "step 1/4: 契约级后端 smoke（daemon pytest，含 Issue 100 gate）"
 ( cd "${DAEMON}" && uv run pytest -q )
 
-log "step 2/3: 壳启停验收（无残留 5409 进程）"
+log "step 2/4: 壳启停验收（无残留 5409 进程）"
 bash "${REPO}/scripts/dev-shell-verify.sh"
 
-log "step 3/3: 前端 seam 契约单测（pnpm test）"
-( cd "${WEB}" && pnpm test )
+log "step 3/4: 前端 seam/domain 单测"
+( cd "${WEB}" && pnpm test -- --run )
 
-log "全部验收通过 ✅"
+log "step 4/4: 前端 typecheck/build"
+( cd "${WEB}" && pnpm run build )
+
+log "本地自动化验收通过"

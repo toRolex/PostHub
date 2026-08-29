@@ -4,11 +4,11 @@ PostHub（中文「发布中枢」）—— 三平台短视频自动发布工具
 
 ## 项目概述
 
-- **形态**：Tauri 2 桌面应用（Windows 托盘常驻）+ 常驻 Python 守护进程，Tauri 通过本地 IPC 调用
-- **前端**：Vue 3 + Vite + Element Plus + Pinia
+- **形态**：Tauri 2 桌面应用 + Python 官方后端与 PostHub-owned 本机扩展，Tauri 通过本地 HTTP/进程 seam 调用
+- **前端**：React + Vite + shadcn/ui（Tailwind + Radix）
 - **发布引擎**：基于 [social-auto-upload](https://github.com/dreammis/social-auto-upload)（patchright 驱动），**不 fork**，通过 `uv` 作为依赖安装调用
-- **账号模型**：每账号 = 一台本机 Chrome（独立 `user-data-dir`）+ 独立调试端口；「账号管理」页「打开」拉起 Chrome 扫码登录，发布脚本用 `connect_over_cdp` 接管真实浏览器，登录态天然持久化
-- **任务模型**：一个发布任务展开为 N 个平台子任务；同平台严格串行，跨平台并行（默认 2–3）
+- **账号模型**：官方 `user_info` + `cookiesFile/*.json` 登录态，不使用独立 CDP Chrome 账号模型
+- **任务模型**：批量由 `/postRuns` 立即受理，run worker 逐 item 委托官方 `/postVideo`；item/run 状态是唯一事实来源
 - **许可证**：MIT；README 声明参考 social-auto-upload
 
 ## 工程约束

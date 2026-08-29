@@ -58,7 +58,7 @@ def test_immediate_wrappers_explicitly_pass_immediate_strategy(
         category=7,
         enableTimer=False,
         videos_per_day=1,
-        daily_times=[10],
+        daily_times=["10:00"],
         start_days=2,
         **extra,
     )
@@ -127,7 +127,7 @@ def test_scheduled_wrappers_pass_strategy_and_start_days_by_contract(
         category=7,
         enableTimer=True,
         videos_per_day=1,
-        daily_times=[10],
+        daily_times=["10:00"],
         start_days=2,
         **extra,
     )
@@ -177,7 +177,7 @@ def test_xhs_scheduled_wrapper_selects_date_for_each_file(monkeypatch) -> None:
         category=7,
         enableTimer=True,
         videos_per_day=2,
-        daily_times=[8, 10],
+        daily_times=["08:00", "10:00"],
         start_days=1,
     )
 
@@ -212,7 +212,7 @@ def test_xhs_scheduled_wrapper_preserves_duplicate_file_indices(monkeypatch) -> 
         category=7,
         enableTimer=True,
         videos_per_day=2,
-        daily_times=[8, 10],
+        daily_times=["08:00", "10:00"],
         start_days=1,
     )
 
@@ -248,7 +248,7 @@ def test_schedule_adapter_passes_start_days_as_named_argument(monkeypatch) -> No
         total_videos: int,
         *,
         videos_per_day: int,
-        daily_times: list[int],
+        daily_times: list[str],
         timestamps: bool,
         start_days: int,
     ) -> list[datetime]:
@@ -266,13 +266,13 @@ def test_schedule_adapter_passes_start_days_as_named_argument(monkeypatch) -> No
     monkeypatch.setattr(
         uploader_wrapper, "_ORIGINAL_GENERATE_SCHEDULE_TIME", fake_generate
     )
-    result = uploader_wrapper._generate_schedule_with_start_days(1, 1, [10], 2)
+    result = uploader_wrapper._generate_schedule_with_start_days(1, 1, ["10:00"], 2)
 
     assert result == [datetime(2030, 1, 1, 10, tzinfo=UTC)]
     assert captured == {
         "total_videos": 1,
         "videos_per_day": 1,
-        "daily_times": [10],
+        "daily_times": [10.0],
         "timestamps": False,
         "start_days": 2,
     }
@@ -354,20 +354,6 @@ def test_schedule_adapter_rejects_invalid_start_days(start_days: Any) -> None:
         )
 
 
-def test_douyin_batch_legacy_tail_is_realigned() -> None:
-    app = Flask(__name__)
-    app.add_url_rule("/postVideoBatch", endpoint="postVideoBatch", view_func=lambda: "")
-    app.add_url_rule("/postVideo", endpoint="postVideo", view_func=lambda: "")
-    with app.test_request_context("/postVideoBatch"):
-        assert uploader_wrapper._normalize_douyin_tail(
-            "product-link", "product-title", ""
-        ) == ("", "product-link", "product-title")
-    with app.test_request_context("/postVideo"):
-        assert uploader_wrapper._normalize_douyin_tail(
-            "cover.jpg", "product-link", "product-title"
-        ) == ("cover.jpg", "product-link", "product-title")
-
-
 def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
     captured: list[tuple[bool, int]] = []
 
@@ -375,7 +361,7 @@ def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
         total_videos: int,
         *,
         videos_per_day: int,
-        daily_times: list[int],
+        daily_times: list[str],
         timestamps: bool,
         start_days: int,
     ) -> list[datetime]:
@@ -386,10 +372,10 @@ def test_schedule_adapter_preserves_boolean_timestamps(monkeypatch) -> None:
         uploader_wrapper, "_ORIGINAL_GENERATE_SCHEDULE_TIME", fake_generate
     )
     uploader_wrapper._generate_schedule_with_start_days(
-        1, 1, [10], timestamps=False, start_days=2
+        1, 1, ["10:00"], timestamps=False, start_days=2
     )
     uploader_wrapper._generate_schedule_with_start_days(
-        1, 1, [10], timestamps=True, start_days=2
+        1, 1, ["10:00"], timestamps=True, start_days=2
     )
 
     assert captured == [(False, 2), (True, 2)]
@@ -399,7 +385,7 @@ def test_schedule_adapter_rejects_non_boolean_timestamp_slot() -> None:
     """HH:MM 等误落 timestamps 位置时不得静默当成 startDays。"""
     with pytest.raises(TypeError, match="timestamps"):
         uploader_wrapper._generate_schedule_with_start_days(
-            1, 1, [10], timestamps="10:30"
+            1, 1, ["10:00"], timestamps="10:30"
         )
 
 
@@ -423,7 +409,7 @@ def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items
         "category": 7,
         "enableTimer": True,
         "videosPerDay": 1,
-        "dailyTimes": [10],
+        "dailyTimes": ["10:00"],
         "startDays": 2,
         "thumbnail": "cover.jpg",
         "productLink": "https://shop.test/item",
@@ -450,7 +436,7 @@ def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items
         category=7,
         enableTimer=True,
         videos_per_day=1,
-        daily_times=[10],
+        daily_times=["10:00"],
         start_days=2,
         thumbnail_path="cover.jpg",
         productLink="https://shop.test/item",
@@ -465,7 +451,7 @@ def test_scheduled_wrapper_contract_is_same_for_single_and_batch_effective_items
         category=7,
         enableTimer=True,
         videos_per_day=1,
-        daily_times=[10],
+        daily_times=["10:00"],
         start_days=2,
         thumbnail_path="cover.jpg",
         productLink="https://shop.test/item",
@@ -520,7 +506,7 @@ def test_single_and_batch_effective_commands_match_for_all_platforms(
         "category": 7,
         "enableTimer": True,
         "videosPerDay": 1,
-        "dailyTimes": [10],
+        "dailyTimes": ["10:00"],
         "startDays": 2,
         "thumbnail": "cover.jpg",
         "productLink": "https://shop.test/item",
@@ -545,7 +531,7 @@ def test_single_and_batch_effective_commands_match_for_all_platforms(
             "category": 7,
             "enableTimer": True,
             "videos_per_day": 1,
-            "daily_times": [10],
+            "daily_times": [10.0],
             "start_days": 2,
         }
         if platform == 2:
@@ -585,27 +571,21 @@ def test_single_and_batch_effective_commands_match_for_all_platforms(
         (4, "KSVideo", "ks.json"),
     ],
 )
-@pytest.mark.parametrize("daily_times", ([10], ["10:30"]))
-def test_timer_http_single_and_batch_use_fake_uploader_contract(
+@pytest.mark.parametrize("daily_times", ([["10:00"], ["10:30"]]))
+def test_timer_http_single_use_fake_uploader_contract(
     monkeypatch,
     tmp_path,
     platform: int,
     class_name: str,
     account_file: str,
-    daily_times: list[int] | list[str],
+    daily_times: list[str],
 ) -> None:
-    """现有 timer HTTP seam 对四平台单发/batch 保持同一 scheduled contract。"""
+    """单视频官方 HTTP seam 保持四平台 scheduled contract。"""
     app = Flask(__name__)
     app.add_url_rule(
         "/postVideo",
         endpoint="postVideo",
         view_func=sau_backend.postVideo,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        "/postVideoBatch",
-        endpoint="postVideoBatch",
-        view_func=sau_backend.postVideoBatch,
         methods=["POST"],
     )
     db_path = tmp_path / "db" / "database.db"
@@ -658,27 +638,22 @@ def test_timer_http_single_and_batch_use_fake_uploader_contract(
 
     with app.test_client() as client:
         assert client.post("/postVideo", json=payload).status_code == 200
-        assert client.post("/postVideoBatch", json=[payload]).status_code == 200
 
-    assert len(calls) == 2
-    assert [call["kwargs"]["publish_strategy"] for call in calls] == [
-        "scheduled",
-        "scheduled",
-    ]
-    assert all(isinstance(call["publish_date"], datetime) for call in calls)
-    expected_hour = 11 if platform == 2 and isinstance(daily_times[0], str) else 10
-    assert all(call["publish_date"].hour == expected_hour for call in calls)
-    expected_minute = (
-        0 if platform == 2 else (30 if isinstance(daily_times[0], str) else 0)
-    )
-    assert all(call["publish_date"].minute == expected_minute for call in calls)
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["publish_strategy"] == "scheduled"
+    assert isinstance(calls[0]["publish_date"], datetime)
+    expected_hour = 11 if platform == 2 and daily_times[0] == "10:30" else 10
+    assert calls[0]["publish_date"].hour == expected_hour
+    expected_minute = 0 if platform == 2 else int(daily_times[0].split(":")[1])
+    assert calls[0]["publish_date"].minute == expected_minute
     if platform == 3:
-        assert all(
-            call["args"][5:8] == ("cover.jpg", "https://shop.test/item", "商品标题")
-            for call in calls
+        assert calls[0]["args"][5:8] == (
+            "cover.jpg",
+            "https://shop.test/item",
+            "商品标题",
         )
     if platform == 2:
-        assert all(call["args"][5:7] == (7, True) for call in calls)
+        assert calls[0]["args"][5:7] == (7, True)
 
 
 def test_douyin_wrapper_reuses_effective_absolute_datetime_snapshot(

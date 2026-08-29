@@ -31,13 +31,13 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 | **桌面壳进程树** | 桌面壳 spawn 官方后端时的进程链：直接子进程 = `uv` trampoline（v0.1.4 起 `AppData\Roaming\com.posthub.desktop\venv\Scripts\python.exe`）；孙进程 = managed python（`AppData\Roaming\com.posthub.desktop\python\cpython-3.11...\python.exe`）；孙进程跑 `run_backend.py`。治理见 ADR-0007。 |
 | **进程树清理** | 桌面壳在退出 / 启动两个时机的治理（ADR-0007）：退出用 `taskkill /F /T /PID <child.id()>` + `child.wait()`；启动前 `sweep_stale_daemons` 用 `sysinfo::System::new_all()` 枚举进程，过滤「`app_data_dir()/python` 路径前缀」+「cmdline 含 `run_backend.py`」双重条件后逐个 `taskkill /T` 杀树。 |
 | **孤儿 daemon** | 桌面壳关窗口 / 崩溃 / 被强杀时，孙进程 managed python 因未被 spawn_daemon 的直接 `child.kill()` 覆盖而残留，**继续监听 5409**。每次重新打开 PostHub 都会刷一对新链路，**多次开关导致 N 对链路并存**，新链路因端口被占而抢不到连接——表现为扫码登录 SSE 一直 0 字节。 |
-| **矩阵批量** | 「批量发布」区段的产品形态（issue #37/#38/#39）：每视频一条 BatchItem（独立标题 / 描述 / 标签 / 账号 / 定时模式），不再笛卡尔展开成「标题 × 账号」共享一份内容。提交时一行 BatchItem 展开为多条 PostVideoRequest（每账号一条），一次 POST `/postVideoBatch`。 |
-| **受限本机 batch runner/history** | PostHub-owned 的产品扩展：只负责桌面端批量提交编排所需的本机记录、状态回看、受限 item retry 与恢复入口；实际发布仍委托官方 `/postVideo` / `/postVideoBatch`。它不提供通用任务调度、跨机器执行、限速/并发策略，也不替代官方定时语义。retry 只复制首次受理时冻结的 effective payload。 |
-| **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上；`buildBatchItemsFromMatrix` 新写入保持 HH:MM 分钟，旧整点 seam 仅在兼容降级时取最近整点。 |
+| **矩阵批量** | 「批量发布」区段的产品形态（issue #37/#38/#39）：每视频一条 BatchItem（独立标题 / 描述 / 标签 / 账号 / 定时模式），不再笛卡尔展开成「标题 × 账号」共享一份内容。提交时一行 BatchItem 展开为多条 PostVideoRequest（每账号一条），统一一次 POST `/postRuns` 受理；`/postVideoBatch` 仅保留 410 废弃边界。 |
+| **受限本机 batch runner/history** | PostHub-owned 的产品扩展：只负责桌面端批量提交编排所需的本机记录、状态回看、受限 item retry 与恢复入口；实际执行由 run worker 按 effective 快照委托官方单 item `/postVideo` seam。它不提供通用任务调度、跨机器执行、限速/并发策略，也不替代官方定时语义。retry 只复制首次受理时冻结的 effective payload。 |
+| **整批共用 dailyTimes** | 矩阵批量下，顶部 chip 池「每日时刻（HH:MM）」是整批共享的定时时刻池；每条 BatchItem 进入 timer 模式时必须从该池挑 1 个 timeOfDay（不能在 item 内自由输入），避免时刻分散在多条 item 上；`buildBatchItemsFromMatrix` 与 `/postRuns` effective 快照统一保持 HH:MM 分钟；视频号仅按平台注册表在 effective 中显式记录最近整点降级。 |
 | **无 CLI** | PostHub 不发布命令行工具（`posthub` CLI / `ph` 子命令等）；所有交互走桌面壳 GUI。官方 `sau_backend.py` 仍由桌面壳作为子进程拉起（不在用户 shell 暴露）。PostHub 用户面对的「官方后端」只通过桌面壳的 HTTP/SSE seam 触达。 |
 | **内容声明** | 各平台发布页要求创作者勾选/选择的合规标识字段，承载「是否 AI 生成 / 虚构 / 实拍 / 营销 / 转载 / 个人观点」等语义。三家平台 UI 字段名与候选文案均不统一。 |
-| **平台声明字段** | 视频号「添加声明」8 选项 / 抖音「自主声明」单选 radio / 小红书「添加内容类型声明」单选 radio。PostHub **按平台分键透传**到 `platform_fields.<platform>`，不抽象成统一键 —— 三家语义不对齐，统一键会丢精度。 |
-| **`platform_fields.<platform>`** | PostHub 任务级 JSON 字段（ADR-0001 预留位），承载平台专属透传。键名沿用 glossary "平台"：`wechat` / `douyin` / `xiaohongshu`。当前已规划子键：`wechat.declaration / wechat.origin`；`douyin.declaration`；`xiaohongshu.source / xiaohongshu.origin`。上游未支持的子键（如小红书 `source`）由 PostHub wrapper 层处理。 |
+| **平台声明字段** | 视频号「添加声明」8 选项 / 抖音「自主声明」单选 radio / 小红书「添加内容类型声明」单选 radio。PostHub **按平台分键透传**到 `platformFields.<platform>`，不抽象成统一键 —— 三家语义不对齐，统一键会丢精度。 |
+| **`platformFields.<platform>`** | PostHub 任务级 JSON 字段，承载平台专属透传。键名沿用 glossary "平台"：`wechat` / `douyin` / `xiaohongshu`。当前可靠执行子键：`wechat.declaration`；`douyin.declaration`；`xiaohongshu.source`。`origin` 不在本版本可靠下发承诺内，传入即拒绝。 |
 | **`declaration`（透传值）** | 视频号：`'no_label' \| 'ai_generated' \| 'fictional' \| 'personal_opinion' \| 'marketing' \| 'self_shoot' \| 'shoot_time_location' \| 'repost'`；抖音：`'ai_generated' \| 'personal_opinion' \| 'repost' \| 'marketing' \| 'fictional' \| 'no_need'`。PostHub 这层映射成上游能识别的中文文案（如 `'no_label' → "无需标注"`）。 |
 | **`source`（透传值，小红书）** | `'fictional' \| 'ai_synthesized' \| 'marketing' \| 'self_declare'`（值随平台 UI 文案变更同步更新；上游无 source 字段代码，PostHub 用 DOM wrapper 处理）。 |
 | **`origin`** | 「声明原创」开关，三家平台都有；PostHub 透传布尔，不参与合规声明语义。 |
@@ -57,7 +57,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 
 - **不建立通用自研任务状态机 / 调度器 / 限速 / 并发控制**（ADR-0006 的绝对表述由 ADR-0009 收窄）。允许受限 item retry：仅从持久化 run 复制 failure/skipped/interrupted item 的 effective 快照，不重新合并账号默认。任务提交后仍委托官方后端执行（`/postVideo` 立即返回，实际发布在官方线程内进行）。
 - 允许存在**受限本机 batch runner/history**：它只服务桌面端批量提交的本机记录、历史回看与恢复，不跨机器、不定义独立发布执行或通用 scheduler；官方接口与定时语义仍是真源。
-- 官方后端一次可提交多账号（`accountList`）、多文件（`fileList`）、批量（`postVideoBatch`）；定时用 `enableTimer`。并发与顺序语义由官方实现决定。
+- `/postRuns` 一次受理多条账号粒度 effective item；run worker 逐项委托官方 `/postVideo`。`/postVideoBatch` 不再是产品发布 seam，固定返回 410；定时用 `enableTimer`，最终状态由 run/item 查询真源提供。
 
 > **边界修订（supersede）**：ADR-0006 早期“没有自研后端/状态机”的绝对表述，仅表示 PostHub 不建立通用发布执行引擎；现由 ADR-0009 明确允许受限本机组合扩展，同时保留官方执行真源与不 fork 上游约束。
 
@@ -72,11 +72,10 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 
 | 平台 | UI 字段 | PostHub 透传键 | 取值（内部枚举） |
 |---|---|---|---|
-| 视频号 `wechat` | 添加声明 8 选项 | `platform_fields.wechat.declaration` | `no_label` / `ai_generated` / `fictional` / `personal_opinion` / `marketing` / `self_shoot` / `shoot_time_location` / `repost` |
-| 视频号 `wechat` | 声明原创 | `platform_fields.wechat.origin` | `true` / `false` |
-| 抖音 `douyin` | 自主声明 6 选项 | `platform_fields.douyin.declaration` | `ai_generated` / `personal_opinion` / `repost` / `marketing` / `fictional` / `no_need` |
-| 小红书 `xiaohongshu` | 添加内容类型声明 | `platform_fields.xiaohongshu.source` | `fictional` / `ai_synthesized` / `marketing` / `self_declare`（上游无 source 字段代码，PostHub 用 DOM wrapper） |
-| 小红书 `xiaohongshu` | 声明原创 | `platform_fields.xiaohongshu.origin` | `true` / `false` |
+| 视频号 `wechat` | 添加声明 8 选项 | `platformFields.wechat.declaration` | `no_label` / `ai_generated` / `fictional` / `personal_opinion` / `marketing` / `self_shoot` / `shoot_time_location` / `repost` |
+| 抖音 `douyin` | 自主声明 6 选项 | `platformFields.douyin.declaration` | `ai_generated` / `personal_opinion` / `repost` / `marketing` / `fictional` / `no_need` |
+| 小红书 `xiaohongshu` | 添加内容类型声明 | `platformFields.xiaohongshu.source` | `fictional` / `ai_synthesized` / `marketing` / `self_declare`（上游无 source 字段代码，PostHub 用 DOM wrapper） |
+| 任一平台 | 声明原创 `origin` | 不提供可靠下发 seam | 本版本传入即拒绝，不制造可靠承诺 |
 
 > 上游 `social-auto-upload/uploader/*` 当前支持度（实测 2026-08-21）：抖音 `declaration` 全链通；视频号仅尝试回避项（候选列表不含 "无需标注"，需 PostHub wrapper 扩列）；小红书 `source` 无代码。详见 `docs/research/2026-08-21-three-platform-aigc-declaration-fields.md`。
 

@@ -279,24 +279,17 @@ def _validate_optional_string(payload: Mapping[str, Any], key: str, index: int) 
 
 
 def _normalize_daily_times(value: Any, index: int) -> list[str]:
-    """双读旧小时与新 HH:MM，单写排序去重的 HH:MM。"""
+    """校验并规范唯一的 HH:MM 定时契约。"""
     if not isinstance(value, (list, tuple)) or not value:
         raise _error(index, "每日时刻 dailyTimes 不能为空")
 
     normalized: set[str] = set()
     for raw in value:
-        if isinstance(raw, bool):
-            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串或旧小时整数")
-        if isinstance(raw, int):
-            if raw < 0 or raw > 23:
-                raise _error(index, "每日时刻 dailyTimes 小时必须在 0-23")
-            normalized.add(f"{raw:02d}:00")
-            continue
         if not isinstance(raw, str):
-            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串或旧小时整数")
+            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串数组")
         match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
         if match is None:
-            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM")
+            raise _error(index, "每日时刻 dailyTimes 必须是 HH:MM 字符串数组")
         hour, minute = (int(part) for part in match.groups())
         if hour > 23 or minute > 59:
             raise _error(index, "每日时刻 dailyTimes 必须是有效 HH:MM")
@@ -520,11 +513,9 @@ def _validate_and_copy_submitted(
     if "isDraft" in payload and not isinstance(payload["isDraft"], bool):
         raise _error(index, "isDraft 必须是 boolean")
 
-    if "platformFields" in payload and "platform_fields" in payload:
-        raise _error(index, "platformFields 与 platform_fields 不能同时提供")
-    raw_platform_fields = payload.get(
-        "platformFields", payload.pop("platform_fields", None)
-    )
+    if "platform_fields" in payload:
+        raise _error(index, "platform_fields 已废弃，请使用 platformFields")
+    raw_platform_fields = payload.get("platformFields")
     platform_fields = _validate_platform_fields(raw_platform_fields, index)
     if platform_fields:
         payload["platformFields"] = platform_fields
@@ -600,10 +591,10 @@ def normalize_publish_payloads(
     *,
     now: datetime | None = None,
 ) -> NormalizedPublishBatch:
-    """将单视频或旧批量请求规范化为账号粒度的有效命令。
+    """将 accepted-run 请求规范化为账号粒度的有效命令。
 
-    `payloads` 仍使用官方 `/postVideo` 与 `/postVideoBatch` 的请求体；单个
-    item 的多个账号会拆成多个 effective item。所有校验和快照均在返回前完成，
+    `payloads` 使用 `/postRuns` 的 item 请求体；单个 item 的多个账号会拆成多个
+    effective item。所有校验和快照均在返回前完成，
     调用方可以放心在之后才进入官方发布 seam。
     """
     raw_items = list(payloads)

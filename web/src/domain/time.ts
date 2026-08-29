@@ -35,18 +35,10 @@ export function formatHHMM(totalMinutes: number): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-/** 读取旧小时数组或新 HH:MM 数组，统一为排序去重的日内分钟。 */
+/** 读取唯一的 HH:MM 字符串数组，统一为排序去重的日内分钟。 */
 export function readTimeList(raw: unknown): number[] {
   if (!Array.isArray(raw)) throw new Error("每日时刻必须为数组");
-  const minutes = raw.map((value) => {
-    if (typeof value === "number") {
-      if (!Number.isInteger(value) || value < 0 || value > 23) {
-        throw new Error(`旧定时时刻越界：${String(value)}（小时应在 0–23）`);
-      }
-      return value * 60;
-    }
-    return parseHHMM(value);
-  });
+  const minutes = raw.map((value) => parseHHMM(value));
   return Array.from(new Set(minutes)).sort((a, b) => a - b);
 }
 
@@ -55,7 +47,7 @@ export function writeTimeList(minutes: number[]): string[] {
   return Array.from(new Set(minutes)).sort((a, b) => a - b).map(formatHHMM);
 }
 
-/** 双读单写归一化入口：旧 number[] / 新 string[] 均只产出 HH:MM。 */
+/** 规范化唯一的 HH:MM 输入并产出排序去重的 HH:MM。 */
 export function normalizeDailyTimes(raw: unknown): string[] {
   return writeTimeList(readTimeList(raw));
 }

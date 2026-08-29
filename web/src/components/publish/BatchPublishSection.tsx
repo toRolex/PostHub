@@ -1,18 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Send,
-  XCircle,
-  X,
-  Plus,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Send, X, Plus } from "lucide-react";
 import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
 import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
-import { useRunStore } from "../../stores/runs";
 import type { Platform, PlatformFields } from "../../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../../api/platformNames";
 import { cn } from "../../lib/utils";
@@ -187,13 +178,9 @@ export function BatchPublishSection() {
   const accounts = useAccountsStore((s) => s.accounts);
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const connected = useDaemonStore((s) => s.connected);
-  const daemonUrl = useDaemonStore((s) => s.url);
-  const openRun = useRunStore((s) => s.openRun);
-
   const items = useBatchPublishStore((s) => s.items);
   const dailyTimes = useBatchPublishStore((s) => s.dailyTimes);
   const submitting = useBatchPublishStore((s) => s.submitting);
-  const itemResults = useBatchPublishStore((s) => s.itemResults);
   const previewOpen = useBatchPublishStore((s) => s.previewOpen);
   const openPreview = useBatchPublishStore((s) => s.openPreview);
   const closePreview = useBatchPublishStore((s) => s.closePreview);
@@ -278,7 +265,7 @@ export function BatchPublishSection() {
     try {
       await submit();
     } catch {
-      // 错误已通过 itemResults 反馈；不动 UI。
+      // 提交错误由 RunStore.error / 全局状态条承载，不伪造 item 结果。
     }
   }
 
@@ -306,7 +293,7 @@ export function BatchPublishSection() {
     <section className="border-t border-border-soft py-6">
       <div className="mb-4 flex items-baseline gap-3">
         <h3 className="text-title font-semibold tracking-[-0.01em]">批量发布</h3>
-        <span className="text-label text-muted">每视频独立配置 · 矩阵批量 / /postVideoBatch</span>
+        <span className="text-label text-muted">每视频独立配置 · 矩阵批量 / /postRuns</span>
       </div>
 
       {/* 顶部 dailyTimes chip 池 */}
@@ -718,54 +705,12 @@ export function BatchPublishSection() {
         </Button>
       </div>
 
-      {/* 整体反馈（按 item 维度） */}
-      {itemResults && itemResults.length > 0 && (
-        <div className="mt-4 flex flex-col gap-2">
-          {itemResults.map((r) => (
-            <div
-              key={r.itemKey}
-              className={cn(
-                "flex items-start gap-2 rounded-lg border px-4 py-2.5 text-label",
-                r.ok
-                  ? "border-success bg-success-tint text-success-deep"
-                  : "border-danger bg-danger-tint text-danger-deep",
-              )}
-            >
-              {r.ok ? (
-                <CheckCircle2 className="size-4 shrink-0 translate-y-0.5" />
-              ) : (
-                <XCircle className="size-4 shrink-0 translate-y-0.5" />
-              )}
-              <div className="min-w-0">
-                <p className="font-semibold">
-                  <span className="tabular-nums">{r.fileName}</span>
-                  <span className="ml-2 text-caption text-muted">
-                    {PLATFORM_NAMES[r.platform]} · {r.accountCookie}
-                  </span>
-                </p>
-                {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
-                {r.existingRunId && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="mt-1 h-7 px-2"
-                    onClick={() => void openRun(daemonUrl, r.existingRunId!)}
-                  >
-                    打开已有 run
-                  </Button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
+      {/* 受理后由 AppShell 的 RunStore 状态条/详情展示后端事实。 */}
       {/* 预览 Dialog */}
       <BatchPreviewDialog
         open={previewOpen}
         items={items}
         accountDefaults={accountDefaults}
-        results={itemResults}
         onConfirm={() => void handleConfirmPreview()}
         onCancel={closePreview}
       />

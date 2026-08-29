@@ -39,5 +39,5 @@ ADR-0006 将发布执行收敛到 social-auto-upload 官方后端，避免 PostH
 
 ## 验证
 
-- 组合入口重复初始化测试断言 PostHub-owned 路由只出现一次，且 `/getAccounts`、`/getFiles`、`/postVideo`、`/postVideoBatch` 仍可通过官方契约 smoke。
-- daemon 全量测试覆盖数据库幂等、官方账号/素材/单视频/批量接口与 PostHub-owned 路由。
+- 组合入口重复初始化测试断言 PostHub-owned 路由只出现一次，且 `/getAccounts`、`/getFiles`、`/postVideo` 仍可通过官方契约 smoke；已废弃 `/postVideoBatch` 固定返回 410，不能进入官方循环。
+- daemon 全量测试覆盖数据库幂等、官方账号/素材/单视频、`/postRuns` accepted/item 状态与 PostHub-owned 路由。

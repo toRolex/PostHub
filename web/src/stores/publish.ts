@@ -39,7 +39,7 @@ const DEFAULT_TIMER_PREF: TimerPref = {
   startDays: 0,
 };
 
-/** 读取持久化的默认定时配置；旧 number[] 在读取时迁移为 HH:MM string[]。 */
+/** 读取持久化的默认定时配置；旧格式或畸形值安全回退默认值，不再兼容写入。 */
 export function loadTimerPref(): TimerPref {
   try {
     const raw = localStorage.getItem(TIMER_PREF_KEY);
@@ -58,7 +58,6 @@ export function loadTimerPref(): TimerPref {
       startDays:
         typeof parsed.startDays === "number" ? parsed.startDays : DEFAULT_TIMER_PREF.startDays,
     };
-    // 双读单写：旧格式或非规范 string[] 读入后立即落成唯一新格式。
     saveTimerPref(pref);
     return pref;
   } catch {

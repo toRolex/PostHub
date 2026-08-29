@@ -149,7 +149,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     ]);
   });
 
-  it("itemKey 与 store itemResults.itemKey 稳定一致（filePath + '|' + cookieFile）", () => {
+  it("itemKey 与 run item 的稳定组合键一致（filePath + '|' + cookieFile）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "video_x.mp4",

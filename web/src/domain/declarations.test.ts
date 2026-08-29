@@ -141,7 +141,7 @@ describe("validatePlatformFields（前端预校验，与后端 _validate_platfor
     ).toBeNull();
     expect(
       validatePlatformFields({
-        xiaohongshu: { source: "self_declare", origin: true },
+        xiaohongshu: { source: "self_declare" },
       }),
     ).toBeNull();
   });
@@ -153,7 +153,7 @@ describe("validatePlatformFields（前端预校验，与后端 _validate_platfor
     expect(validatePlatformFields(bad2)).toContain("小红书");
   });
 
-  it("origin 非布尔 → 错误", () => {
+  it("origin 无可靠 seam → 拒绝下发", () => {
     const bad = {
       wechat: { origin: "yes" },
     } as unknown as PlatformFields;

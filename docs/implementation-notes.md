@@ -1162,3 +1162,32 @@
 - 最终验证：daemon `241 passed`；web `23 files / 249 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；runs.py Ruff/format 与 `git diff --check` 通过。
 - Windows `taskkill /F /T` 未实机验证，作为 concern 保留；web 既有 jsdom navigation stderr 非阻断。
 - 父 Issue #80 未关闭；全程未 push、未创建 PR。
+
+## Issue #100：收缩 legacy 兼容层并完成交付验收
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-100` 的 `afk/issue-100` 分支执行最终 gate；不 push、建 PR、merge 或关闭 Issue。
+- TDD 垂直切片顺序：先锁定 accepted-only/run snapshot 与旧同步入口删除，再锁定 legacy 输入拒绝，随后锁定静态依赖/hash/document gate，最后补 e2e 验收矩阵与全量验证。
+- 删除而非继续兼容：前端请求级 `itemResults`/`expandItemResults`、官方 `/postVideoBatch` 执行路径、旧 number[]/platform_fields/flat declaration/错位参数正向兼容均从生产路径和正向测试移除；保留明确的拒绝测试与迁移边界文档。
+- 真实四平台账号与 Windows 进程树若当前环境不可执行，只能如实标记 BLOCKED/NEEDS_CONTEXT，不以 241/249 本地绿替代最终 gate。
+
+### Deviations
+
+- 为保持官方 `daemon/sau_backend.py` 副本 hash 不变，旧 `/postVideoBatch` 循环未改上游文件；组合层在进入官方 view 前固定返回 410，产品路径不可达，并由删除性测试锁定。
+- 四平台真实账号发布与 Windows `taskkill /F /T` 无当前环境凭证/系统条件，不能执行；按保守策略保留人工验收矩阵并在交付状态标记 DONE_WITH_CONCERNS。
+
+### 实现进展
+
+- 已读取 Issue #100、父 Issue #80、CONTEXT.md、CLAUDE.md、ADR-0001/0002/0005/0008/0009 及既有实现笔记；只读调研确认当前仍存在请求级伪结果、官方同步 batch 循环、四类 legacy 正向兼容、文档模型冲突和缺失真实验收门。
+- 下一步先补失败测试并运行定向 Red，再按垂直切片实现；实现记录持续追加于本节。
+- Red：新增 `daemon/tests/test_issue_100_gate.py`，7 项删除性测试先失败；失败点为旧 `/postVideoBatch` 可达、timer 被 `/postRuns` 拒绝、整数 dailyTimes/旧 declaration shape 被接受及 hash gate 路径错误。
+- Green：批量前端统一改走 `/postRuns`，移除请求级 itemResults/expandItemResults 和旧 API；组合层将 `/postVideoBatch` 固定 410；normalization、声明 context 与前端 timer 改为 canonical-only，legacy 输入显式拒绝；删除旧发布记录别名。
+- Green 验证：Issue 100 daemon gate `7 passed`，daemon 全量 `240 passed`；web 全量测试 `23 files / 246 tests passed`。
+
+### 最终验证
+
+- `bash scripts/e2e-acceptance.sh` → daemon `240 passed`、壳启停端口释放且无 `run_backend.py` 残留、web `23 files / 246 tests passed`、typecheck/Vite build 通过。
+- 变更 Python 文件 `uv run --with ruff ruff check ...` 与 `ruff format --check ...` 通过；daemon 全量 Ruff 仍包含官方副本/既有 `conf.py` 基线问题，未修改上游以保持 hash gate。
+- Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地忽略的空 resources 目录。
+- `shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；生产 web 无 prototype import、无请求级伪结果、无旧 batch API 调用。
