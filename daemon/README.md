@@ -54,6 +54,17 @@ uv run python run_backend.py
 启动后仅监听 `127.0.0.1:5409`（不暴露局域网；官方默认 `0.0.0.0` 的收紧见 ADR-0006 待确认项）。
 首次启动自动创建 `db/database.db` 与 `user_info` 表（幂等）。
 
+### 单 item 硬超时
+
+accepted-run 的每个 item 都在独立子进程中执行；默认超过 300 秒会强制回收该
+item 的子进程树并将 item 标为失败，后续 item 继续执行。可通过受控环境变量覆盖：
+
+```bash
+POSTHUB_ITEM_TIMEOUT_SECONDS=600 uv run python run_backend.py
+```
+
+该值必须是正数；超时失败仍可通过现有 retry 契约重试。
+
 ## 就绪探针轮询策略
 
 不依赖 `/health`（官方后端无此路由）。PostHub 侧用以下两项组合判定后端就绪：

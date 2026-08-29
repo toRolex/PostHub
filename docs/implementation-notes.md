@@ -1007,3 +1007,36 @@
 - Issue 状态均为 OPEN，标签均为 `ready-for-agent`：#96「实现单 item 硬超时隔离」、#97「实现 daemon 重启后的 interrupted 恢复」、#99「记录 immediate 发布并提供跨提交重复确认」。
 - 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；冲突逐侧读取后最小整合。全部成功后清理对应 worktree/branch、关闭 #96/#97/#99，并提交本轮 summarizing commit。
 - 已知 concern：Windows `taskkill` 路径未在 Windows 实机验证；本轮记录为 concern，不因此阻塞本地拓扑合并。
+
+## Issue #96：单 item 硬超时隔离
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-96` 的 `afk/issue-96` 分支实现；不 push、建 PR、merge 或关闭 Issue。
+- 以现有 `RunWorker` / `RunStore` / `/postRuns` / retry 与 `RunDetailPanel` 为 seam，先锁定每 item 独立子进程、默认 300 秒可控覆盖、超时进程树回收、当前 item 失败后继续后续 item。
+- Python 一律通过 `uv`；不修改官方 `sau_backend.py` 或 `uploader/*`，不恢复通用 scheduler，不改变既有 retry 契约。
+
+### 预确认 seams
+
+- `RunWorker` 注入可序列化 fake uploader：success/hang/success 顺序、timeout 摘要与子进程/孙进程退出。
+- `RunStore.finish_item` 与 `/postRuns/<runId>`：超时只写当前 item，run 聚合 `completed_with_failures`，失败 item 保持现有 retryable 状态。
+- `RunDetailPanel`：沿用失败详情与“重试此项/全部可重试项”，补充可见超时摘要，不新增 retry API。
+
+### Deviations
+
+- 直接构造含闭包 uploader 时保留旧线程测试 seam；生产组合与显式 timeout fake 始终走硬隔离子进程，不影响产品路径。
+
+### 实现进展
+
+- 已读取 Issue #96、父 Issue #80 及 #93/#95 约束、`CONTEXT.md`、ADR-0001/0006/0007/0008/0009、现有 RunWorker/RunStore/官方 wrapper 与前端 run 详情；当前 worker 仍在线程内直接调用 uploader，无法强制终止阻塞执行。
+- 下一步按 TDD 先新增独立进程超时与进程树回收失败测试，再实现最小 process boundary 与 UI 摘要。
+- Red：新增 success/hang/success fake 与孙进程回收测试、默认 300 秒/环境覆盖测试及前端超时状态文案测试；定向 daemon 初次为 `2 failed, 49 passed`（构造器尚无 timeout 参数），web 为 `1 failed, 244 passed`（状态 helper 未导出）。
+- Green：RunWorker 增加 `item_timeout_seconds` 与 `POSTHUB_ITEM_TIMEOUT_SECONDS`，生产组合显式为每 item 启动独立进程；POSIX 用独立进程组 `SIGKILL`，Windows 用 `taskkill /F /T`，超时落当前 item 失败并继续队列；子进程回传异常/诊断，保留现有详情与 retry。前端将超时摘要显示为“超时”。
+- Deviations：为兼容既有闭包 fake 使用的 `threading.Event` 测试，直接构造含闭包 uploader 时保留旧线程执行；生产 `register_run_routes` 始终显式开启子进程隔离，显式配置 timeout 的 fake 也强制隔离，不影响产品路径。
+- 复核修补：spawn child 使用 ready→ack→result 双工 IPC；父端仅在尚未收到最终 result 时继续 poll/recv，EOF/坏包均生成明确 abnormal-exit 摘要；child 重建 uploader wrapper，`run_backend.py` 增加 main guard 防 spawn 递归监听。
+- 修补后定向 daemon `tests/test_runs.py` → `51 passed`，success/fail-closed/timeout/EOF IPC 回归均通过；待最终全量复验后提交。
+- 定向 Green：daemon `tests/test_runs.py` → `51 passed`；web `PublishView.test.ts` → `23 files / 245 tests passed`；相关 Ruff/format 与 `git diff --check` 通过。
+- 最终全量：daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；Python Ruff/format 与 `git diff --check` 通过。
+- Reviewer 初审：发现异常 IPC 早退未必终止仍存活的 child，且收到 result 后仍可能沿用执行超时判断；另外隔离执行抛异常时 heartbeat 清理不完整。计划用统一 finally 回收 child、result 后停止执行预算，并确保 heartbeat 始终结束。
+- Reviewer 修补：隔离 child 的 IPC 轮询在收到 result 后停止执行超时判断；所有异常早退统一在 finally 等待并强杀残留 child；校验 result 的 error/detail/diagnostics 形状；wrapper 导入/安装失败也回传带 traceback 的 result；heartbeat 对隔离执行异常始终清理。
+- Reviewer 验证：实际启动 Flask `/postRuns` 服务并通过 HTTP 提交 immediate item，GET 观察到 child 回传 fail-closed 错误及 `completed_with_failures`；malformed JSON 返回 400。daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`；web build、Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets`、Ruff 与 `git diff --check` 均通过。
