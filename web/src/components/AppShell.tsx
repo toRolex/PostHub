@@ -13,6 +13,8 @@ import { FileView } from "../views/FileView";
 import { PublishView } from "../views/PublishView";
 import { ScheduleView } from "../views/ScheduleView";
 import { SettingsView } from "../views/SettingsView";
+import { BatchRunUiPrototype } from "../prototypes/BatchRunUiPrototype";
+import { TimePickerPrototype } from "../prototypes/TimePickerPrototype";
 
 const NAV_ITEMS: { view: View; label: string; icon: typeof Send }[] = [
   { view: "publish", label: "发布", icon: Send },
@@ -111,6 +113,14 @@ function Sidebar() {
 
 function ShellView() {
   const view = useViewStore((s) => s.view);
+  // throwaway 原型路由（DEV only）：?prototype=time-picker|batch-run&variant=A|B|C
+  const prototype = new URLSearchParams(window.location.search).get("prototype");
+  if (import.meta.env.DEV && prototype === "time-picker") {
+    return <TimePickerPrototype />;
+  }
+  if (import.meta.env.DEV && prototype === "batch-run") {
+    return <BatchRunUiPrototype />;
+  }
   switch (view) {
     case "publish":
       return <PublishView />;

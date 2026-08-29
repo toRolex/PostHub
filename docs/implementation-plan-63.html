@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostHub Issue #63 Implementation Plan</title>
+  <style>
+    :root {
+      --bg: oklch(1 0 0);
+      --surface: oklch(0.966 0.0018 286);
+      --surface-warm: oklch(0.986 0.0013 286);
+      --ink: oklch(0.181 0.0028 300);
+      --muted: oklch(0.51 0.0045 300);
+      --border: oklch(0.845 0.004 280);
+      --accent: oklch(0.543 0.215 255);
+      --accent-ink: oklch(0.418 0.17 258);
+      --accent-soft: oklch(0.955 0.02 255);
+      --warn: oklch(0.577 0.15 64);
+      --warn-soft: oklch(0.965 0.028 75);
+      --danger: oklch(0.577 0.208 27);
+      --danger-soft: oklch(0.965 0.024 27);
+      --success: oklch(0.63 0.19 152);
+      --success-soft: oklch(0.953 0.03 152);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 22px 80px; }
+    h1, h2, h3 { line-height: 1.4; }
+    h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
+    h2 { margin: 36px 0 14px; font-size: 20px; }
+    h3 { margin: 22px 0 8px; font-size: 14px; }
+    p { margin: 8px 0; }
+    a { color: var(--accent); }
+    code, pre { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+    code { font-size: .9em; }
+    pre {
+      overflow: auto;
+      margin: 12px 0;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-warm);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .eyebrow { margin-bottom: 8px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    .subtitle { margin: 8px 0 18px; color: var(--muted); }
+    .banner, .card, .decision, .phase, .note {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .banner { padding: 14px 16px; border-color: var(--accent); background: var(--accent-soft); }
+    .banner strong { color: var(--accent-ink); }
+    .toc { position: sticky; top: 0; z-index: 5; margin: 18px 0; padding: 10px 13px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.94); backdrop-filter: blur(8px); }
+    .toc a { margin-right: 14px; font-size: 13px; white-space: nowrap; }
+    .grid { display: grid; gap: 14px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card, .decision, .phase, .note { padding: 16px 18px; }
+    .decision { border-left: 4px solid var(--accent); }
+    .decision.review { border-left-color: var(--warn); }
+    .decision h3 { margin-top: 0; }
+    .phase { position: relative; padding-left: 58px; }
+    .phase-num { position: absolute; left: 17px; top: 17px; display: grid; width: 28px; height: 28px; place-items: center; border-radius: 50%; color: #fff; background: var(--accent); font-weight: 700; }
+    .tag { display: inline-block; margin-right: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-warm); color: var(--muted); font-size: 12px; font-weight: 600; }
+    .tag.review { color: var(--warn); background: var(--warn-soft); }
+    .tag.fixed { color: var(--success); background: var(--success-soft); }
+    .tag.risk { color: var(--danger); background: var(--danger-soft); }
+    .recommend { margin: 11px 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); }
+    .why { color: var(--muted); }
+    ul, ol { margin: 8px 0 8px 22px; padding: 0; }
+    li { margin: 4px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; background: var(--surface); font-size: 13px; }
+    th, td { padding: 9px 10px; border: 1px solid var(--border); vertical-align: top; text-align: left; }
+    th { background: var(--surface-warm); color: var(--ink); font-weight: 650; }
+    .small { color: var(--muted); font-size: 13px; }
+    .checklist { list-style: none; margin-left: 0; }
+    .checklist li::before { content: "□"; display: inline-block; width: 22px; color: var(--accent); font-size: 14px; vertical-align: -1px; }
+    .muted-block { color: var(--muted); }
+    details { margin: 10px 0; }
+    summary { cursor: pointer; font-weight: 650; }
+    .footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 760px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .toc { overflow-x: auto; white-space: nowrap; }
+      h1 { font-size: 20px; }
+      .wrap { padding: 24px 14px 60px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="eyebrow">IMPLEMENTATION PLAN · ISSUE #63 · REVIEW REQUIRED</div>
+    <h1>批量发布整月排期与内容声明可靠性</h1>
+    <p class="subtitle">PostHub：素材导入 → 矩阵批量发布 → 定时排期 → 平台约束提示 → 内容声明 → 可观察的逐项结果</p>
+
+    <div class="banner">
+      <strong>本 artifact 只供审阅，不执行代码实现。</strong>
+      <span>已核对当前 main、#64/#67/#68/#69/#70/#72/#73/#74/#75/#76/#77/#78/#79 决议、CONTEXT、ADR、research 与两个 throwaway prototype。现有工作树改动（AppShell、research、prototype、既有 implementation-notes）不覆盖、不修改。</span>
+    </div>
+
+    <nav class="toc" aria-label="目录">
+      <a href="#decisions">先审阅的决策</a>
+      <a href="#fixed">已拍板边界</a>
+      <a href="#facts">当前事实</a>
+      <a href="#contracts">契约草案</a>
+      <a href="#plan">实施顺序</a>
+      <a href="#verify">验收</a>
+      <a href="#scope">范围与风险</a>
+    </nav>
+
+    <section id="decisions">
+      <h2>一、最可能调整的决策（请先审阅）</h2>
+      <p class="small">以下不是“机械实现细节”。每项都给出推荐方案；用户若否决，后续 plan 应先按反馈改写。</p>
+
+      <div class="grid two">
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D1</span>PostHub-owned run/history 层与 <code>publish_record</code> 归属</h3>
+          <p><strong>问题：</strong>#73 的草案引用 <code>account(id)</code>，但 ADR-0006 已废弃 PostHub 自有 <code>account/task/platform_job</code> 表；当前账号真源是官方 <code>user_info</code>。同时，#76/#77 要求真实逐项结果、轮询、重试和中断恢复，这已经超出“只调用官方 HTTP”的旧边界。</p>
+          <div class="recommend"><strong>推荐：</strong>先显式批准一个“只负责受理后观察/历史/人工重试”的 PostHub-owned 层；其数据放独立 <code>posthub.db</code>，与官方 <code>database.db</code> 并置，绝不跨库 FK。官方库继续只承载 <code>user_info/file_records</code>。</div>
+          <p class="why"><strong>理由：</strong>避免上游初始化/升级重建官方库时丢历史；不把本地 run 状态伪装成 social-auto-upload 官方能力；仍可让单 worker 只编排批量执行，不恢复旧的通用调度器。</p>
+          <pre><code>posthub.db
+  batch_run / batch_item       -- #76/#77 运行观察与人工重试
+  publish_record               -- 日历与跨提交软警示
+
+publish_record(
+  account_id INTEGER,            -- user_info.id 的历史观察值，不加 FK
+  account_file TEXT NOT NULL,   -- cookie 文件名快照
+  account_name TEXT NOT NULL,   -- 名称快照
+  platform TEXT NOT NULL,       -- PostHub 字符串枚举
+  run_id TEXT, run_item_id TEXT,
+  video_id TEXT NOT NULL, video_title TEXT NOT NULL,
+  scheduled_for TEXT NOT NULL,
+  status TEXT NOT NULL
+)</code></pre>
+          <p class="small"><strong>若不批准：</strong>只能记录提交 accepted/rejected，不能声称真实逐项 success/failure、轮询、interrupted 或发布日历事实；本路线的 #76/#77 目标需收缩。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D2</span>原始 payload 与有效 payload 是否双存</h3>
+          <p><strong>问题：</strong>#76 只写了原始单项 payload；但账号默认声明、单账号拆分和平台时间降级都发生在受理边界。若重试时重新 merge，用户后来修改账号设置会改变原意。</p>
+          <div class="recommend"><strong>推荐：</strong>在 <code>batch_item</code> 同时保存 <code>submitted_payload_json</code>（原始审计输入）与 <code>effective_payload_json</code>（受理时已校验、按账号拆分、已合并声明、可回放）。retry 只使用 effective 快照；<code>parent_run_id</code> 保留重试链。</div>
+          <p class="why"><strong>理由：</strong>同时满足 #76 的审计语义与可靠重试语义；不会把“没填字段”误当成“重试时重新取默认”。若必须保持单列，则把 <code>payload_json</code> 明确定义为 effective，而不是含糊地称为 raw。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D3</span>时间与时区边界</h3>
+          <p><strong>推荐：</strong><code>dailyTimes</code> 单一升级为 <code>string[]</code>（<code>"HH:MM"</code>）；wrapper 根据当前机器本地时间计算绝对 naive <code>datetime</code>；本轮不增加 timezone/DST UI。</p>
+          <div class="recommend"><strong>平台精度：</strong>抖音/小红书初始 <code>minute</code>；视频号/快手初始 <code>hour</code>，按注册表 round 到最近整点，并在预览与结果中显示实际提交时刻。</div>
+          <p class="why"><strong>理由：</strong>沿用上游当前本地时钟语义，避免引入用户无法验证的时区转换；#66 已确认 HTTP seam 没有 timezone 字段。部署说明明确“以运行机器本地时间为准”，DST 留作后续需求。</p>
+          <p class="small">若 PostHub 需要跨地区运行，D3 必须改为显式 IANA timezone + DST 规则，本 plan 不能直接落地。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D4</span>“定时”页的日历入口</h3>
+          <p><strong>推荐：</strong>保留现有“定时”导航，在 <code>ScheduleView</code> 中采用“两段式”：上方为 #73 Variant B 全账号周总览，下方保留现有默认定时配置。</p>
+          <div class="recommend"><strong>交互：</strong>默认本周；前后翻周与“本周”；今日列高亮；每行=账号名 + <code>PlatformMark</code>；单元格展示 <code>HH:MM + 视频标题</code>，<code>scheduled</code> 蓝色、<code>published</code> 绿色。</div>
+          <p class="why"><strong>理由：</strong>不新增导航项、不丢现有配置；周总览能直接发现跨账号空档与撞档，符合用户已拍板的 Variant B。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D5</span>内部声明队列的 canonical shape</h3>
+          <p><strong>问题：</strong>当前 <code>select_for_platform()</code> 返回扁平字段，但 <code>uploader_wrapper.py</code> 的注释/读取方式部分按嵌套字段理解；现有形状不一致，跨线程后更容易串台或丢声明。</p>
+          <div class="recommend"><strong>推荐：</strong>收敛为一条内部契约：<code>{ platform: type, fields: {...} }</code>。<code>fields</code> 是已映射的上游中文字段；worker 每个 item 执行前 set，执行后 clear。</div>
+          <pre><code>{ platform: 2, fields: { declaration: "无需标注" } }
+{ platform: 1, fields: { source: "笔记含AI合成内容" } }</code></pre>
+          <p class="why"><strong>理由：</strong>外部 HTTP 仍使用 <code>platformFields</code>；内部只保留一个形状，避免当前扁平/嵌套混用。<code>origin</code> 依 #78 不在本路线图实现。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D6</span>retry API 的选择粒度</h3>
+          <p><strong>推荐：</strong><code>POST /batchRuns/:id/retry</code> 接收可选 <code>{ itemIds?: string[] }</code>；省略时重试该 run 全部 <code>failure/skipped/interrupted</code>，指定时只重试指定的可重试项。</p>
+          <div class="recommend"><strong>硬规则：</strong><code>success</code> 永远不复制；<code>pending/running</code> 不可由用户重试；新 run 保存 <code>parentRunId</code>。</div>
+          <p class="why"><strong>理由：</strong>同时支持 prototype B 的“逐项重试”和“重试全部”，不需要两个相互漂移的 endpoint。</p>
+        </article>
+
+        <article class="decision review">
+          <h3><span class="tag review">待确认 D7</span>单 worker 与既有跨平台并行语义</h3>
+          <p><strong>问题：</strong>项目总览/旧 ADR 曾写“跨平台并行 2–3”，但 #76 的可靠性方案锁定单 worker + Queue。</p>
+          <div class="recommend"><strong>推荐：</strong>首版接受批量 item 全局串行，优先保证 per-item 隔离、浏览器资源安全、可恢复；同步更新 CONTEXT/ADR，明确这是 batch runner 的保守执行策略，不是恢复旧通用调度器。</div>
+          <p class="why"><strong>理由：</strong>若保留跨平台并行，需要账号级锁、多个事件循环、退出/超时协调，明显扩大本轮风险；后续可单独压测后再拆并行度。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="fixed">
+      <h2>二、已由用户拍板、plan 不再重新设计的边界</h2>
+      <div class="grid three">
+        <article class="card"><span class="tag fixed">#64</span><strong>排期模型</strong><p>无规则引擎、无设置型日历；每个素材逐条指定 <code>startDays + timeOfDay</code>，批量只做加速。</p></article>
+        <article class="card"><span class="tag fixed">#68</span><strong>批量语义</strong><p>失败项不阻断其他项；POST 受理后后台执行；按 item 观察；不做 hash+日期自动去重。</p></article>
+        <article class="card"><span class="tag fixed">#77</span><strong>运行 UI</strong><p>Variant B：顶部运行状态条 + 详情侧栏；刷新只恢复状态条；轮询失败保留最后状态。</p></article>
+        <article class="card"><span class="tag fixed">#79</span><strong>时刻池</strong><p>Variant C：弹层双滚轮；池内 <code>HH:MM</code> 去重、升序；item 只能选池内时刻。</p></article>
+        <article class="card"><span class="tag fixed">#74</span><strong>窗口提示</strong><p>Variant A：每条 item 旁行内徽标；只 warn，不进 <code>ValidationError[]</code>，不自动分阶段补提。</p></article>
+        <article class="card"><span class="tag fixed">#70</span><strong>素材加入</strong><p>Variant C：复选框 + 全选条 + 吸底“加入所选”；加入后清空选择，不 toast、不自动滚动。</p></article>
+        <article class="card"><span class="tag fixed">#65</span><strong>素材导入边界</strong><p>不新增文件夹整体导入模型；真实缺口是批量入口多选，按 #70 实现。</p></article>
+        <article class="card"><span class="tag fixed">#67</span><strong>内容声明</strong><p>平台分键、英文枚举；不填=账号默认；明确无声明用平台回避枚举。</p></article>
+      </div>
+    </section>
+
+    <section id="facts">
+      <h2>三、当前代码事实与缺口</h2>
+      <table>
+        <thead><tr><th>区域</th><th>当前事实</th><th>本路线要改变什么</th></tr></thead>
+        <tbody>
+          <tr><td><code>postVideoBatch</code></td><td><code>daemon/sau_backend.py:635-709</code> 同步逐项执行，直到全部完成才返回；请求级异常会掩盖前面已有副作用。</td><td>保留声明预检；改为落库 + 返回 <code>runId</code>；执行移到单 worker。</td></tr>
+          <tr><td>前端 batch store</td><td><code>web/src/stores/batchPublish.ts:21-48,175-201</code> 只有 <code>submitting/itemResults</code>，按请求级二元结果收敛。</td><td>引入 run/item 状态机、轮询、恢复、逐项/批量重试。</td></tr>
+          <tr><td>定时 wrapper</td><td><code>daemon/posthub/uploader_wrapper.py:100-105,142-145</code> 将 <code>start_days</code> 错传到 <code>timestamps</code> 位置；构造器缺 <code>publish_strategy="scheduled"</code>；小红书/快手没有统一显式 wrapper。</td><td>关键字传参；四平台统一 scheduled wrapper；分钟 seam 绕过上游整点生成器。</td></tr>
+          <tr><td>时间 seam</td><td><code>web/src/api/official.ts:456-473,534-629</code> 的 <code>dailyTimes</code> 是 <code>number[]</code>；<code>parseHHMMToHour</code> 向下取整。</td><td>升级为 <code>string[]</code>；删除取整妥协；single publish 与矩阵统一。</td></tr>
+          <tr><td>声明 wrapper</td><td>抖音有构造器注入路径；视频号/小红书目前只是占位或丢弃字段。映射表已存在，UI picker 已存在。</td><td>在 PostHub wrapper 子类中做 DOM 注入；上游源码不改、不 fork。</td></tr>
+          <tr><td>数据库</td><td><code>daemon/db_init.py:26-89</code> 当前只确保官方 <code>user_info/file_records</code> 与声明默认列。</td><td>新增 <code>batch_run/batch_item/publish_record</code>，WAL，幂等建表。</td></tr>
+          <tr><td>原型</td><td><code>web/src/prototypes/BatchRunUiPrototype.tsx</code> 与 <code>batch-run-state-machine.html</code> 已验证 run UI；<code>TimePickerPrototype.tsx</code> 已验证分钟交互。</td><td>只提取状态/交互语义到正式模块；原型保持 throwaway，不进入生产路由。TSX 原型中 pending/running 可操作、<code>partial</code> 为 UI 草稿，正式协议不得照搬。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="contracts">
+      <h2>四、建议冻结的类型与 HTTP 契约</h2>
+      <h3>4.1 前端领域类型</h3>
+      <pre><code>type RunStatus =
+  | "running"
+  | "completed"
+  | "completed_with_failures"
+  | "interrupted";
+
+type BatchItemStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failure"
+  | "skipped"
+  | "interrupted";
+
+interface BatchRunItem {
+  id: string;
+  seq: number;
+  filePath: string;
+  accountFile: string;
+  platform: Platform;
+  status: BatchItemStatus;
+  errorMsg?: string;
+  effectiveScheduledFor?: string; // wrapper/runner 最终值，含平台 round/carry
+}
+
+interface BatchRun {
+  runId: string;
+  parentRunId?: string;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  items: BatchRunItem[];
+}
+
+interface PublishRecord {
+  id: number;
+  accountId?: number;
+  accountFile: string;
+  accountName: string;
+  platform: Platform;
+  videoId: string;
+  videoTitle: string;
+  effectiveScheduledFor: string;
+  status: "scheduled" | "published" | "failed" | "canceled";
+  runId?: string;
+  runItemId?: string;
+  recordedAt: string;
+}</code></pre>
+      <p>现有 <code>BatchItem.timeOfDay</code> 已是字符串；需要同步升级的是 <code>PostVideoRequest.dailyTimes</code>、<code>TimerPref.dailyTimes</code>、<code>PublishFormValues.dailyTimes</code> 以及相关解析器。</p>
+
+      <h3>4.2 HTTP seam 与 PostHub-owned history API</h3>
+      <p><strong>边界：</strong>官方 <code>/postVideo</code>、<code>/postVideoBatch</code> 仍是发布能力 seam；<code>/batchRuns</code>、<code>/publishRecords</code> 是获批准后由 PostHub-owned 本机 history/runner 层提供的扩展，必须在 ADR/接口文档中单独标注，不能伪装为上游官方能力。</p>
+      <table>
+        <thead><tr><th>方法</th><th>请求</th><th>成功</th><th>失败语义</th></tr></thead>
+        <tbody>
+          <tr><td><code>POST /postVideoBatch</code></td><td>现有对象数组；外部字段命名继续用 camelCase。</td><td><code>200 { code: 200, data: { runId } }</code>，含义是“已受理”。</td><td>声明/结构预检失败：<code>400</code>、无 run、无发布副作用；已有 run：<code>409 data.runId</code>。</td></tr>
+          <tr><td><code>GET /batchRuns/:id</code></td><td>路径参数 runId。</td><td>run 概要 + 全量 items；一次查询聚合，按 <code>seq</code> 排序。</td><td><code>404</code> 明确提示 run 不存在。</td></tr>
+          <tr><td><code>GET /batchRuns?limit=5</code></td><td>可选 limit。</td><td>最近 run 概要，不含 items；供“最近运行”入口。</td><td>不把 localStorage 当事实来源。</td></tr>
+          <tr><td><code>POST /batchRuns/:id/retry</code></td><td>可选 <code>{ itemIds }</code>。</td><td>新 <code>runId</code>；只复制允许重试的 item。</td><td>success 不可复制；单飞行冲突仍为 <code>409</code>。</td></tr>
+          <tr><td><code>GET /publishRecords?from=&amp;to=</code></td><td>本地日期范围。</td><td>日历与提交前跨提交软警示共用记录查询。</td><td>查询失败保留已有 UI 状态并提示，不把未知当无记录。</td></tr>
+        </tbody>
+      </table>
+      <p class="small">现有 <code>parseOfficialResponse</code> 只抛普通 <code>Error</code>；需增加保留 HTTP status/code/data 的 <code>OfficialApiError</code>，否则前端无法可靠识别 409 并打开已有 run。</p>
+
+      <h3>4.3 声明三态</h3>
+      <ul>
+        <li><strong>继承账号默认：</strong>字段不写入任务 payload；后端受理时读取默认。</li>
+        <li><strong>明确无声明：</strong>视频号使用 <code>wechat.declaration = "no_label"</code>，抖音使用 <code>douyin.declaration = "no_need"</code>。</li>
+        <li><strong>具体声明：</strong>按 ADR-0008 的平台分键与英文枚举持久化，再由 wrapper 映射为中文文案。</li>
+        <li><strong>小红书：</strong>不新增“无声明”候选；上游无 source 路径时由 PostHub DOM wrapper 尝试注入，失败 warn 后继续。</li>
+        <li><strong>origin：</strong>依 #78 明确不纳入本路线图验收和新实现。</li>
+      </ul>
+    </section>
+
+    <section id="plan">
+      <h2>五、实施顺序（决策冻结后执行）</h2>
+      <p class="small">顺序以“先修复真实发布语义，再建立可观察生命周期”为原则；每个阶段都应有独立测试与可回滚 PR。</p>
+
+      <article class="phase">
+        <span class="phase-num">0</span>
+        <h3>契约冻结与测试夹具</h3>
+        <span class="tag">先行</span><span class="tag">不改产品行为</span>
+        <ul>
+          <li>先取得 D1 的架构批准：允许 PostHub-owned runner/history 扩展；否则 #76/#77 只能收缩为 accepted/rejected 记录，不能宣称真实逐项结果。</li>
+          <li>把 D1–D7 的用户反馈写回本 plan；确认 <code>posthub.db</code> 归属、历史保留期、payload replay 与单 worker 语义。</li>
+          <li>冻结 <code>submitted_payload_json</code>（原始审计）与 <code>effective_payload_json</code>（稳定回放）是否双存；冻结 <code>effectiveScheduledFor</code> 是否进入 GET/API。</li>
+          <li>新增/修订 ADR 与 <code>CONTEXT.md</code>：明确 batch runner 是受理后的观察/人工重试编排，不是旧式通用调度器；记录首版全局串行而非跨平台并行 2–3。</li>
+          <li>为四平台、混合 immediate/timer、三态声明、账号默认、单账号拆分准备 Python/TS fixtures；补空数组、畸形 item、未知 type、type=4 字段的 400 边界。</li>
+          <li>保留原型作为交互证据，不把 prototype 类型直接 import 到正式 store。</li>
+        </ul>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">1</span>
+        <h3>P0：修复定时发布失效</h3>
+        <span class="tag risk">真实发布阻断</span><span class="tag">#69 §A / #71</span>
+        <ul>
+          <li>把 #69/#72 合并为同一个 timing seam：先用测试锁定上游签名与已知位置错位，最终生产路径由 PostHub utility 绕过上游整点生成器，不保留两套实现。</li>
+          <li>新增 <code>daemon/posthub/schedule.py</code>：保留 <code>videosPerDay/startDays</code> 的多槽语义，生成平台最终绝对 datetime；按平台 <code>timePrecision</code> round，并处理跨日 carry。</li>
+          <li><code>daemon/posthub/uploader_wrapper.py</code>：四平台 schedule 路径显式传 <code>publish_strategy="scheduled"</code>；补小红书/快手显式 wrapper；小红书按 <code>publish_datetimes[index]</code> 使用对应日期。</li>
+          <li>修正 <code>daemon/sau_backend.py</code> 批量抖音调用缺少 <code>thumbnail_path/productLink/productTitle</code> 的参数错位，统一单视频/批量 wrapper 签名。</li>
+          <li>不改 <code>social-auto-upload</code>、不 fork、不改 uv 锁定源码。</li>
+          <li>新增 <code>daemon/tests/test_uploader_wrapper.py</code> 与 schedule utility tests：策略、日期、分钟、四平台、immediate、批量参数完整性。</li>
+        </ul>
+        <p><strong>阶段出口：</strong>每个平台真实账号提交“明日定时”后平台出现预约任务且没有立即发布；这是后续所有排期能力的前置门。</p>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">2</span>
+        <h3>分钟级 seam、精度注册表与定时 UI</h3>
+        <span class="tag">#72 / #79 / #74</span>
+        <ul>
+          <li><code>web/src/api/types.ts</code> 与 <code>official.ts</code>：<code>dailyTimes: string[]</code>；删除 <code>parseHHMMToHour</code> 及其 floor 测试。</li>
+          <li><code>web/src/domain/schedule.ts</code>（建议新文件）：解析/格式化 <code>HH:MM</code>、按 <code>startDays</code> 计算目标日期、按 <code>timePrecision</code> 最近整点降级；明确 30 分钟 tie-break 与跨日 carry。</li>
+          <li>新增 <code>web/src/api/platformWindows.ts</code>：<code>maxWindowDays</code>、<code>timePrecision</code>、<code>enforcement: "warn"</code>；代码为运行时唯一来源，CONTEXT 仅描述语义。</li>
+          <li><code>BatchPublishSection.tsx</code>：接入 Variant C 弹层双滚轮、池内去重排序、item 只能选池内时刻。</li>
+          <li><code>PublishView.tsx</code> 与 <code>ScheduleView.tsx</code>：单视频和默认配置同步升级为 HH:MM，不留下两套时间语义；为旧 <code>posthub.timerPref</code> 的 number[] 做一次版本化迁移/回退。</li>
+          <li>新增 <code>WindowOverflowHint</code>，挂在 item 行与 <code>BatchPreviewDialog</code>；只展示，不改 <code>validateBatch</code>，不阻断提交。</li>
+        </ul>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">3</span>
+        <h3>视频号 / 小红书声明 DOM wrapper</h3>
+        <span class="tag">#75 / ADR-0008</span>
+        <ul>
+          <li>新增 <code>daemon/posthub/declaration_dom.py</code>：<code>PostHubTencentVideo</code> 覆写声明子段；<code>PostHubXiaoHongShuVideo</code> 在原创探测后追加 source 注入。</li>
+          <li>入口 selector 采用双候选并以真实账号 DOM 为准回填；入口或候选不存在时 warning + debug screenshot，按上游语义继续，不静默伪成功。</li>
+          <li><code>uploader_wrapper.py</code> 接入 D5 canonical queue；抖音保留上游直传；快手不增加声明字段。</li>
+          <li>新增 <code>daemon/tests/test_declaration_dom.py</code>，stub page 覆盖命中、未渲染、候选缺失、无声明降级。</li>
+          <li>真实账号验收：视频号 <code>no_label</code>/<code>ai_generated</code>；小红书 <code>ai_synthesized</code>；未设置声明仍按既有行为。</li>
+        </ul>
+        <p class="small">不在此阶段实现 <code>origin: false</code>；不修改上游文件。</p>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">4</span>
+        <h3>daemon：run/item 持久化、异步执行、发布记录</h3>
+        <span class="tag risk">后端核心</span><span class="tag">#68 / #76 / #73</span>
+        <ul>
+          <li>新增 PostHub-owned <code>posthub.db</code> 初始化模块（与官方 <code>database.db</code> 分离）：建 <code>batch_run</code>、<code>batch_item</code>、<code>publish_record</code>；不恢复 <code>account/task/platform_job</code>，不建跨库 FK。</li>
+          <li><code>batch_item</code> CHECK 必须包含 <code>interrupted</code>；使用 WAL、<code>foreign_keys</code>、busy timeout、短连接与幂等 schema 创建；按 D2 决定单列或 raw/effective 双 payload。</li>
+          <li><code>daemon/posthub/batch_runner.py</code>：单 worker + <code>Queue</code>；item 级 try/except；每 item 前设置 D5 声明字段；用协程级 <code>wait_for</code> 实现默认 300 秒硬超时；超时/异常只污染当前 item。</li>
+          <li>新增 PostHub-owned <code>history_api.py</code>（或等价最小本机 adapter），提供 run/history 路由；在文档中与官方 HTTP seam 分开标注，不能把自研观察能力伪装成上游接口。</li>
+          <li><code>daemon/sau_backend.py</code>：把现有 batch 预检段保留在同步请求内；预检通过后校验非空数组、每项 dict、type 1–4、type=4 字段边界，拆成单账号 item、merge defaults、保存 payload 快照、返回 <code>runId</code>；新增 run 查询与 retry 路由。</li>
+          <li>单飞行：不新增第二把内存锁；用 <code>BEGIN IMMEDIATE</code> + 条件唯一约束收口 <code>status='running'</code> 竞争，冲突返回 409；空批次/畸形 item 均 400，不创建空 run。</li>
+          <li><code>daemon/conf.py</code>：增加并校验 <code>POSTHUB_BATCH_ITEM_TIMEOUT_SECONDS</code>，默认 300；<code>run_backend.py</code> 启动时扫描陈旧 running，改为 run/item <code>interrupted</code>，不自动续跑，再启动 worker。</li>
+          <li>成功 item 写 <code>publish_record</code>：timer → <code>scheduled</code>，immediate → <code>published</code>；失败项不写；记录账号/平台/标题快照与最终 <code>effectiveScheduledFor</code>；单视频是否进入 run/history 依 D1/D2 最终决定。</li>
+          <li>更新 <code>docs/e2e-acceptance.md</code> 与 <code>daemon/tests/test_e2e_acceptance.py</code>：200 从“完成”改为“受理”，补 400/409/GET/retry/restart 契约。</li>
+        </ul>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">5</span>
+        <h3>前端 run 生命周期与批量 UX</h3>
+        <span class="tag risk">前后端契约依赖 #76</span><span class="tag">#77 / #70</span>
+        <ul>
+          <li>新增 <code>web/src/domain/batchRun.ts</code>：纯 reducer、终态判断、poll merge、可重试集合、同批 duplicate 检查；协议保留 <code>completed_with_failures</code>，UI 仅显示“部分成功”。</li>
+          <li>扩展 <code>officialApi</code> 对接 PostHub-owned history API：batch run 查询/列表/retry、publish records；增加 <code>OfficialApiError</code> 保留 409 元数据，并暴露 <code>effectiveScheduledFor</code>。</li>
+          <li>重写 <code>web/src/stores/batchPublish.ts</code>：<code>idle → submitting → accepted/error</code>；accepted 后 2 秒轮询，无变化退避到 10 秒；终态停轮询；网络错误保留最后状态。</li>
+          <li>新增 <code>BatchRunStatusBar</code> + <code>BatchRunDetailsPanel</code>，在 <code>PublishView</code> 使用 prototype Variant B 语义；关闭/刷新不影响后台执行。</li>
+          <li><code>BatchPreviewDialog</code> 展示平台最终提交时间、窗口 warn、声明结果/有效值；确认 Dialog 二次展示跨提交重复软警示。</li>
+          <li>同批同视频×同账号硬阻断；跨提交本地成功记录软警示；409 显示“本次提交未受理”并提供查看已有 run。</li>
+          <li>加入 #70 的复选多素材入口；不改变矩阵 item 数据模型。</li>
+          <li>localStorage 只保留最近 5 个 <code>runId</code> 指针；恢复先 GET 后端，刷新不自动打开侧栏、不自动重试。</li>
+        </ul>
+      </article>
+
+      <article class="phase">
+        <span class="phase-num">6</span>
+        <h3>账号预约日历与交付收口</h3>
+        <span class="tag">#73 Variant B</span>
+        <ul>
+          <li>在 <code>ScheduleView</code> 增加全账号周总览：周导航、今日高亮、PlatformMark、状态色、空状态。</li>
+          <li>新增日历数据适配器，按日期范围请求 <code>/publishRecords</code>，前端分桶；不回查平台创作者后台。</li>
+          <li>提交前查重复用同一 records 查询与纯函数，不再造第二份重复规则。</li>
+          <li>删除账号不删除历史记录；新账号显示名变化不改历史快照。</li>
+          <li>补齐发布/部署说明，清理生产路由中的 prototype import；原型文件是否保留在仓库由维护者另行决定，但不得进入正式 bundle 路径。</li>
+        </ul>
+      </article>
+    </section>
+
+    <section id="verify">
+      <h2>六、测试与真实账号验收</h2>
+      <h3>自动化门</h3>
+      <ul class="checklist">
+        <li><code>cd daemon &amp;&amp; uv run pytest -q</code>：官方库不被改写、<code>posthub.db</code> DDL、wrapper、DOM stub、runner、HTTP contract、重启 interrupted。</li>
+        <li><code>cd web &amp;&amp; pnpm test</code>：时间解析/降级、窗口 warn、duplicate、run reducer、API response、store fake timers、旧 timerPref 迁移。</li>
+        <li><code>cd web &amp;&amp; pnpm run build</code>：<code>tsc --noEmit</code> + Vite 构建通过；不把 prototype 路由带入生产行为。</li>
+        <li>关键契约：非法声明/非法数组仍是 400 且无 run；合法 batch 200 只代表受理；同飞行 409 不伪装成功。</li>
+        <li>异常隔离：第 2 item 抛错时第 1/3 item 仍完成；success item 不进入 retry payload。</li>
+      </ul>
+
+      <h3>真实平台手测（不进 CI）</h3>
+      <table>
+        <thead><tr><th>组别</th><th>步骤</th><th>通过标准</th></tr></thead>
+        <tbody>
+          <tr><td>定时 P0</td><td>四平台分别提交明日、+3 天、候选窗口边界；混合 immediate/timer。</td><td>定时项不立即发布；平台后台出现正确预约；错误项不影响其他项。</td></tr>
+          <tr><td>分钟</td><td>抖音/小红书提交 <code>HH:01</code>/<code>HH:30</code>/<code>HH:59</code>；视频号检查 hour 降级；快手单独实测。</td><td>支持分钟的平台保持分钟；hour 平台按最近整点提交，预览/结果所见即所发。</td></tr>
+          <tr><td>窗口</td><td><code>now+1h</code>、<code>now+2h</code>、候选 max−1/max/max+1。</td><td>UI 只软提示；当前 enforcement=warn，平台实际拒绝记 failure，其他 item 继续；skipped 仅保留为未来 block 语义。</td></tr>
+          <tr><td>声明</td><td>视频号 <code>no_label</code>/<code>ai_generated</code>；小红书 <code>ai_synthesized</code>；未填写。</td><td>后台终值与所选枚举一致；DOM 缺失时有 warning/screenshot 且流程不假装成功。</td></tr>
+          <tr><td>run/幂等</td><td>3 个素材 × 2 平台账号，故意制造一个无效 cookie；断开轮询；重启 daemon；再重试。</td><td>页面显示受理、逐项结果、协议状态 <code>completed_with_failures</code>（UI 可标“部分成功”）；网络断开不误标失败；重启为 interrupted；只重试失败项。</td></tr>
+          <tr><td>409/查重</td><td>一个 run 执行中再次提交；同批重复；跨提交已有成功记录。</td><td>409 明确“本次未受理”；同批硬阻断；跨提交仅警示且二次确认。</td></tr>
+          <tr><td>日历</td><td>核对 scheduled/published 记录、跨周、删除账号后历史。</td><td>周总览与实际受理时间一致；删除账号不抹历史快照。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="scope">
+      <h2>七、明确不做与风险缓释</h2>
+      <div class="grid two">
+        <article class="note">
+          <h3>不做</h3>
+          <ul>
+            <li>不 fork、不改 social-auto-upload；所有扩展留在 PostHub wrapper 与明确标注的本机 history/runner 层。</li>
+            <li>不恢复自研通用规则排期、平台回查、自动分阶段补提、hash+日期自动去重；仅在 D1 批准后做批量受理后的观察/人工重试编排。</li>
+            <li>不处理 <code>origin</code> 声明原创开关；现有 picker 控件属于既有能力，不在本路线图扩大或宣称可靠。</li>
+            <li>不把 localStorage 完整结果当数据库；不自动续跑 interrupted run。</li>
+            <li>不在本轮引入 timezone/DST 产品模型；机器本地时间限制必须写入文档。</li>
+          </ul>
+        </article>
+        <article class="note">
+          <h3>主要风险</h3>
+          <ul>
+            <li><strong>上游签名漂移：</strong>导入期签名守卫 + 四平台 wrapper 单测，启动即报清晰错误。</li>
+            <li><strong>DOM 漂移：</strong>双 selector、warning、debug screenshot；真实账号验收回填 selector。</li>
+            <li><strong>线程/浏览器资源：</strong>单 worker、单飞行、item 超时；若同步阻塞导致 worker 卡死，升级路径再考虑独立子进程。</li>
+            <li><strong>平台窗口不确定：</strong>只做候选值 warn；真实复测后另开 ticket 决定是否收紧。</li>
+            <li><strong>数据模型漂移：</strong>D1 先确认；禁止直接照抄 #73 的旧 <code>account</code> FK。</li>
+          </ul>
+        </article>
+      </div>
+
+      <h2>八、审阅清单</h2>
+      <ul class="checklist">
+        <li>同意 D1：批准 PostHub-owned runner/history 扩展；数据放独立 <code>posthub.db</code>，不引用已废弃的 <code>account</code> 表。</li>
+        <li>同意 D2：双存 raw/effective payload；retry 使用 effective 快照，并记录 <code>parentRunId</code>。</li>
+        <li>同意 D3：HH:MM + 本地 naive 时间；本轮无 timezone/DST UI；GET/API 暴露 <code>effectiveScheduledFor</code>。</li>
+        <li>同意 D4：现有“定时”页采用日历在上、默认配置在下的两段式布局。</li>
+        <li>同意 D5：内部声明队列统一为 <code>{ platform, fields }</code>；本轮排除 <code>origin</code>，不扩大现有控件承诺。</li>
+        <li>同意 D6：retry endpoint 支持可选 <code>itemIds</code>，同时覆盖逐项与全部非成功项。</li>
+        <li>同意 D7：首版 batch runner 全局单 worker 串行，并同步修订 CONTEXT/ADR 的旧并行表述。</li>
+      </ul>
+    </section>
+
+    <p class="footer">来源：当前工作树的 CONTEXT.md、ADR-0001/0002/0003/0005/0006/0008、docs/research/2026-08-26-scheduling-windows-minute-precision.md、docs/implementation-notes.md，以及 GitHub Issue #63 与其已关闭子 ticket。生成日期：2026-08-26。</p>
+  </main>
+</body>
+</html>

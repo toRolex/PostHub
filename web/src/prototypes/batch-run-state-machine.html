@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型：批量发布 run 生命周期状态机（issue #77）</title>
+<style>
+  :root {
+    --accent: oklch(0.543 0.215 255); --accent-ink: oklch(0.418 0.17 258); --accent-tint: oklch(0.955 0.02 255);
+    --success: oklch(0.63 0.19 152); --success-tint: oklch(0.953 0.03 152);
+    --danger: oklch(0.577 0.208 27);  --danger-tint: oklch(0.965 0.024 27);
+    --warn: oklch(0.577 0.15 64);    --warn-tint: oklch(0.965 0.028 75);
+    --border: oklch(0.845 0.004 280);  --meta: oklch(0.53 0.006 300); --surface: oklch(0.966 0.0018 286);
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: oklch(1 0 0); color: oklch(0.181 0.0028 300); line-height: 1.55; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--meta); font-size: 13px; margin-bottom: 16px; }
+  .badge { display:inline-block; background: var(--warn-tint); color: var(--warn); border:1px solid var(--warn); border-radius: 6px; padding:1px 8px; font-size:12px; font-weight:600; margin-right:8px;}
+  .intro { border:1px solid var(--border); background:oklch(1 0 0); border-radius:12px; padding:14px 18px; margin-bottom:18px; font-size:14px;}
+  .panel { border:1px solid var(--border); background:oklch(1 0 0); border-radius:12px; padding:16px 18px; margin-bottom:18px;}
+  .panel h2 { font-size:14px; margin:0 0 10px; }
+  dl.state { display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:13px; margin:0; }
+  dt { color:var(--meta); } dd { margin:0; font-family: ui-monospace, monospace; }
+  .pill { display:inline-block; border-radius:999px; padding:1px 10px; font-size:12px; font-weight:600; font-family:-apple-system,sans-serif;}
+  .p-running{background:var(--accent-tint);color:var(--accent-ink);} .p-pending{background:var(--surface);color:var(--meta);}
+  .p-success{background:var(--success-tint);color:var(--success);} .p-failure{background:var(--danger-tint);color:var(--danger);}
+  .p-skipped{background:var(--warn-tint);color:var(--warn);} .p-interrupted{background:var(--danger-tint);color:var(--danger);}
+  .btns { display:flex; flex-wrap:wrap; gap:8px; }
+  button.act { border:1px solid var(--border); background:#fff; border-radius:8px; padding:7px 13px; font-size:13px; cursor:pointer; }
+  button.act:hover:not(:disabled){ border-color:var(--accent); color:var(--accent); }
+  button.act:disabled { opacity:.35; cursor:not-allowed; }
+  .tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); margin-bottom:12px; }
+  .tab { padding:7px 14px; font-size:13px; cursor:pointer; border:none; background:none; border-bottom:2px solid transparent; color:var(--meta);}
+  .tab.on { color:var(--accent); border-bottom-color:var(--accent); font-weight:600;}
+  ol.steps { margin:8px 0 0; padding-left:0; list-style:none; counter-reset: s; }
+  ol.steps li { counter-increment:s; margin-bottom:10px; font-size:13px; }
+  ol.steps li::before { content:"步骤 " counter(s) "："; font-weight:600; color:var(--accent); }
+  ol.steps button { margin-left:8px; }
+  table.items { width:100%; border-collapse:collapse; font-size:13px; margin-top:10px;}
+  table.items th { text-align:left; color:var(--meta); font-weight:500; padding:4px 8px; border-bottom:1px solid var(--border); font-size:12px;}
+  table.items td { padding:5px 8px; border-bottom:1px solid #f3f4f6; }
+  .log { font-family:ui-monospace,monospace; font-size:12px; color:var(--meta); max-height:140px; overflow-y:auto; background:#f9fafb; border-radius:6px; padding:8px 10px; margin-top:10px;}
+  .note { font-size:12px; color:var(--meta); margin-top:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="badge">PROTOTYPE · throwaway</span>批量发布 run 生命周期状态机</h1>
+  <p class="sub">issue #77 · Logic 原型 · 纯内存，不连 daemon，不写正式 store。双击即开，可随意戳。</p>
+
+  <div class="intro">
+    <strong>本演示回答的问题：</strong>前端 store 从「请求级二元结果」重写为 run 生命周期状态机后，
+    各种时序场景是否都有一条明确、无歧义的状态路径——提交受理、轮询推进、daemon 重启 interrupted、
+    重试生成新 runId 后旧视图如何衔接、页面刷新后凭 localStorage 恢复。
+    左侧点按钮自由玩耍；下方有四个引导场景覆盖最容易在纸面上算错的边界。
+    每次点击后，<em>当前状态面板</em>会完整重绘，底部动作日志显示刚刚发生了什么。
+  </div>
+
+  <div class="panel">
+    <h2>当前状态</h2>
+    <dl id="statePanel" class="state"></dl>
+    <div id="itemsWrap"></div>
+    <div id="log" class="log">（等待操作）</div>
+    <p class="note">合法动作 = 按钮可点的那些；非法转换会被状态机拒绝并在日志里说明原因。</p>
+  </div>
+
+  <div class="panel">
+    <h2>自由玩耍</h2>
+    <div id="freeBtns" class="btns"></div>
+  </div>
+
+  <div class="panel">
+    <h2>引导场景</h2>
+    <div class="tabs" id="scnTabs"></div>
+    <p id="scnDesc" style="font-size:13px; margin:0 0 4px;"></p>
+    <ol class="steps" id="scnSteps"></ol>
+  </div>
+</div>
+
+<script>
+/* ══════════════════ 可提取的纯状态机 module ══════════════════
+ * 命名对齐 issue #76 后端定稿：run 状态 running / completed /
+ * completed_with_failures / interrupted；item 状态 pending / running /
+ * success / failure / skipped(超窗等前置拒绝) / interrupted(timeout_stuck 等)。
+ * 无 DOM、无 fetch：所有异步副作用由页面注入 dispatch 的 action 表达。
+ */
+
+const RunMachine = (() => {
+  // ── 初始 state ──
+  function initial() {
+    return {
+      phase: 'idle',            // idle | submitting | accepted | error
+      run: null,                // { runId, status, items:[...] }
+      submittingItemsCount: 0,
+      pollTimerActive: false,
+      conflictRunId: null,      // 409 时后端返回的进行中 runId
+      lastActionLog: null,
+    };
+  }
+
+  const RUN_TERMINAL = ['completed', 'completed_with_failures', 'interrupted'];
+
+  function isTerminal(runStatus) { return RUN_TERMINAL.includes(runStatus); }
+
+  // ── reducer：唯一的状态转移入口 ──
+  function reduce(state, action) {
+    switch (action.type) {
+
+      case 'SUBMIT_START': {
+        if (state.phase !== 'idle') return rejected(state, action, '当前不在 idle（已有提交或运行中）');
+        return {
+          ...state, phase: 'submitting', run: null, conflictRunId: null,
+          submittingItemsCount: action.itemCount,
+          lastActionLog: `提交 ${action.itemCount} 个发布项 → POST /postVideoBatch`,
+        };
+      }
+
+      case 'SUBMIT_ACCEPTED': {           // 200 { runId }
+        if (state.phase !== 'submitting') return rejected(state, action, '未处于 submitting');
+        return {
+          ...state, phase: 'accepted',
+          run: { runId: action.runId, status: 'running',
+                 items: action.items.map(it => ({ ...it, status: it.status ?? 'pending' })) },
+          pollTimerActive: true,
+          lastActionLog: `受理，runId=${action.runId}，开始轮询 GET /batchRuns/${action.runId}`,
+        };
+      }
+
+      case 'SUBMIT_CONFLICT': {           // 409：单飞行锁，另一 run 在跑
+        if (state.phase !== 'submitting') return rejected(state, action, '未处于 submitting');
+        return {
+          ...state, phase: 'error', conflictRunId: action.conflictRunId,
+          lastActionLog: `409 冲突：runId=${action.conflictRunId} 正在进行中`,
+        };
+      }
+
+      case 'SUBMIT_FAILED': {             // 400 预检失败等请求级错误
+        if (state.phase !== 'submitting') return rejected(state, action, '未处于 submitting');
+        return { ...state, phase: 'error', conflictRunId: null,
+                 lastActionLog: `提交被拒（预检失败）：${action.message}` };
+      }
+
+      case 'POLL_RESULT': {               // 轮询响应合并进本地 run
+        if (state.phase !== 'accepted') return rejected(state, action, '未在轮询中');
+        const merged = mergePoll(state.run, action.payload);
+        return {
+          ...state, run: merged,
+          pollTimerActive: !isTerminal(merged.status),   // 终态停表
+          lastActionLog: isTerminal(merged.status)
+            ? `run 进入终态 ${merged.status}，停止轮询`
+            : `轮询合并：${countByStatus(merged.items)}`,
+        };
+      }
+
+      case 'POLL_ERROR': {                // HTTP 断开 ≠ 失败：保持 accepted，下个周期重试
+        if (state.phase !== 'accepted') return rejected(state, action, '未在轮询中');
+        return { ...state, pollTimerActive: true,
+                 lastActionLog: '轮询请求失败（网络/守护进程重启），保留现状继续轮询' };
+      }
+
+      case 'OPEN_EXISTING_RUN': {         // 从 localStorage / 409 引导打开既有 run
+        if (state.phase === 'submitting') return rejected(state, action, '正在提交中');
+        return {
+          ...state, phase: 'accepted', conflictRunId: null,
+          run: action.run,
+          pollTimerActive: !isTerminal(action.run.status),
+          lastActionLog: `打开既有 run ${action.run.runId}（${action.source}）`
+            + (isTerminal(action.run.status) ? '，已是终态不轮询' : '，恢复轮询'),
+        };
+      }
+
+      case 'RETRY_STARTED': {             // 后端按原始 payload 构造新 run，返回新 runId
+        if (state.phase !== 'accepted') return rejected(state, action, '先打开要重试的 run');
+        const cur = state.run;
+        if (!isTerminal(cur.status)) return rejected(state, action, 'run 未到终态，不能重试');
+        if (!cur.items.some(it => it.status !== 'success'))
+          return rejected(state, action, '没有可重试项（全部 success）');
+        return {
+          ...state, phase: 'accepted',
+          run: { runId: action.newRunId, status: 'running',
+                 items: cur.items.filter(it => it.status !== 'success')
+                                 .map(it => ({ ...it, status: 'pending', retriedFrom: cur.runId })) },
+          pollTimerActive: true,
+          lastActionLog: `重试：以 ${cur.items.length - cur.items.filter(i=>i.status==='success').length} 个非 success 项构造新 run ${action.newRunId}`,
+        };
+      }
+
+      case 'RESET':
+        return { ...initial(), lastActionLog: '已重置' };
+
+      default:
+        return rejected(state, action, '未知 action');
+    }
+  }
+
+  // ── 纯 helpers ──
+
+  function mergePoll(localRun, payload) {
+    const byKey = new Map(payload.items.map(it => [it.key, it]));
+    const items = localRun.items.map(local => {
+      const remote = byKey.get(local.key);
+      return remote ? { ...local, status: remote.status, reason: remote.reason ?? local.reason }
+                    : local;
+    });
+    return { ...localRun, status: payload.status, items };
+  }
+
+  function countByStatus(items) {
+    const c = {};
+    for (const it of items) c[it.status] = (c[it.status] || 0) + 1;
+    return Object.entries(c).map(([k,v]) => `${k}:${v}`).join(' ');
+  }
+
+  function rejected(state, action, why) {
+    return { ...state, lastActionLog: `✗ 拒绝 ${action.type}：${why}` };
+  }
+
+  return { initial, reduce, isTerminal };
+})();
+
+/* ══════════════════ 页面薄壳（throwaway） ══════════════════ */
+
+const SAMPLE_ITEMS = [
+  { key: 'v1|douyin@A', fileName: '春游.mp4', platform: '抖音', account: '账号A' },
+  { key: 'v1|xhs@B',    fileName: '春游.mp4', platform: '小红书', account: '账号B' },
+  { key: 'v2|wx@C',     fileName: '夜市.mp4', platform: '视频号', account: '账号C' },
+  { key: 'v2|douyin@A', fileName: '夜市.mp4', platform: '抖音', account: '账号A' },
+];
+const STORAGE_KEY = 'posthub-prototype-latest-batch-run';
+
+let state = RunMachine.initial();
+const logEl = document.getElementById('log');
+
+function savedRun(): object | null {
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function seedInterruptedRun(): object {
+  return {
+    runId: 'run-077', status: 'interrupted',
+    items: SAMPLE_ITEMS.map((item, index) => ({ ...item, status: index === 0 ? 'success' : 'interrupted', reason: index === 0 ? undefined : '守护进程重启时未完成' })),
+  };
+}
+
+function render() {
+  const s = state;
+  const pill = (t, cls) => `<span class="pill p-${cls||t}">${t}</span>`;
+  let html = `
+    <dt>phase</dt><dd>${s.phase}</dd>
+    <dt>conflictRunId</dt><dd>${s.conflictRunId ?? '—'}</dd>`;
+  if (s.run) {
+    const done = s.run.items.filter(i=>i.status==='success').length;
+    html += `
+    <dt>runId</dt><dd>${s.run.runId}${s.run.items[0]?.retriedFrom ? `（重试自 ${s.run.items[0].retriedFrom}）` : ''}</dd>
+    <dt>run.status</dt><dd>${pill(s.run.status)}</dd>
+    <dt>pollTimerActive</dt><dd>${s.pollTimerActive ? 'true（轮询中）' : 'false'}</dd>
+    <dt>localStorage</dt><dd>${savedRun() ? '已保存 ' + savedRun().runId : '无保存快照'}</dd>
+    <dt>进度</dt><dd style="font-family:inherit">${done}/${s.run.items.length} success</dd>`;
+  } else if (s.phase === 'submitting') {
+    html += `<dt>待提交项数</dt><dd>${s.submittingItemsCount}</dd>`;
+  }
+  document.getElementById('statePanel').innerHTML = html;
+
+  document.getElementById('itemsWrap').innerHTML = s.run ? `
+    <table class="items">
+      <tr><th>视频</th><th>平台/账号</th><th>item.status</th><th>原因</th></tr>
+      ${s.run.items.map(it => `<tr>
+        <td>${it.fileName}</td><td>${it.platform} · ${it.account}</td>
+        <td>${pill(it.status)}</td><td style="color:var(--meta)">${it.reason ?? ''}</td></tr>`).join('')}
+    </table>` : '';
+
+  renderFreeButtons();
+  logEl.textContent = s.lastActionLog;
+}
+
+function dispatch(action) {
+  if (action.type === 'SAVE_TO_LOCALSTORAGE') {
+    if (!state.run) {
+      state = { ...state, lastActionLog: '✗ 当前没有 run，先完成 200 受理再保存' };
+    } else {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.run));
+      state = { ...state, lastActionLog: `已保存 ${state.run.runId} 到 localStorage（仅用于原型验证）` };
+    }
+    render();
+    return;
+  }
+  if (action.type === 'SEED_LOCALSTORAGE') {
+    const run = seedInterruptedRun();
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(run));
+    state = { ...state, lastActionLog: '已写入示例 run-077；现在可以模拟刷新恢复' };
+    render();
+    return;
+  }
+  if (action.type === 'RESTORE_FROM_LOCALSTORAGE') {
+    const run = savedRun();
+    if (!run) {
+      state = { ...state, lastActionLog: '✗ localStorage 没有可恢复的 run' };
+    } else {
+      state = RunMachine.reduce(state, { type: 'OPEN_EXISTING_RUN', source: 'localStorage', run });
+    }
+    render();
+    return;
+  }
+  state = RunMachine.reduce(state, action);
+  render();
+}
+
+const ACTIONS = [
+  { label:'提交批次 (SUBMIT_START)', make:() => ({type:'SUBMIT_START', itemCount:SAMPLE_ITEMS.length}) },
+  { label:'200 受理 run-101', make:() => ({type:'SUBMIT_ACCEPTED', runId:'run-101', items:SAMPLE_ITEMS.map(i=>({...i}))}) },
+  { label:'409 冲突 (run-099 在跑)', make:() => ({type:'SUBMIT_CONFLICT', conflictRunId:'run-099'}) },
+  { label:'400 预检失败', make:() => ({type:'SUBMIT_FAILED', message:'声明字段非法'}) },
+  { label:'轮询：部分成功→终态 partial', make:() => ({type:'POLL_RESULT', payload:{
+      status:'completed_with_failures',
+      items:[
+        {key:'v1|douyin@A', status:'success'},
+        {key:'v1|xhs@B',    status:'failure', reason:'CDP 断连'},
+        {key:'v2|wx@C',     status:'skipped', reason:'超出平台定时窗口'},
+        {key:'v2|douyin@A', status:'success'}]}}) },
+  { label:'轮询：全 success→completed', make:() => ({type:'POLL_RESULT', payload:{
+      status:'completed', items:SAMPLE_ITEMS.map(i=>({key:i.key,status:'success'}))}}) },
+  { label:'轮询断开一次 (POLL_ERROR)', make:() => ({type:'POLL_ERROR'}) },
+  { label:'保存当前 run 到 localStorage', make:() => ({type:'SAVE_TO_LOCALSTORAGE'}) },
+  { label:'写入示例 run-077 快照', make:() => ({type:'SEED_LOCALSTORAGE'}) },
+  { label:'从 localStorage 恢复', make:() => ({type:'RESTORE_FROM_LOCALSTORAGE'}) },
+  { label:'打开既有 run-088 (localStorage)', make:() => ({type:'OPEN_EXISTING_RUN', source:'localStorage', run:{
+      runId:'run-088', status:'running', items:SAMPLE_ITEMS.map((i,idx)=>({...i, status: idx<2?'success':'pending'}))}}) },
+  { label:'打开已中断 run-077 (interrupted)', make:() => ({type:'OPEN_EXISTING_RUN', source:'localStorage', run:{
+      runId:'run-077', status:'interrupted', items:SAMPLE_ITEMS.map((i,idx)=>({...i, status: idx===0?'success':'interrupted'}))}}) },
+  { label:'重试失败项 → run-102', make:() => ({type:'RETRY_STARTED', newRunId:'run-102'}) },
+  { label:'重置', make:() => ({type:'RESET'}) },
+];
+
+function renderFreeButtons() {
+  const el = document.getElementById('freeBtns');
+  el.innerHTML = '';
+  for (const a of ACTIONS) {
+    const b = document.createElement('button');
+    b.className = 'act'; b.textContent = a.label;
+    b.onclick = () => dispatch(a.make());
+    el.appendChild(b);
+  }
+}
+
+/* ── 引导场景 ── */
+const SCENARIOS = [
+  {
+    title: '快乐路径',
+    desc: '提交 → 受理 → 轮询全部成功 → 终态停止轮询。注意终态后 pollTimerActive 变 false。',
+    steps: [
+      {label:'提交批次', act:{type:'SUBMIT_START', itemCount:4}},
+      {label:'200 受理 run-101', act:{type:'SUBMIT_ACCEPTED', runId:'run-101', items:SAMPLE_ITEMS.map(i=>({...i}))}},
+      {label:'轮询：全 success', act:{type:'POLL_RESULT', payload:{status:'completed', items:SAMPLE_ITEMS.map(i=>({key:i.key,status:'success'}))}}},
+    ],
+  },
+  {
+    title: '部分成功 + 重试衔接',
+    desc: '核心场景：一条 run 部分失败后逐项重试。观察重试后 runId 变成新值、只带非 success 项，旧 run 保持原样留在历史里。',
+    steps: [
+      {label:'提交批次', act:{type:'SUBMIT_START', itemCount:4}},
+      {label:'200 受理', act:{type:'SUBMIT_ACCEPTED', runId:'run-101', items:SAMPLE_ITEMS.map(i=>({...i}))}},
+      {label:'轮询：部分成功', act:{type:'POLL_RESULT', payload:{status:'completed_with_failures', items:[
+        {key:'v1|douyin@A',status:'success'},{key:'v1|xhs@B',status:'failure',reason:'CDP 断连'},
+        {key:'v2|wx@C',status:'skipped',reason:'超窗'},{key:'v2|douyin@A',status:'success'}]}}},
+      {label:'重试 → 新 run', act:{type:'RETRY_STARTED', newRunId:'run-102'}},
+      {label:'新 run 全部成功', act:{type:'POLL_RESULT', payload:{status:'completed', items:[
+        {key:'v1|xhs@B',status:'success'},{key:'v2|wx@C',status:'success'}]}}},
+    ],
+  },
+  {
+    title: '409 单飞行冲突',
+    desc: '上一条 run 还没跑完又提交了一批。观察 phase 进入 error 且拿到进行中 run 的 id —— UI 可以据此引导用户查看那个 run。',
+    steps: [
+      {label:'提交批次', act:{type:'SUBMIT_START', itemCount:4}},
+      {label:'409 冲突', act:{type:'SUBMIT_CONFLICT', conflictRunId:'run-099'}},
+      {label:'改为查看 run-099', act:{type:'OPEN_EXISTING_RUN', source:'409引导', run:{
+        runId:'run-099', status:'running', items:SAMPLE_ITEMS.map(i=>({...i, status:'running'}))}}},
+    ],
+  },
+  {
+    title: '刷新恢复与中断',
+    desc: 'daemon 重启把陈旧 run 标记 interrupted（不自动续跑）；页面刷新后凭 localStorage 打开它，看到可重试的 interrupted 项。',
+    steps: [
+      {label:'打开已中断 run-077', act:{type:'OPEN_EXISTING_RUN', source:'localStorage', run:{
+        runId:'run-077', status:'interrupted', items:SAMPLE_ITEMS.map((i,idx)=>({...i, status: idx===0?'success':'interrupted'}))}}},
+      {label:'重试 interrupted 项 → run-102', act:{type:'RETRY_STARTED', newRunId:'run-102'}},
+      {label:'轮询：部分成功', act:{type:'POLL_RESULT', payload:{status:'completed_with_failures', items:[
+        {key:'v1|douyin@A',status:'success'},{key:'v1|xhs@B',status:'failure',reason:'再次超窗'},
+        {key:'v2|wx@C',status:'success'},{key:'v2|douyin@A',status:'pending'}]}}},
+      {desc:'注意：payload 少了 v2|douyin@A 时本地保留 pending 不误判', noStep:true},
+    ],
+  },
+];
+
+let scnIdx = 0, scnPos = 0;
+
+function renderScenario() {
+  const tabsEl = document.getElementById('scnTabs');
+  tabsEl.innerHTML = SCENARIOS.map((sc,i) =>
+    `<button class="tab ${i===scnIdx?'on':''}" data-i="${i}">${sc.title}</button>`).join('');
+  tabsEl.querySelectorAll('.tab').forEach(t =>
+    t.onclick = () => { scnIdx = +t.dataset.i; scnPos = 0; startScenario(); });
+
+  const sc = SCENARIOS[scnIdx];
+  document.getElementById('scnDesc').textContent = sc.desc;
+  const stepsEl = document.getElementById('scnSteps');
+  stepsEl.innerHTML = '';
+  sc.steps.forEach((step, idx) => {
+    if (idx > scnPos) return;
+    const li = document.createElement('li');
+    if (!step.noStep) {
+      const b = document.createElement('button');
+      b.className = 'act'; b.textContent = step.label;
+      b.onclick = () => { dispatch(step.act); scnPos = idx + 1; renderScenario(); };
+      li.appendChild(b);
+      if (idx < scnPos) b.disabled = true;
+    }
+    if (step.desc) { const span=document.createElement('span'); span.textContent=step.desc; li.appendChild(span);}
+    stepsEl.appendChild(li);
+  });
+}
+
+function startScenario() {
+  state = RunMachine.initial();
+  scnPos = 0;
+  render();
+  renderScenario();
+}
+
+startScenario();
+</script>
+</body>
+</html>
