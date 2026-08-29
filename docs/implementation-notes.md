@@ -1209,3 +1209,20 @@
 - 自动化验收线通过：daemon `240 passed`、壳启停无残留、web `23 files / 246 tests`、typecheck/Vite build 通过。静态复核另发现 `publish_records._parse_daily_time()` 仍接受整数时间，以及 CLAUDE/ADR/声明模块注释残留旧模型表述；按删除性 gate 与文档同步要求补强拒绝测试并修正。
 - Red→Green：新增整数时间记录解析拒绝、生产 web 不得包含 `/postVideoBatch`/`itemResults`/`expandItemResults`、prototype import 静态 gate；移除记录回退解析的整数兼容。同步将 CLAUDE、CONTEXT、ADR-0001/0005/0008 与声明映射 docstring 标明当前 canonical/accepted-only/官方副本边界；gate 定向 `8 passed`，记录相关定向 `16 passed`。
 - 全量复验（修补后）：daemon `241 passed`；web `23 files / 246 tests passed`；web typecheck/Vite build、Tauri `17 passed`、相关 Ruff/format 与 `git diff --check` 均通过。web 保留既有 jsdom navigation stderr 非阻断噪声。
+
+### Issue #100 Merger 执行记录（2026-08-29）
+
+- `git merge afk/issue-100 --no-edit` 发生唯一冲突：`docs/implementation-notes.md`；逐侧保留 develop 的本轮准备记录与 #100 完整实现/审查记录，未使用 `-X`，生成 merge commit `5e80994`。
+- 合并后 daemon：`uv run pytest -q` → `241 passed in 16.07s`。
+- 合并后 web：`pnpm test -- --run` → `23 files / 246 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
+- 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- Windows `taskkill /F /T` 与真实四平台账号未在当前 macOS 环境实测，作为交付 concern 保留；本轮未 push、未创建 PR。
+- 已执行 `wt remove afk/issue-100 -D --foreground` 清理 worktree 与本地分支；#100 已关闭。
+
+### 本轮 Merger summarizing（2026-08-29）
+
+- 目标分支：`develop`；#100 已完成本地拓扑合并，merge commit 为 `5e80994`；合并冲突仅涉及 implementation notes。
+- #100 与其全部阻塞子 Issue 已关闭，父 PRD #80 已一并关闭。
+- 最终验证：daemon `241 passed`；web `23 files / 246 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`。
+- 保留 concern：真实四平台账号发布与 Windows `taskkill /F /T` 未实机验证；web 既有 jsdom navigation stderr 非阻断。
+- `develop` 全程未 push、未创建 PR。
