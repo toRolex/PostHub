@@ -930,3 +930,10 @@
 
 - `git merge afk/issue-95 --no-edit` 发生唯一冲突：`docs/implementation-notes.md`；已逐侧保留 develop 的本轮准备记录与 #95 完整实现/审查记录，未使用 `-X`，生成 merge commit `488b817`。
 - 下一步：立即执行 daemon、web、build、Tauri 全量验证；通过后清理 #95 worktree/branch，再处理 #98。
+
+### Issue #95 Merger 执行记录（2026-08-29）
+
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `227 passed in 7.91s`。
+- 合并后 web：`pnpm test -- --run` → `21 files / 237 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1706 modules transformed）。
+- 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；web 保留既有 jsdom navigation stderr。
+- #95 合并与全量验证通过；下一步执行 `wt remove afk/issue-95 -D --foreground` 清理 worktree/branch，再按同一流程处理 #98。
