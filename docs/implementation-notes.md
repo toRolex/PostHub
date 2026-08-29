@@ -1040,3 +1040,11 @@
 - Reviewer 初审：发现异常 IPC 早退未必终止仍存活的 child，且收到 result 后仍可能沿用执行超时判断；另外隔离执行抛异常时 heartbeat 清理不完整。计划用统一 finally 回收 child、result 后停止执行预算，并确保 heartbeat 始终结束。
 - Reviewer 修补：隔离 child 的 IPC 轮询在收到 result 后停止执行超时判断；所有异常早退统一在 finally 等待并强杀残留 child；校验 result 的 error/detail/diagnostics 形状；wrapper 导入/安装失败也回传带 traceback 的 result；heartbeat 对隔离执行异常始终清理。
 - Reviewer 验证：实际启动 Flask `/postRuns` 服务并通过 HTTP 提交 immediate item，GET 观察到 child 回传 fail-closed 错误及 `completed_with_failures`；malformed JSON 返回 400。daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`；web build、Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets`、Ruff 与 `git diff --check` 均通过。
+
+### Issue #96 Merger 执行记录（2026-08-29）
+
+- `git merge afk/issue-96 --no-edit` 仅冲突于 `docs/implementation-notes.md`；逐侧保留本轮合并准备记录与 #96 完整实现/审查记录，未使用 `-X`，生成 merge commit `75e300d`。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `234 passed in 14.42s`。
+- 合并后 web：`pnpm test -- --run` → `23 files / 245 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
+- 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- #96 合并与全量验证通过；Windows `taskkill /F /T` 未在 Windows 实机验证，作为已知 concern 记录。
