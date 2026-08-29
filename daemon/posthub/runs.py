@@ -33,6 +33,15 @@ DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
 logger = logging.getLogger(__name__)
+
+
+def _history_duplicates_confirmed() -> bool:
+    value = request.headers.get("X-PostHub-Confirm-Duplicates")
+    if value is None:
+        value = request.args.get("confirmDuplicates")
+    return str(value).lower() in {"1", "true", "yes"}
+
+
 LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
 RETRYABLE_ITEM_STATUSES = frozenset({"failed", "skipped", "interrupted"})
 TERMINAL_ITEM_STATUSES = frozenset({"success", "failed", "skipped", "interrupted"})
@@ -134,7 +143,8 @@ class RunStore:
                     updated_at TEXT NOT NULL,
                     lease_owner TEXT,
                     lease_until TEXT,
-                    source_item_id TEXT
+                    source_item_id TEXT,
+                    record_context_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_run_items_status ON run_items(status);
@@ -156,6 +166,11 @@ class RunStore:
                 or "skipped" not in items_sql
                 or "interrupted" not in items_sql
                 or "source_item_id"
+                not in {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
+                }
+                or "record_context_json"
                 not in {
                     row[1]
                     for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
@@ -302,6 +317,7 @@ class RunStore:
                 "lease_owner": "NULL",
                 "lease_until": "NULL",
                 "source_item_id": "NULL",
+                "record_context_json": "'{}'",
             }.items()
         }
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -333,7 +349,8 @@ class RunStore:
                 updated_at TEXT NOT NULL,
                 lease_owner TEXT,
                 lease_until TEXT,
-                source_item_id TEXT
+                source_item_id TEXT,
+                record_context_json TEXT NOT NULL DEFAULT '{}'
             );
             """
         )
@@ -349,12 +366,14 @@ class RunStore:
             INSERT INTO run_items
               (id, run_id, ordinal, status, submitted_json, effective_json, error,
                error_summary, error_detail, diagnostics_json, dedupe_key, created_at,
-               updated_at, lease_owner, lease_until, source_item_id)
+               updated_at, lease_owner, lease_until, source_item_id,
+               record_context_json)
             SELECT id, run_id, ordinal, status, submitted_json, effective_json, error,
                    {item_expressions["error_summary"]}, {item_expressions["error_detail"]},
                    {item_expressions["diagnostics_json"]}, {item_expressions["dedupe_key"]},
                    created_at, updated_at, {item_expressions["lease_owner"]},
-                   {item_expressions["lease_until"]}, {item_expressions["source_item_id"]}
+                   {item_expressions["lease_until"]}, {item_expressions["source_item_id"]},
+                   {item_expressions["record_context_json"]}
             FROM run_items_old
             """
         )
@@ -402,8 +421,8 @@ class RunStore:
                         """
                         INSERT INTO run_items
                           (id, run_id, ordinal, status, submitted_json, effective_json,
-                           dedupe_key, created_at, updated_at)
-                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                           dedupe_key, created_at, updated_at, record_context_json)
+                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(uuid.uuid4()),
@@ -414,6 +433,15 @@ class RunStore:
                             key,
                             now,
                             now,
+                            json.dumps(
+                                {
+                                    "accountId": item.account_snapshot.account_id,
+                                    "accountFile": item.account_snapshot.file_path,
+                                    "accountName": item.account_snapshot.user_name,
+                                    "platform": item.platform,
+                                },
+                                ensure_ascii=False,
+                            ),
                         ),
                     )
                 except sqlite3.IntegrityError as err:
@@ -463,7 +491,8 @@ class RunStore:
             if requested_ids is None:
                 rows = conn.execute(
                     """
-                    SELECT id, ordinal, status, submitted_json, effective_json
+                    SELECT id, ordinal, status, submitted_json, effective_json,
+                           record_context_json
                     FROM run_items WHERE run_id = ? ORDER BY ordinal
                     """,
                     (parent_run_id,),
@@ -472,7 +501,8 @@ class RunStore:
                 placeholders = ",".join("?" for _ in requested_ids)
                 rows = conn.execute(
                     f"""
-                    SELECT id, ordinal, status, submitted_json, effective_json
+                    SELECT id, ordinal, status, submitted_json, effective_json,
+                           record_context_json
                     FROM run_items
                     WHERE run_id = ? AND id IN ({placeholders})
                     ORDER BY ordinal
@@ -501,8 +531,9 @@ class RunStore:
                         """
                         INSERT INTO run_items
                           (id, run_id, ordinal, status, submitted_json, effective_json,
-                           dedupe_key, created_at, updated_at, source_item_id)
-                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+                           dedupe_key, created_at, updated_at, source_item_id,
+                           record_context_json)
+                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(uuid.uuid4()),
@@ -514,6 +545,7 @@ class RunStore:
                             now,
                             now,
                             row["id"],
+                            row["record_context_json"],
                         ),
                     )
                 except sqlite3.IntegrityError as err:
@@ -770,6 +802,24 @@ class RunStore:
                 )
             return True
 
+    def get_item_record_context(self, run_id: str, item_id: str) -> dict[str, Any]:
+        """读取受理时冻结的账号/平台快照，供成功历史记录使用。"""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT record_context_json FROM run_items
+                WHERE run_id = ? AND id = ?
+                """,
+                (run_id, item_id),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            context = json.loads(row["record_context_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return context if isinstance(context, dict) else {}
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
             run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -856,12 +906,15 @@ class RunWorker:
         *,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         stop_timeout: float = DEFAULT_STOP_TIMEOUT,
+        on_success: Callable[[str, str, Mapping[str, Any], Mapping[str, Any]], None]
+        | None = None,
     ) -> None:
         self.store = store
         self.uploader = uploader if uploader is not None else FailClosedUploader()
         self.step_delay = step_delay
         self.lease_seconds = lease_seconds
         self.stop_timeout = stop_timeout
+        self.on_success = on_success
         self._owner_token = str(uuid.uuid4())
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -917,6 +970,19 @@ class RunWorker:
                 error = str(exc)
                 detail = traceback.format_exc()
                 logger.exception("执行 item 异常：run=%s item=%s", run_id, item_id)
+            if error is None and self.on_success is not None:
+                try:
+                    self.on_success(
+                        run_id,
+                        item_id,
+                        effective,
+                        self.store.get_item_record_context(run_id, item_id),
+                    )
+                except Exception:
+                    # 外部发布已成功；历史记录异常不能把成功动作伪装成失败。
+                    logger.exception(
+                        "immediate 发布记录写入失败：run=%s item=%s", run_id, item_id
+                    )
             try:
                 finished = self.store.finish_item(
                     run_id,
@@ -1076,6 +1142,10 @@ def register_run_routes(
     run_db_path: Path,
     *,
     uploader: Callable[[Mapping[str, Any]], None] | None = None,
+    on_success: Callable[[str, str, Mapping[str, Any], Mapping[str, Any]], None]
+    | None = None,
+    find_duplicates: Callable[[Iterable[EffectiveBatchItem]], list[dict[str, Any]]]
+    | None = None,
 ) -> RunWorker:
     """注册 accepted-run 路由并启动独立 worker；重复注册保持幂等。"""
     existing = app.extensions.get(_RUN_SERVICE_MARKER)
@@ -1083,7 +1153,7 @@ def register_run_routes(
         return existing["worker"]
 
     store = RunStore(run_db_path)
-    worker = RunWorker(store, uploader=uploader)
+    worker = RunWorker(store, uploader=uploader, on_success=on_success)
 
     @app.post("/postRuns")
     @app.post("/posthub/runs")
@@ -1109,6 +1179,19 @@ def register_run_routes(
             normalized = normalize_publish_payloads(
                 payloads, _read_publish_accounts(official_db_path)
             )
+            if find_duplicates is not None and not _history_duplicates_confirmed():
+                duplicates = find_duplicates(normalized.effective)
+                if duplicates:
+                    return jsonify(
+                        {
+                            "code": 409,
+                            "msg": "发现已有成功发布记录，请确认是否重新发布",
+                            "data": {
+                                "kind": "history_duplicate",
+                                "duplicates": duplicates,
+                            },
+                        }
+                    ), 409
             run_id = store.create_run(normalized.effective)
         except ActiveRunConflict as err:
             return jsonify(

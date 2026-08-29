@@ -80,13 +80,35 @@ def compose_posthub_backend(
     db_init.ensure_db(db_path=path)
     install_uploader_wrapper()
     register_posthub_routes(app, path)
-    register_publish_record_routes(app, run_path)
+    record_store = register_publish_record_routes(app, run_path, path)
     register_declaration_hooks(app, path)
+
+    def record_run_success(
+        run_id: str,
+        item_id: str,
+        effective: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> None:
+        required = ("accountId", "accountFile", "accountName", "platform")
+        if any(key not in context for key in required):
+            raise ValueError("immediate 成功记录缺少受理时账号快照")
+        record_store.record_successful_payload(
+            effective,
+            account_id=context["accountId"],
+            account_file=context["accountFile"],
+            account_name=context["accountName"],
+            platform=context["platform"],
+            run_id=run_id,
+            run_item_id=item_id,
+        )
+
     register_run_routes(
         app,
         path,
         run_path,
         uploader=execute_effective_item if uploader is None else uploader,
+        on_success=record_run_success,
+        find_duplicates=record_store.find_successful_duplicates,
     )
     app.extensions[_COMPOSITION_MARKER] = {
         "db_path": path,

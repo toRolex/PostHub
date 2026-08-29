@@ -5,6 +5,7 @@ import {
   getWeekDates,
   mondayOfWeek,
   recordsByAccountDate,
+  recordDate,
   type CalendarAccount,
 } from "./calendar";
 import type { PublishRecord } from "../api/official";
@@ -65,6 +66,25 @@ describe("账号周日历日期与分桶", () => {
     };
     expect(buildCalendarRows([currentAccount], records)).toEqual([
       { id: 1, file: "douyin.json", name: "抖音号", platform: "douyin" },
+    ]);
+  });
+
+  it("immediate published record 使用 publishedAt 作为日历日期和排序时间", () => {
+    const immediate: PublishRecord = {
+      ...records[0],
+      id: 2,
+      videoId: "b.mp4",
+      videoTitle: "立即视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-31 09:05:00",
+    };
+    expect(recordDate(immediate)).toBe("2026-08-31");
+    const buckets = recordsByAccountDate([records[0], immediate]);
+    expect(buckets.get("1|2026-08-31")?.map((record) => record.videoId)).toEqual([
+      "b.mp4",
+      "a.mp4",
     ]);
   });
 });

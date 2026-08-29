@@ -248,6 +248,16 @@ export function existingRunIdFromError(error: unknown): string | undefined {
   return typeof runId === "string" && runId ? runId : undefined;
 }
 
+export function duplicateRecordsFromError(error: unknown): PublishRecord[] {
+  if (!(error instanceof OfficialApiError) || error.status !== 409) return [];
+  const data = error.data;
+  if (!data || typeof data !== "object") return [];
+  const duplicates = (data as { kind?: unknown; duplicates?: unknown }).duplicates;
+  return (data as { kind?: unknown }).kind === "history_duplicate" && Array.isArray(duplicates)
+    ? (duplicates as PublishRecord[])
+    : [];
+}
+
 interface RequestOptions {
   signal?: AbortSignal;
 }
@@ -341,13 +351,21 @@ export interface PublishRecord {
   platform: Platform;
   videoId: string;
   videoTitle: string;
-  effectiveScheduledFor: string;
-  scheduledFor: string;
+  effectiveScheduledFor: string | null;
+  scheduledFor: string | null;
   status: PublishRecordStatus;
   publishedAt: string | null;
   runId: string | null;
   runItemId: string | null;
   recordedAt: string;
+}
+
+export interface PublishDuplicateCheck {
+  record: PublishRecord;
+}
+
+export interface PublishDuplicateResponse {
+  duplicates: PublishRecord[];
 }
 
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
@@ -507,13 +525,36 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  /** PostHub-owned immediate accepted run：一次可受理一个或多个 item；200 仅表示已受理。 */
-  acceptRun: (base: string, payload: PostVideoRequest | PostVideoRequest[]) =>
-    request<AcceptedRun>(base, "/postRuns", {
+  /** 查询即将提交的素材×账号是否有本地 published 历史。 */
+  checkPublishRecords: (
+    base: string,
+    payload: PostVideoRequest | PostVideoRequest[],
+  ): Promise<PublishRecord[]> =>
+    request<PublishDuplicateResponse>(base, "/publishRecords/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }),
+    }).then((result) => result.duplicates),
+  /** PostHub-owned immediate accepted run；可显式确认跨提交历史重复。 */
+  acceptRun: (
+    base: string,
+    payload: PostVideoRequest | PostVideoRequest[],
+    options?: { confirmDuplicates?: boolean },
+  ) =>
+    request<AcceptedRun>(
+      base,
+      `/postRuns${options?.confirmDuplicates ? "?confirmDuplicates=true" : ""}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(options?.confirmDuplicates
+            ? { "X-PostHub-Confirm-Duplicates": "true" }
+            : {}),
+        },
+        body: JSON.stringify(payload),
+      },
+    ),
   /** 查询 run/item 的持久化生命周期快照。 */
   getRun: (base: string, runId: string) =>
     request<RunSnapshot>(base, `/postRuns/${encodeURIComponent(runId)}`),

@@ -11,6 +11,7 @@ import {
   getWeekDates,
   mondayOfWeek,
   recordsByAccountDate,
+  recordDateTime,
   shiftWeek,
 } from "../domain/calendar";
 import { PLATFORM_NAMES } from "../api/platformNames";
@@ -41,7 +42,9 @@ function parseDailyTimes(raw: string): string[] {
 
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
-function recordTime(value: string): string {
+function recordTime(record: Parameters<typeof recordDateTime>[0]): string {
+  const value = recordDateTime(record);
+  if (!value) return "—";
   const separator = value.includes("T") ? "T" : " ";
   return value.split(separator)[1]?.slice(0, 5) ?? value;
 }
@@ -195,7 +198,7 @@ export function ScheduleView() {
                             className={`mb-1 rounded-sm border-l-2 px-2 py-1 text-caption ${record.status === "published" ? "border-success bg-success-tint text-success-deep" : "border-accent bg-accent-tint text-accent-ink"}`}
                             title={record.videoTitle}
                           >
-                            <span className="font-medium tabular-nums">{recordTime(record.effectiveScheduledFor)}</span>{" "}
+                            <span className="font-medium tabular-nums">{recordTime(record)}</span>{" "}
                             <span>{record.videoTitle}</span>
                           </div>
                         ))}
@@ -207,7 +210,7 @@ export function ScheduleView() {
             </tbody>
           </table>
           {!recordsLoading && calendarAccounts.length === 0 && (
-            <p className="px-4 py-6 text-center text-label text-muted">本周暂无定时记录</p>
+            <p className="px-4 py-6 text-center text-label text-muted">本周暂无发布记录</p>
           )}
           {recordsLoading && <p className="px-4 py-3 text-label text-muted">正在查询日历记录…</p>}
         </div>

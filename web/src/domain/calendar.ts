@@ -36,8 +36,12 @@ export function shiftWeek(weekStart: Date, offset: number): Date {
   return shifted;
 }
 
+export function recordDateTime(record: PublishRecord): string | null {
+  return record.effectiveScheduledFor ?? record.publishedAt;
+}
+
 export function recordDate(record: PublishRecord): string {
-  return record.effectiveScheduledFor.slice(0, 10);
+  return recordDateTime(record)?.slice(0, 10) ?? "";
 }
 
 export function calendarAccountKey(account: Pick<CalendarAccount, "id" | "file">): string {
@@ -53,13 +57,17 @@ export function recordsByAccountDate(
 ): Map<string, PublishRecord[]> {
   const buckets = new Map<string, PublishRecord[]>();
   for (const record of records) {
-    const key = `${record.accountId}|${recordDate(record)}`;
+    const date = recordDate(record);
+    if (!date) continue;
+    const key = `${record.accountId}|${date}`;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(record);
     else buckets.set(key, [record]);
   }
   for (const bucket of buckets.values()) {
-    bucket.sort((a, b) => a.effectiveScheduledFor.localeCompare(b.effectiveScheduledFor));
+    bucket.sort((a, b) =>
+      (recordDateTime(a) ?? "").localeCompare(recordDateTime(b) ?? ""),
+    );
   }
   return buckets;
 }

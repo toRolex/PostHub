@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import {
   buildBatchItemsFromMatrix,
+  duplicateRecordsFromError,
   existingRunIdFromError,
   officialApi,
+  type PublishRecord,
 } from "../api/official";
 import type { PlatformFields } from "../api/types";
 import {
@@ -107,6 +109,32 @@ function expandItemResults(
 
 /* ───────────────────────── store 实现 ───────────────────────── */
 
+function confirmDuplicateRecords(records: PublishRecord[]): boolean {
+  if (records.length === 0) return true;
+  const detail = records
+    .map(
+      (record) =>
+        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
+    )
+    .join("\n");
+  return typeof window !== "undefined" && window.confirm(
+    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
+  );
+}
+
+async function acceptWithDuplicateConfirmation(
+  base: string,
+  payload: ReturnType<typeof buildBatchItemsFromMatrix>,
+): Promise<Awaited<ReturnType<typeof officialApi.acceptRun>>> {
+  try {
+    return await officialApi.acceptRun(base, payload);
+  } catch (error) {
+    const duplicates = duplicateRecordsFromError(error);
+    if (duplicates.length === 0 || !confirmDuplicateRecords(duplicates)) throw error;
+    return officialApi.acceptRun(base, payload, { confirmDuplicates: true });
+  }
+}
+
 export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
   ...initialBatchPublishState,
 
@@ -205,7 +233,7 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
       set,
       async () => {
         if (s.items.every((item) => item.mode === "immediate")) {
-          const accepted = await officialApi.acceptRun(base, request);
+          const accepted = await acceptWithDuplicateConfirmation(base, request);
           useRunStore.getState().rememberAcceptedRun(accepted);
           const itemResults = expandItemResults(s.items, true, "已受理，后台执行中");
           set({ itemResults });
@@ -220,9 +248,12 @@ export const useBatchPublishStore = create<BatchPublishState>()((set, get) => ({
         end: { submitting: false },
         // 请求级错误：每项独立标识失败；409 明确本次未受理并保留已有 run。
         onError: (message, error) => {
+          const duplicates = duplicateRecordsFromError(error);
           const existingRunId = existingRunIdFromError(error);
           return {
-            itemResults: existingRunId
+            itemResults: duplicates.length > 0
+              ? expandItemResults(s.items, false, "发现历史发布记录，已取消发布")
+              : existingRunId
               ? expandItemResults(
                   s.items,
                   false,

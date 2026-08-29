@@ -2,7 +2,9 @@ import { create } from "zustand";
 import {
   officialApi,
   buildPostVideoRequest,
+  duplicateRecordsFromError,
   existingRunIdFromError,
+  type PublishRecord,
 } from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
@@ -114,6 +116,32 @@ export interface PublishFormValues {
   startDays: number;
   /** 内容声明按平台分键（issue #43）。空字段视为不覆盖账号默认。 */
   platformFields: PlatformFields;
+}
+
+export function confirmDuplicateRecords(records: PublishRecord[]): boolean {
+  if (records.length === 0) return true;
+  const detail = records
+    .map(
+      (record) =>
+        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
+    )
+    .join("\n");
+  return typeof window !== "undefined" && window.confirm(
+    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
+  );
+}
+
+async function acceptWithDuplicateConfirmation(
+  base: string,
+  payload: ReturnType<typeof buildPostVideoRequest>,
+): Promise<Awaited<ReturnType<typeof officialApi.acceptRun>>> {
+  try {
+    return await officialApi.acceptRun(base, payload);
+  } catch (error) {
+    const duplicates = duplicateRecordsFromError(error);
+    if (duplicates.length === 0 || !confirmDuplicateRecords(duplicates)) throw error;
+    return officialApi.acceptRun(base, payload, { confirmDuplicates: true });
+  }
 }
 
 interface PublishState extends PublishFormValues {
@@ -283,7 +311,7 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
               },
             });
             if (!s.timerEnabled) {
-              const accepted = await officialApi.acceptRun(base, payload);
+              const accepted = await acceptWithDuplicateConfirmation(base, payload);
               useRunStore.getState().rememberAcceptedRun(accepted);
               results[p] = {
                 ok: true,
@@ -295,8 +323,11 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
               results[p] = { ok: true, msg: "发布任务已提交" };
             }
           } catch (e) {
+            const duplicates = duplicateRecordsFromError(e);
             const existingRunId = existingRunIdFromError(e);
-            results[p] = existingRunId
+            results[p] = duplicates.length > 0
+              ? { ok: false, msg: "发现历史发布记录，已取消发布" }
+              : existingRunId
               ? {
                   ok: false,
                   msg: `本次未受理：已有运行 ${existingRunId}`,

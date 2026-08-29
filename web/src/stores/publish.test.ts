@@ -152,6 +152,79 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(s.results.wechat?.ok).toBe(true);
   });
 
+  it("跨提交历史重复先二次确认；取消不创建 run，确认后重发", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "new-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+    await usePublishStore.getState().submit();
+    expect(confirm).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePublishStore.getState().results.douyin?.msg).toBe(
+      "发现历史发布记录，已取消发布",
+    );
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValueOnce(true);
+    await usePublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const confirmedInit = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((confirmedInit.headers as Record<string, string>)["X-PostHub-Confirm-Duplicates"]).toBe("true");
+    expect(useRunStore.getState().runId).toBe("new-run");
+  });
+
   it("409 冲突显示本次未受理并保留已有 run，不能生成本地成功状态", async () => {
     vi.stubGlobal(
       "fetch",

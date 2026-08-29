@@ -997,3 +997,39 @@
 - #95、#98 已完成全量验证、关闭，并通过 `wt remove afk/issue-95 -D --foreground`、`wt remove afk/issue-98 -D --foreground` 清理对应 worktree/branch。
 - 最终验证：daemon `231 passed`；web `23 files / 244 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；冲突标记为 0，`git diff --check` 通过。
 - 父 Issue #80 仍为 OPEN，未关闭；本轮未 push、未创建 PR。
+
+## Issue #99：记录 immediate 发布并提供跨提交重复确认
+
+### 目标与计划
+
+- 仅处理 immediate 成功记录、可空 scheduled 时间、日历时间回退，以及基于稳定 fingerprint 的跨提交成功重复软警示与二次确认；不改官方源码、不恢复通用 scheduler，不混入其它 issue。
+- 严格 TDD：先补 publish record nullable/immediate 写入与 calendar fallback 失败测试，再补 worker 成功记录与 fingerprint lookup，最后补 HTTP preflight/confirm 与前端确认 seam。
+- 复用现有 `PublishRecordStore` 作为日历与重复检查的唯一 adapter；同批重复 400 和活动 run 409 保持 #94 语义不变；取消确认不得创建 run，确认后仅创建一次。
+
+### 调研结论
+
+- Issue #99 明确要求：immediate success 写 `publishedAt`；`effectiveScheduledFor` 可空；日历使用 `effectiveScheduledFor ?? publishedAt`；仅本地 success 记录参与跨提交 fingerprint 检查；取消确认不创建 run，确认后可重发。
+- 当前 `publish_records` 的两个 scheduled 时间列为 `NOT NULL`，且 `persist_one_success()` 跳过 immediate；`RunWorker` 没有成功记录回调，`PublishRecord` 无 fingerprint。
+- 当前单视频 immediate 按平台逐个 `/postRuns`，批量 immediate 一次 `/postRuns`；确认必须在所有 run 创建前完成，避免部分提交。
+- prototype 没有 #99 重复确认 UI；可复用 BatchPreviewDialog 结构，但正式实现需要纯函数/状态 seam 覆盖取消与确认。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已确认目标 worktree `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-99`、分支 `afk/issue-99`，初始工作树干净；已读取 Issue #99/#80、CONTEXT、ADR-0001/0006/0009、相关实现记录及 prototype。
+- 已完成只读调研，未修改业务代码；下一步先新增 daemon publish-record immediate/nullable 失败测试并运行 Red。
+- Red：新增 immediate record、nullable 时间、publishedAt 日期回退、稳定 fingerprint 与重复确认 HTTP 契约测试；定向测试首轮 `4 failed, 4 passed`，失败集中于 immediate 被跳过、schema NOT NULL、缺 fingerprint/查重 API/路由。
+- Green（daemon）：publish_record schema 迁移为 nullable，增加 fingerprint 索引与成功 payload 记录；RunWorker 保存受理时账号快照并在 uploader 成功后写 published record，retry 复用快照；新增 `/publishRecords/check`，`/postRuns` 无确认遇历史成功返回 history_duplicate 409，确认 header/query 可继续受理。daemon publish-record 定向 `8 passed`，runs 定向 `50 passed`。
+- Green（web）：PublishRecord 时间字段改为 nullable；日历与 ScheduleView 使用 `effectiveScheduledFor ?? publishedAt`，空状态覆盖 published；immediate 发布遇 history_duplicate 弹出二次确认，取消不创建 run，确认以 header 重发。前端定向实际全量 `23 files / 246 tests passed`。
+- 当前 Deviations：未新增业务偏离；为避免破坏既有 record JSON 精确契约，fingerprint 仅存储/查询内部使用，不暴露为 API 字段。下一步运行 web build、daemon/web/Tauri 全量验证，审查差异后提交中文语义原子 commit。
+
+### 最终验证
+
+- daemon：`cd daemon && uv run pytest -q` → `236 passed`；相关 Python Ruff check → `All checks passed!`，format check → `5 files already formatted`。
+- web：`cd web && pnpm test -- --run` → `23 files / 247 tests passed`；`cd web && pnpm run build` → tsc 与 Vite build 通过（1708 modules transformed）。保留既有 jsdom navigation stderr。
+- Tauri：首次因忽略的 `src-tauri/resources/{daemon,bin,browser}` 不存在失败；仅补齐本地空目录后 `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未进入 Git。
+- Runtime verify：隔离 Flask socket 通过真实 HTTP 观察 immediate `/postVideo` 返回 200 并写 `publishedAt`、两个时间字段为 null；`/publishRecords/check` 返回 1 条 published duplicate；未确认 `/postRuns` 返回 409 `kind=history_duplicate` 且未创建 run；带确认 header/query 返回 200，查询 run 为 `completed/success`。空查重数组返回 JSON 400；未触发真实平台发布。
+- `git diff --check` 通过；未修改官方 `daemon/sau_backend.py`/`uploader/*`，未 push、未建 PR、未 merge、未关闭 Issue #99。
