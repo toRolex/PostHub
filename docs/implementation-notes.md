@@ -997,3 +997,13 @@
 - #95、#98 已完成全量验证、关闭，并通过 `wt remove afk/issue-95 -D --foreground`、`wt remove afk/issue-98 -D --foreground` 清理对应 worktree/branch。
 - 最终验证：daemon `231 passed`；web `23 files / 244 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；冲突标记为 0，`git diff --check` 通过。
 - 父 Issue #80 仍为 OPEN，未关闭；本轮未 push、未创建 PR。
+
+## AFK Merger：#96/#97/#99（2026-08-29）
+
+### 准备
+
+- 目标仓库：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop`，分支 `develop`，初始工作树干净；根仓库 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub` 的既有用户改动不触碰。
+- 待合入分支：`afk/issue-96`、`afk/issue-97`、`afk/issue-99`；按此顺序执行 `git merge <branch> --no-edit`，只做拓扑合并，不 squash、不使用 `-X`，不 push、不创建 PR。
+- Issue 状态均为 OPEN，标签均为 `ready-for-agent`：#96「实现单 item 硬超时隔离」、#97「实现 daemon 重启后的 interrupted 恢复」、#99「记录 immediate 发布并提供跨提交重复确认」。
+- 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；冲突逐侧读取后最小整合。全部成功后清理对应 worktree/branch、关闭 #96/#97/#99，并提交本轮 summarizing commit。
+- 已知 concern：Windows `taskkill` 路径未在 Windows 实机验证；本轮记录为 concern，不因此阻塞本地拓扑合并。
