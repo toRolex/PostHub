@@ -619,6 +619,26 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     expect("platformFields" in douyinBody).toBe(false);
   });
 
+  it("publish records 查询使用日期范围并保留响应数组", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: 200, msg: null, data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      officialApi.getPublishRecords("http://127.0.0.1:5409", "2026-08-31", "2026-09-06"),
+    ).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/publishRecords?from=2026-08-31&to=2026-09-06",
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("视频号 timer 保留原始时刻，并提交最近整点与跨日进位元数据", () => {
     const [body] = buildBatchItemsFromMatrix(
       [

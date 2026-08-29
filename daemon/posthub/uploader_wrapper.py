@@ -1152,6 +1152,12 @@ def _execute_effective_group(
     for item in items:
         with _declaration_context(_declaration_item_for_effective(item)):
             adapter.execute_item(item)
+        # 官方发布函数无论单发还是 batch 都在此处返回成功；记录 hook
+        # 只在副作用成功后触发，异常会沿官方调用链抛出，不写记录。
+        if has_request_context():
+            on_success = getattr(g, "posthub_record_effective_success", None)
+            if callable(on_success):
+                on_success(item)
 
 
 def _inject_declaration_to_douyin(

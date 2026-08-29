@@ -873,3 +873,38 @@
 - 五个目标 Issue 均已关闭；对应 `afk/issue-89`、`91`、`92`、`93`、`94` worktree 与本地分支均已清理。
 - 各轮最终验证通过；最后一轮结果为 daemon `216 passed`、web `21 files / 232 tests passed`、web build 通过、Tauri lib `17 passed`/bin `0 tests`，Python Ruff 与冲突标记检查通过。
 - 全程未 push、未创建 PR；保留既有 web jsdom navigation stderr 作为非阻断测试噪声。
+
+## Issue #98：scheduled 发布记录接入账号周日历
+
+### 目标与计划
+
+- 仅实现 scheduled 成功发布的本地 `publish_record` 快照与定时页账号周日历；不修改官方 `sau_backend.py` 或 `uploader/*`，不恢复通用 scheduler，不触碰其它 issue。
+- 先以官方 `/postVideo`、`/postVideoBatch` 的 PostHub before/after request seam 建立失败测试：成功 timer 写记录、失败不写、最终计划时间与账号/平台/标题快照保真；再实现独立 history API 和前端日历查询/周导航/错误保留。
+- 使用既有独立 `posthub-runs.db` 作为 PostHub-owned history 存储，publish_record 不跨库外键引用官方账号；记录依赖受理时 effective payload 与账号观察值，确保改名/删除后历史不变。
+
+### 预确认 seams
+
+- daemon：官方 timer HTTP 请求的 normalization/effective payload 与响应成功边界；`RunStore`/独立 SQLite 的记录写入和日期范围查询；`/publishRecords` JSON API。
+- web：`officialApi.getPublishRecords`；纯日期周计算/按账号分桶 helper；`ScheduleView` 账号周日历的可见文本与失败提示。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已读取 Issue #98、父 Issue #80 的实施 spec、`CONTEXT.md`、ADR-0001/0005/0009 及现有 runs/composition/routes、ScheduleView、official API/types；确认 scheduled 仍走官方 `/postVideo`/`/postVideoBatch`，当前没有 publish_record 或日历数据源。
+- 已启动只读调研，等待相关 prototype/代码定位结果；下一步先新增 daemon 记录 persistence/API 的失败测试，再实现最小垂直切片。
+- 只读调研确认：定时仍走官方 `/postVideo`/`/postVideoBatch`，`publishDatetimes` 只覆盖视频号/抖音；小红书/快手需用受理时本地时钟补算。`publish_record` 需预留 `publishedAt`/run 关联能力，但当前 scheduled 不进入 `/postRuns`。
+- Red：新增 `daemon/tests/test_publish_records.py`，先验证成功记录、失败不写、账号改名/删除后快照保留；首轮 3 项因 `/publishRecords` 尚未注册返回 404。
+- Green（daemon）：新增独立 `posthub.publish_records.PublishRecordStore` 与 `/publishRecords` 日期范围查询；组合入口注册记录 schema/API。记录按视频粒度保存账号 ID、文件名、显示名、平台、标题、scheduled/effective 时间、状态及 nullable run/item 关联。
+- Green（写入边界）：记录 hook 在官方 wrapper 每个 effective item 成功返回后落库，batch 前项成功/后项失败只保留已成功项；after_request 作为未经过 wrapper 的成功路径兜底，失败响应不写。
+- Red→Green（web）：新增 calendar domain/store/API seam，周一到周日日期计算、账号/日期分桶、范围查询与查询失败保留旧记录测试；`ScheduleView` 增加 Variant B 全账号周日历、前后周/本周、今日高亮、scheduled/published 色彩和已删除账号历史快照展示。
+
+### 最终验证
+
+- daemon：`cd daemon && uv run pytest -q` → `220 passed`。
+- web：`cd web && pnpm test -- --run` → `23 files / 237 tests passed`；`pnpm run build` → tsc/Vite 通过。
+- Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 resources 目录，未入 Git。
+- Python：涉及文件 `uv run --project daemon --with ruff ruff check`、`ruff format --check`、`git diff --check` 均通过；web 测试保留既有 jsdom navigation stderr。
+- Deviations：尝试启动独立 HTTP runtime 验证服务时被当前执行权限拦截，未以此宣称 runtime 通过；daemon HTTP/记录行为由临时 Flask seam 测试覆盖，未触发真实平台发布。

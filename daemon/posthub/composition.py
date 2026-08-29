@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import db_init
+
+from posthub.publish_records import register_publish_record_routes
 from posthub.routes import register_declaration_hooks, register_posthub_routes
 from posthub.runs import register_run_routes, shutdown_run_worker
 from posthub.uploader_wrapper import execute_effective_item
@@ -27,14 +29,13 @@ def _configure_official_base_dir(base_dir: Path) -> None:
     不会影响已导入路由。因此在组合边界集中更新这些运行时引用，而不修改
     上游源文件；官方路由与 PostHub 路由随后都解析到同一个 database.db。
     """
+    import conf
     import myUtils.auth as official_auth
     import myUtils.login as official_login
     import myUtils.postVideo as official_post_video
+    import sau_backend
     import uploader.douyin_uploader.main as douyin_main
     import uploader.tencent_uploader.main as tencent_main
-
-    import conf
-    import sau_backend
 
     conf.BASE_DIR = base_dir
     for module in (
@@ -79,6 +80,7 @@ def compose_posthub_backend(
     db_init.ensure_db(db_path=path)
     install_uploader_wrapper()
     register_posthub_routes(app, path)
+    register_publish_record_routes(app, run_path)
     register_declaration_hooks(app, path)
     register_run_routes(
         app,
