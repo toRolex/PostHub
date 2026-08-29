@@ -11,7 +11,7 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
-describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () => {
+describe("batchPublish store（矩阵批量 → /postRuns accepted）", () => {
   beforeEach(() => {
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
     useBatchPublishStore.setState(initialBatchPublishState);
@@ -233,7 +233,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
 
   /* ──────────── submit：核心矩阵展开 ──────────── */
 
-  it("submit 成功：每视频×每账号展开，请求体严格对应；itemResults 按 item 索引", async () => {
+  it("submit 成功：每视频×每账号展开，请求体严格对应；状态只写入 RunStore", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         code: 200,
@@ -268,22 +268,13 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(body[0].enableTimer).toBe(false);
     expect(useRunStore.getState().runId).toBe("run-many");
 
-    // itemResults 按 item 索引（不是按 Platform）
-    const s = useBatchPublishStore.getState();
-    expect(s.itemResults).toHaveLength(2);
-    expect(s.itemResults![0]).toMatchObject({
-      fileName: "a.mp4",
-      platform: "douyin",
-      mode: "immediate",
-      ok: true,
-      msg: "已受理，后台执行中",
-    });
-    expect(s.itemResults![1].ok).toBe(true);
+    // accepted 后不合成请求级 item 结果；详情必须来自 RunStore snapshot。
+    expect((useBatchPublishStore.getState() as unknown as Record<string, unknown>).itemResults).toBeUndefined();
+    expect(useRunStore.getState().summary).toBeNull();
   });
 
-  it("**result 键冲突回归**：矩阵模式下同平台多账号展开，每个 item 独立反馈", async () => {
-    // 旧实现以 Platform 作 key，矩阵模式下 2 账号会被覆盖为 1 项（丢反馈）。
-    // 新实现以 item index 作 key，每账号一项独立反馈。
+  it("多账号矩阵一次受理，详情不在 batch store 合成", async () => {
+    // RunStore 负责 item 事实；batch store 只提交规范化请求。
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         code: 200,
@@ -305,14 +296,8 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
 
     await useBatchPublishStore.getState().submit();
 
-    const s = useBatchPublishStore.getState();
-    expect(s.itemResults).toHaveLength(2);
-    // 两个 itemResult 不互相覆盖
-    expect(s.itemResults!.map((r) => r.itemKey).sort()).toEqual([
-      "a.mp4|douyin_a.json",
-      "a.mp4|douyin_b.json",
-    ]);
-    expect(s.itemResults!.every((r) => r.ok)).toBe(true);
+    expect((useBatchPublishStore.getState() as unknown as Record<string, unknown>).itemResults).toBeUndefined();
+    expect(useRunStore.getState().runId).toBe("run-two");
   });
 
   it("跨提交历史重复取消不创建 run，确认后才允许批量重发", async () => {
@@ -417,13 +402,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     );
 
     expect(useRunStore.getState().runId).toBeNull();
-    expect(useBatchPublishStore.getState().itemResults).toEqual([
-      expect.objectContaining({
-        ok: false,
-        msg: "本次未受理：已有运行 run-existing",
-        existingRunId: "run-existing",
-      }),
-    ]);
+    expect(useRunStore.getState().error).toContain("已有运行 run-existing");
   });
 
   it("submit 失败（请求级错误）-> 每项独立反馈失败 + 抛错", async () => {
@@ -445,10 +424,8 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     await expect(useBatchPublishStore.getState().submit()).rejects.toThrow(
       "Expected a JSON array",
     );
-    const s = useBatchPublishStore.getState();
-    expect(s.itemResults).toHaveLength(1);
-    expect(s.itemResults![0].ok).toBe(false);
-    expect(s.itemResults![0].msg).toBe("Expected a JSON array");
+    expect((useBatchPublishStore.getState() as unknown as Record<string, unknown>).itemResults).toBeUndefined();
+    expect(useRunStore.getState().error).toBe("Expected a JSON array");
   });
 
   it("submit 校验失败 -> 抛错且不发请求", async () => {
@@ -462,7 +439,11 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
 
   it("混合模式提交：immediate + timer 共存", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ code: 200, msg: null, data: null }),
+      jsonResponse({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-mixed", status: "pending", itemCount: 2 },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -502,7 +483,7 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(body[1].startDays).toBe(0);
   });
 
-  it("reset：清空 items / dailyTimes / itemResults / submitting", () => {
+  it("reset：清空 items / dailyTimes / submitting", () => {
     const { addItem, addDailyTime, reset } = useBatchPublishStore.getState();
     addItem({
       filePath: "a.mp4",
@@ -517,7 +498,6 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     const s = useBatchPublishStore.getState();
     expect(s.items).toHaveLength(0);
     expect(s.dailyTimes).toHaveLength(0);
-    expect(s.itemResults).toBeNull();
     expect(s.submitting).toBe(false);
   });
 

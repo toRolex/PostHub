@@ -75,8 +75,6 @@ def _parse_publish_datetimes(raw: Any) -> list[datetime] | None:
 
 
 def _parse_daily_time(raw: Any) -> time:
-    if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 23:
-        return time(raw)
     if not isinstance(raw, str):
         raise TypeError("dailyTimes 必须是 HH:MM 字符串数组")
     value = time.fromisoformat(raw)
@@ -433,22 +431,6 @@ class PublishRecordStore:
             )
         return records
 
-    def record_scheduled_items(
-        self,
-        items: Iterable[EffectiveBatchItem],
-        *,
-        scheduled_at: datetime | None = None,
-        run_id: str | None = None,
-        run_item_ids: Iterable[str | None] | None = None,
-    ) -> list[dict[str, Any]]:
-        """兼容旧调用名；记录 wrapper 成功的立即/定时 item。"""
-        return self.record_successful_items(
-            items,
-            scheduled_at=scheduled_at,
-            run_id=run_id,
-            run_item_ids=run_item_ids,
-        )
-
     def find_successful_duplicates(
         self, items: Iterable[EffectiveBatchItem | Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -567,7 +549,7 @@ def register_publish_record_routes(
 
     @app.before_request
     def prepare_publish_record_context():
-        if request.endpoint not in {"postVideo", "postVideoBatch"}:
+        if request.endpoint != "postVideo":
             return
         g.posthub_schedule_snapshot_at = _local_now()
         g.posthub_recorded_effective_keys = set()
@@ -636,7 +618,7 @@ def register_publish_record_routes(
         ]
         if remaining:
             try:
-                store.record_scheduled_items(
+                store.record_successful_items(
                     remaining,
                     scheduled_at=getattr(g, "posthub_schedule_snapshot_at", None),
                 )

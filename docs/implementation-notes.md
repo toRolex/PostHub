@@ -1172,3 +1172,40 @@
 - Issue #100 当前 OPEN，标签为 `ready-for-agent`；父 PRD #80 当前 OPEN，阻塞列表已全部完成（#83/#84/#88/#89/#91/#92/#96/#97/#98/#99 均已关闭）。
 - 分支 tip `0021626` 已是 develop 的祖先；仍按模板执行 merge 命令，若结果为 already up to date 则不伪造 merge commit。
 - 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；本轮保留真实四平台账号与 Windows `taskkill` 未实测 concern，不以本地 fake 验证冒充真实平台验收。
+
+## Issue #100：收缩 legacy 兼容层并完成交付验收
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-100` 的 `afk/issue-100` 分支执行最终 gate；不 push、建 PR、merge 或关闭 Issue。
+- TDD 垂直切片顺序：先锁定 accepted-only/run snapshot 与旧同步入口删除，再锁定 legacy 输入拒绝，随后锁定静态依赖/hash/document gate，最后补 e2e 验收矩阵与全量验证。
+- 删除而非继续兼容：前端请求级 `itemResults`/`expandItemResults`、官方 `/postVideoBatch` 执行路径、旧 number[]/platform_fields/flat declaration/错位参数正向兼容均从生产路径和正向测试移除；保留明确的拒绝测试与迁移边界文档。
+- 真实四平台账号与 Windows 进程树若当前环境不可执行，只能如实标记 BLOCKED/NEEDS_CONTEXT，不以 241/249 本地绿替代最终 gate。
+
+### Deviations
+
+- 为保持官方 `daemon/sau_backend.py` 副本 hash 不变，旧 `/postVideoBatch` 循环未改上游文件；组合层在进入官方 view 前固定返回 410，产品路径不可达，并由删除性测试锁定。
+- 四平台真实账号发布与 Windows `taskkill /F /T` 无当前环境凭证/系统条件，不能执行；按保守策略保留人工验收矩阵并在交付状态标记 DONE_WITH_CONCERNS。
+
+### 实现进展
+
+- 已读取 Issue #100、父 Issue #80、CONTEXT.md、CLAUDE.md、ADR-0001/0002/0005/0008/0009 及既有实现笔记；只读调研确认当前仍存在请求级伪结果、官方同步 batch 循环、四类 legacy 正向兼容、文档模型冲突和缺失真实验收门。
+- 下一步先补失败测试并运行定向 Red，再按垂直切片实现；实现记录持续追加于本节。
+- Red：新增 `daemon/tests/test_issue_100_gate.py`，7 项删除性测试先失败；失败点为旧 `/postVideoBatch` 可达、timer 被 `/postRuns` 拒绝、整数 dailyTimes/旧 declaration shape 被接受及 hash gate 路径错误。
+- Green：批量前端统一改走 `/postRuns`，移除请求级 itemResults/expandItemResults 和旧 API；组合层将 `/postVideoBatch` 固定 410；normalization、声明 context 与前端 timer 改为 canonical-only，legacy 输入显式拒绝；删除旧发布记录别名。
+- Green 验证：Issue 100 daemon gate `7 passed`，daemon 全量 `240 passed`；web 全量测试 `23 files / 246 tests passed`。
+
+### 最终验证
+
+- `bash scripts/e2e-acceptance.sh` → daemon `240 passed`、壳启停端口释放且无 `run_backend.py` 残留、web `23 files / 246 tests passed`、typecheck/Vite build 通过。
+- 变更 Python 文件 `uv run --with ruff ruff check ...` 与 `ruff format --check ...` 通过；daemon 全量 Ruff 仍包含官方副本/既有 `conf.py` 基线问题，未修改上游以保持 hash gate。
+- Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地忽略的空 resources 目录。
+- `shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；生产 web 无 prototype import、无请求级伪结果、无旧 batch API 调用。
+
+### Reviewer 复核（2026-08-29）
+
+- 已读取 reviewer 指令、Issue #100、`git diff develop..HEAD`、CONTEXT、CLAUDE、相关 ADR 与验收文档；当前审查重点为删除性 gate、accepted-only、官方副本边界、静态扫描和自动化验收。
+- 初步注意到 gate 仅按源码文本检查 prototype/import，且 `/postRuns` 定时 accepted 测试未等待 worker 终态；先运行完整自动化验收，再据实际失败/边界证据决定最小修补。
+- 自动化验收线通过：daemon `240 passed`、壳启停无残留、web `23 files / 246 tests`、typecheck/Vite build 通过。静态复核另发现 `publish_records._parse_daily_time()` 仍接受整数时间，以及 CLAUDE/ADR/声明模块注释残留旧模型表述；按删除性 gate 与文档同步要求补强拒绝测试并修正。
+- Red→Green：新增整数时间记录解析拒绝、生产 web 不得包含 `/postVideoBatch`/`itemResults`/`expandItemResults`、prototype import 静态 gate；移除记录回退解析的整数兼容。同步将 CLAUDE、CONTEXT、ADR-0001/0005/0008 与声明映射 docstring 标明当前 canonical/accepted-only/官方副本边界；gate 定向 `8 passed`，记录相关定向 `16 passed`。
+- 全量复验（修补后）：daemon `241 passed`；web `23 files / 246 tests passed`；web typecheck/Vite build、Tauri `17 passed`、相关 Ruff/format 与 `git diff --check` 均通过。web 保留既有 jsdom navigation stderr 非阻断噪声。

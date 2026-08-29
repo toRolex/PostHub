@@ -11,7 +11,6 @@
  */
 
 import type { ReactNode } from "react";
-import { CheckCircle2, XCircle } from "lucide-react";
 import { PLATFORM_NAMES } from "../../api/platformNames";
 import type { Platform } from "../../api/types";
 import {
@@ -23,7 +22,6 @@ import {
   keyOf,
   wechatScheduledCountsByCookie,
   type BatchItem,
-  type BatchItemResult,
 } from "../../domain/batch";
 import {
   Dialog,
@@ -35,7 +33,6 @@ import {
 import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
 import { PlatformLimitHint } from "./PlatformLimitHint";
-import { cn } from "../../lib/utils";
 import {
   normalizeHHMM,
   resolveWechatTimer,
@@ -137,8 +134,6 @@ interface BatchPreviewDialogProps {
   items: BatchItem[];
   /** 按 cookie 文件名索引的账号默认声明，用于计算预览 effective 值。 */
   accountDefaults?: Record<string, PlatformFields>;
-  /** 提交反馈（用于在 Dialog 内展示）；可缺省。 */
-  results?: BatchItemResult[] | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -150,13 +145,10 @@ export function BatchPreviewDialog({
   open,
   items,
   accountDefaults,
-  results,
   onConfirm,
   onCancel,
 }: BatchPreviewDialogProps) {
   const rows = buildPreviewRows(items, accountDefaults);
-  const resultsByKey = new Map<string, BatchItemResult>();
-  if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
 
   // 视频号单账号累计定时任务数（避免每行重复遍历 items）
   const wechatScheduledCounts = wechatScheduledCountsByCookie(items);
@@ -185,12 +177,10 @@ export function BatchPreviewDialog({
                 <th className="px-3 py-2 text-left font-medium">模式</th>
                 <th className="px-3 py-2 text-left font-medium">时刻</th>
                 <th className="px-3 py-2 text-left font-medium">起始日</th>
-                <th className="px-3 py-2 text-left font-medium">状态</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const result = resultsByKey.get(r.itemKey);
                 return (
                   <tr key={r.itemKey} className="border-t border-border-soft">
                     <td className="max-w-[160px] truncate px-3 py-2 font-medium text-fg">
@@ -224,27 +214,6 @@ export function BatchPreviewDialog({
                       {r.mode === "timer" && r.startDays !== undefined
                         ? `+${r.startDays + (r.timerResolution?.dayCarry ?? 0)} 天`
                         : "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {result ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption",
-                            result.ok
-                              ? "bg-success-tint text-success-deep"
-                              : "bg-danger-tint text-danger-deep",
-                          )}
-                        >
-                          {result.ok ? (
-                            <CheckCircle2 className="size-3" />
-                          ) : (
-                            <XCircle className="size-3" />
-                          )}
-                          {result.ok ? "成功" : "失败"}
-                        </span>
-                      ) : (
-                        <span className="text-caption text-meta">待提交</span>
-                      )}
                     </td>
                   </tr>
                 );

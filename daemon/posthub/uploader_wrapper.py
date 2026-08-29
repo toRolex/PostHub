@@ -198,24 +198,17 @@ def _ensure_publish_strategy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> N
     )
 
 
-def _coerce_daily_times_for_official_generator(daily_times: Any) -> Any:
-    """把 HH:MM 适配为官方生成器可计算且不丢分钟的小时值。"""
+def _coerce_daily_times_for_official_generator(daily_times: Any) -> list[float] | None:
+    """把 canonical HH:MM 适配为官方生成器可计算且不丢分钟的小时值。"""
     if daily_times is None:
         return None
     if not isinstance(daily_times, (list, tuple)):
-        raise TypeError("daily_times 必须是 HH:MM 字符串或旧小时整数数组")
+        raise TypeError("daily_times 必须是 HH:MM 字符串数组")
 
-    converted: list[int | float] = []
+    converted: list[float] = []
     for raw in daily_times:
-        if isinstance(raw, bool):
-            raise TypeError("daily_times 时刻必须是 HH:MM 字符串或旧小时整数")
-        if isinstance(raw, int):
-            if raw < 0 or raw > 23:
-                raise ValueError(f"daily_times 小时越界：{raw!r}")
-            converted.append(raw)
-            continue
         if not isinstance(raw, str):
-            raise TypeError("daily_times 时刻必须是 HH:MM 字符串或旧小时整数")
+            raise TypeError("daily_times 时刻必须是 HH:MM 字符串")
         match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
         if match is None:
             raise ValueError(f"daily_times 时刻格式非法：{raw!r}")
@@ -347,10 +340,10 @@ def _queue() -> deque:
 
 
 def set_pending_declarations(items: list[dict]) -> None:
-    """替换迁移期兼容队列；新声明项使用 canonical shape。
+    """替换当前 item 的 canonical 声明队列。
 
     新项形如 ``{"platform": 2, "fields": {"declaration": "无需标注"}}``；
-    `_fields_for()` 仍读取旧平台嵌套和旧 flat fixture。空 list 表示本请求没有声明。
+    空 list 表示本请求没有声明。
     """
     q = _queue()
     q.clear()
@@ -395,10 +388,7 @@ def _pop_effective_group(platform: int) -> list[EffectiveBatchItem]:
 
 def _is_official_publish_request() -> bool:
     """判断当前调用是否来自官方发布路由，供兼容 fallback 设安全边界。"""
-    return has_request_context() and request.endpoint in {
-        "postVideo",
-        "postVideoBatch",
-    }
+    return has_request_context() and request.endpoint == "postVideo"
 
 
 def _pop_effective_group_for_request(platform: int) -> list[EffectiveBatchItem]:
@@ -452,31 +442,19 @@ def _validate_context_fields(fields: Any, platform: int, shape: str) -> dict[str
 
 
 def _fields_for(item: Mapping[str, Any] | None, platform: int) -> dict[str, Any]:
-    """读取 canonical 声明，并兼容迁移期旧平台嵌套/flat shape。"""
+    """读取并严格校验 canonical 声明 context。"""
     if item is None:
         return {}
     if not isinstance(item, Mapping):
-        raise TypeError("声明 context 必须是 object")
-
-    if "fields" in item:
-        if item.get("platform") != platform:
-            return {}
-        return _validate_context_fields(item["fields"], platform, "canonical")
-
-    if item.get("platform") is not None and item.get("platform") != platform:
+        raise TypeError("canonical 声明 context 必须是 object")
+    if item.get("platform") != platform:
         return {}
-    key = {1: "xiaohongshu", 2: "tencent", 3: "douyin"}.get(platform)
-    if key is not None and key in item:
-        return _validate_context_fields(item[key], platform, f"legacy {key}")
-
-    # 兼容早期组合实现曾产生的 {platform, declaration/source, origin} 形状；
-    # 新入口不再产生该形状，但读取兼容避免热更新期间声明丢失。
-    expected = _CONTEXT_FIELD_TYPES.get(platform, {})
-    unexpected = [name for name in item if name != "platform" and name not in expected]
-    if unexpected:
-        raise ValueError(f"legacy flat fields 包含非法字段：{unexpected!r}")
-    flat = {name: item[name] for name in expected if name in item}
-    return _validate_context_fields(flat, platform, "legacy flat")
+    if "fields" not in item:
+        raise ValueError("canonical 声明 context 缺少 fields")
+    unknown = set(item) - {"platform", "fields"}
+    if unknown:
+        raise ValueError(f"canonical 声明 context 包含非法字段：{sorted(unknown)}")
+    return _validate_context_fields(item["fields"], platform, "canonical")
 
 
 def _active_fields(platform: int) -> dict[str, Any]:
@@ -1022,18 +1000,6 @@ class _KSVideoWithStrategy(_OriginalKSVideo):
         super().__init__(*args, **kwargs)
 
 
-def _normalize_douyin_tail(
-    thumbnail_path: str,
-    productLink: str,
-    productTitle: str,
-) -> tuple[str, str, str]:
-    """修正官方 batch 路由少传 thumbnail 后造成的尾参数错位。"""
-    if has_request_context() and request.endpoint == "postVideoBatch":
-        # 官方 batch 调用形态为 (..., start_days, productLink, productTitle)。
-        return "", thumbnail_path, productLink
-    return thumbnail_path, productLink, productTitle
-
-
 @contextmanager
 def _douyin_publish_datetime_context(
     publish_datetimes: list[str] | None,
@@ -1180,9 +1146,6 @@ def _inject_declaration_to_douyin(
         _execute_effective_group(effective_group, _invoke_douyin_command)
         return None
 
-    thumbnail_path, productLink, productTitle = _normalize_douyin_tail(
-        thumbnail_path, productLink, productTitle
-    )
     with _declaration_context(_pop_for(3)):
         return _ORIGINAL_POST_VIDEO_DOUYIN(
             title=title,

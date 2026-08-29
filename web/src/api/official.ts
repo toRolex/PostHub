@@ -31,7 +31,6 @@ import { trimPlatformFields, type PlatformFields } from "../domain/declarations"
 import { parseTags } from "../domain/tags";
 import { buildBatchItemRefs, type BatchItem } from "../domain/batch";
 import {
-  nearestWholeHour,
   normalizeDailyTimes,
   normalizeHHMM,
   resolveWechatTimer,
@@ -581,13 +580,6 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(itemIds ? { itemIds } : {}),
     }),
-  /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
-  postVideoBatch: (base: string, payload: PostVideoRequest[]) =>
-    request<null>(base, "/postVideoBatch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
   /** 上传并记录素材：走 /uploadSave，文件同时进入磁盘与官方 file_records。 */
   upload: (base: string, file: File, customName?: string) => {
     const form = new FormData();
@@ -767,19 +759,10 @@ export function mergeTitleWithCaption(title: string, caption?: string): string {
 /* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
 
 /**
- * 兼容旧官方整点 seam 的降级适配：HH:MM 取最近整点，30 分钟向后；
- * 新的 PostHub payload 不经过此函数，直接保留 HH:MM。
- */
-export function parseHHMMToHour(hm: string): number {
-  return nearestWholeHour(hm).hour;
-}
-
-/**
- * 矩阵批量表单 → 官方 /postVideoBatch 请求体（issue #38）。
+ * 矩阵批量表单 → `/postRuns` 受理请求体（issue #38）。
  *
  * 与 buildPostVideoRequest（单视频）的语义差异：
- * - 旧：按平台笛卡尔展开（一个平台一项，fileList = 全部所选文件，accountList = 该平台账号）。
- * - 新：按「每视频×每账号」展开（一个 (item, platform, accountId) 一个 postVideo 项）；
+ * - 按「每视频×每账号」展开（一个 (item, platform, accountId) 一个受理项）；
  *       同一平台多账号展开为多个 postVideo 项（result 维度变化的原因）。
  *
  * 模式：

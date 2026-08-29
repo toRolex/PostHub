@@ -1536,10 +1536,6 @@ def register_run_routes(
             return jsonify(
                 {"code": 400, "msg": "每个 item 必须是 object", "data": None}
             ), 400
-        if any(item.get("enableTimer", False) for item in payloads):
-            return jsonify(
-                {"code": 400, "msg": "accepted run 只支持 immediate item", "data": None}
-            ), 400
         try:
             normalized = normalize_publish_payloads(
                 payloads, _read_publish_accounts(official_db_path)

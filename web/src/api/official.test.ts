@@ -5,11 +5,7 @@ import {
   parseSseChunk,
   parseSseDataLine,
 } from "../api/official";
-import {
-  buildBatchItemsFromMatrix,
-  officialApi,
-  parseHHMMToHour,
-} from "../api/official";
+import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
 
 /** 构造一个 body 为 SSE 流的 mock Response（jsdom 支持 ReadableStream）。 */
 function sseResponse(chunks: string[]): Response {
@@ -336,52 +332,7 @@ describe("officialApi.uploadCookie / downloadCookie（mock fetch）", () => {
   });
 });
 
-describe("officialApi.postVideoBatch（mock fetch）", () => {
-  it("POST /postVideoBatch 并携带数组合法请求体", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ code: 200, msg: null, data: null }),
-      text: async () => JSON.stringify({ code: 200, msg: null, data: null }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await officialApi.postVideoBatch("http://127.0.0.1:5409", [
-      { fileList: ["a.mp4"], accountList: ["d.json"], type: 3, title: "t", tags: [] },
-    ]);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:5409/postVideoBatch",
-      expect.objectContaining({ method: "POST" }),
-    );
-    const sent = JSON.parse(
-      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
-    );
-    expect(Array.isArray(sent)).toBe(true);
-    expect(sent[0].type).toBe(3);
-    expect(sent[0].fileList).toEqual(["a.mp4"]);
-  });
-
-  it("官方校验错误（code 400）透传 msg", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 400,
-        json: async () => ({ code: 400, msg: "Expected a JSON array", data: null }),
-        text: async () => JSON.stringify({ code: 400, msg: "Expected a JSON array", data: null }),
-      }),
-    );
-    await expect(
-      officialApi.postVideoBatch("http://127.0.0.1:5409", []),
-    ).rejects.toThrow("Expected a JSON array");
-  });
-});
-
-describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）", () => {
-  it("旧整点官方降级：最近整点且 30 分钟向后，午夜返回 0 点", () => {
-    expect(parseHHMMToHour("14:29")).toBe(14);
-    expect(parseHHMMToHour("14:30")).toBe(15);
-    expect(parseHHMMToHour("23:30")).toBe(0);
-  });
+describe("buildBatchItemsFromMatrix（矩阵批量 → /postRuns 受理契约）", () => {
 
   it("每视频×每账号展开一个 postVideo 项：单视频多平台多账号", () => {
     const body = buildBatchItemsFromMatrix(

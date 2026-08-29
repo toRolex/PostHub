@@ -25,8 +25,8 @@ describe("parseHHMM", () => {
 });
 
 describe("定时时刻读写", () => {
-  it("旧 number[] 按小时读取，新写入统一为 HH:MM", () => {
-    expect(readTimeList([0, 9, 23])).toEqual([0, 540, 1380]);
+  it("只接受 HH:MM 字符串，整数小时输入拒绝", () => {
+    expect(() => readTimeList([0, 9, 23])).toThrow();
     expect(writeTimeList([0, 545, 1439])).toEqual(["00:00", "09:05", "23:59"]);
   });
 

@@ -7,8 +7,9 @@ from pathlib import Path
 
 import myUtils.postVideo as official_post_video
 import pytest
-import sau_backend
 from flask import Flask
+
+import sau_backend
 from posthub import uploader_wrapper
 from posthub.composition import (
     compose_official_backend,
@@ -168,24 +169,8 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         malformed_single = client.post("/postVideo", json=["not-an-item"])
         assert malformed_single.status_code == 400
         assert "item" in malformed_single.get_json()["msg"]
-        malformed_batch = client.post(
-            "/postVideoBatch",
-            json=[
-                {
-                    "fileList": ["a.mp4"],
-                    "accountList": ["a.json"],
-                    "type": 3,
-                    "title": "valid",
-                },
-                {
-                    "fileList": [],
-                    "accountList": ["a.json"],
-                    "type": 3,
-                    "title": "invalid",
-                },
-            ],
-        )
-        assert malformed_batch.status_code == 400
+        deprecated_batch = client.post("/postVideoBatch", json=[])
+        assert deprecated_batch.status_code == 410
         assert douyin_calls == []
 
         xhs_with_source = client.post(
@@ -240,26 +225,11 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         )
         assert tencent_response.status_code == 200
 
-        # 官方 batch 抖音调用省略 thumbnail_path；wrapper 应补齐默认尾参数，
-        # 同时消费 canonical 声明 payload。
-        douyin_response = client.post(
-            "/postVideoBatch",
-            json=[
-                {
-                    "fileList": ["a.mp4"],
-                    "accountList": ["a.json"],
-                    "type": 3,
-                    "title": "douyin",
-                    "productLink": "https://example.test/product",
-                    "productTitle": "商品",
-                    "platformFields": {"douyin": {"declaration": "no_need"}},
-                }
-            ],
-        )
-        assert douyin_response.status_code == 200
+        # 批量请求必须走 accepted-run seam，而不是同步官方循环。
+        deprecated_batch = client.post("/postVideoBatch", json=[])
+        assert deprecated_batch.status_code == 410
 
-        # 单视频与旧批量对完全相同输入必须经过同一 normalization + execution
-        # adapter，并交给官方函数完全相同的 effective command。
+        # 单视频仍经过统一 normalization + execution adapter。
         shared_payload = {
             "fileList": ["same.mp4"],
             "accountList": ["a.json"],
@@ -269,7 +239,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
             "category": 2,
             "enableTimer": True,
             "videosPerDay": 1,
-            "dailyTimes": [10],
+            "dailyTimes": ["10:00"],
             "startDays": 1,
             "thumbnail": "same-cover.jpg",
             "productLink": "https://example.test/same",
@@ -277,26 +247,20 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
             "platformFields": {"douyin": {"declaration": "no_need"}},
         }
         assert client.post("/postVideo", json=shared_payload).status_code == 200
-        assert client.post("/postVideoBatch", json=[shared_payload]).status_code == 200
 
     assert len(xhs_calls) == 2
     assert len(tencent_calls) == 1
-    assert len(douyin_calls) == 3
+    assert len(douyin_calls) == 1
     assert pending_tencent_fields == [{"declaration": "无需标注"}]
     assert douyin_calls[0][0] == ()
-    assert douyin_calls[0][1]["thumbnail_path"] == ""
-    assert douyin_calls[0][1]["productLink"] == "https://example.test/product"
-    assert douyin_calls[0][1]["productTitle"] == "商品"
-    assert douyin_calls[1] == douyin_calls[2]
-    assert pending_fields == [
-        {"declaration": "无需添加自主声明"},
-        {"declaration": "无需添加自主声明"},
-        {"declaration": "无需添加自主声明"},
-    ]
+    assert douyin_calls[0][1]["thumbnail_path"] == "same-cover.jpg"
+    assert douyin_calls[0][1]["productLink"] == "https://example.test/same"
+    assert douyin_calls[0][1]["productTitle"] == "同款商品"
+    assert pending_fields == [{"declaration": "无需添加自主声明"}]
 
     # 代理只负责把声明交给官方上传类，不复制官方发布循环。
     with uploader_wrapper._declaration_context(
-        {"platform": 3, "douyin": {"declaration": "无需添加自主声明"}}
+        {"platform": 3, "fields": {"declaration": "无需添加自主声明"}}
     ):
         douyin_video = uploader_wrapper._DouYinVideoWithDeclaration(
             "title", "file.mp4", [], 0, "account.json"
@@ -304,7 +268,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     assert douyin_video.declaration == "无需添加自主声明"
 
     with uploader_wrapper._declaration_context(
-        {"platform": 2, "tencent": {"declaration": "无需标注"}}
+        {"platform": 2, "fields": {"declaration": "无需标注"}}
     ):
         tencent_video = uploader_wrapper._TencentVideoWithDeclaration(
             "title", "file.mp4", [], 0, "account.json"

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flask import Flask, g, jsonify
+from flask import Flask, jsonify
 
-from posthub import uploader_wrapper
 from posthub.composition import compose_posthub_backend, shutdown_posthub_backend
 
 
@@ -51,21 +51,12 @@ def test_batch_records_successful_items_before_later_item_failure(
 ) -> None:
     app = Flask(__name__)
 
-    def post_video_batch():
-        for item in g.posthub_normalized_batch.effective:
-            if item.effective["title"] == "失败项":
-                raise RuntimeError("平台拒绝")
-            uploader_wrapper._execute_effective_group([item], lambda _command: None)
-        return jsonify({"code": 200, "data": None}), 200
+    def uploader(item: dict[str, object]) -> None:
+        if item["title"] == "失败项":
+            raise RuntimeError("平台拒绝")
 
-    app.add_url_rule(
-        "/postVideoBatch",
-        endpoint="postVideoBatch",
-        view_func=post_video_batch,
-        methods=["POST"],
-    )
     official_db = tmp_path / "official" / "db" / "database.db"
-    compose_posthub_backend(app, official_db)
+    compose_posthub_backend(app, official_db, uploader=uploader)
     with sqlite3.connect(official_db) as conn:
         conn.execute(
             "INSERT INTO user_info (type, filePath, userName, status) VALUES (3, ?, ?, 1)",
@@ -77,9 +68,13 @@ def test_batch_records_successful_items_before_later_item_failure(
     second = {**timer_payload(), "fileList": ["bad.mp4"], "title": "失败项"}
     try:
         with app.test_client() as client:
-            response = client.post("/postVideoBatch", json=[first, second])
-            assert response.status_code == 500
-            records = client.get("/publishRecords?from=2026-01-01&to=2027-01-01")
+            response = client.post("/postRuns", json=[first, second])
+            assert response.status_code == 200
+            for _ in range(100):
+                records = client.get("/publishRecords?from=2026-01-01&to=2027-01-01")
+                if len(records.get_json()["data"]) == 1:
+                    break
+                time.sleep(0.01)
 
         assert records.status_code == 200
         data = records.get_json()["data"]

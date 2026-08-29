@@ -57,12 +57,11 @@ ACCOUNT_FIXTURES = [
 @pytest.mark.parametrize(
     ("daily_times", "expected"),
     [
-        ([10, 14], ["10:00", "14:00"]),
         (["14:30", "09:05", "14:30"], ["09:05", "14:30"]),
     ],
 )
-def test_schedule_daily_times_is_double_read_single_write(
-    daily_times: list[int] | list[str], expected: list[str]
+def test_schedule_daily_times_is_single_write_hhmm(
+    daily_times: list[str], expected: list[str]
 ) -> None:
     payload = {
         "fileList": ["douyin.mp4"],
@@ -112,7 +111,7 @@ def test_schedule_daily_times_is_double_read_single_write(
                 "category": 3,
                 "enableTimer": True,
                 "videosPerDay": 1,
-                "dailyTimes": [10, 14],
+                "dailyTimes": ["10:00", "14:00"],
                 "startDays": 2,
                 "isDraft": True,
                 "platformFields": {"wechat": {"declaration": "marketing"}},
@@ -148,7 +147,7 @@ def test_schedule_daily_times_is_double_read_single_write(
                 "category": 1,
                 "enableTimer": True,
                 "videosPerDay": 1,
-                "dailyTimes": [20],
+                "dailyTimes": ["20:00"],
                 "startDays": 0,
                 "thumbnail": "cover-ks.jpg",
                 "productLink": "https://shop.test/ks",
@@ -174,9 +173,7 @@ def test_normalization_preserves_official_platform_payload_fields(
     assert item.effective["category"] == payload["category"]
     assert item.effective.get("platformFields") == expected_fields
     if payload.get("enableTimer"):
-        assert item.effective["dailyTimes"] == [
-            f"{hour:02d}:00" for hour in sorted(set(payload["dailyTimes"]))
-        ]
+        assert item.effective["dailyTimes"] == sorted(set(payload["dailyTimes"]))
     for field in ("thumbnail", "productLink", "productTitle", "isDraft"):
         if field in payload:
             assert item.effective[field] == payload[field]
@@ -273,26 +270,18 @@ def test_task_platform_fields_override_account_defaults() -> None:
     }
 
 
-def test_normalization_canonicalizes_legacy_platform_fields_and_official_category_zero() -> (
-    None
-):
+def test_normalization_rejects_legacy_platform_fields() -> None:
     payload = {
         "fileList": ["douyin.mp4"],
         "accountList": ["douyin.json"],
         "type": 3,
-        "title": "兼容旧键",
+        "title": "拒绝旧键",
         "tags": [],
-        "category": 0,
         "platform_fields": {"douyin": {"declaration": "marketing"}},
     }
 
-    command = (
-        normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0].effective
-    )
-
-    assert command["category"] is None
-    assert "platform_fields" not in command
-    assert command["platformFields"] == {"douyin": {"declaration": "marketing"}}
+    with pytest.raises(NormalizationError, match="platform_fields"):
+        normalize_publish_payloads([payload], ACCOUNT_FIXTURES)
 
 
 def test_normalization_rejects_invalid_platform_malformed_item_and_empty_inputs() -> (
@@ -327,7 +316,7 @@ def test_normalization_rejects_invalid_schedule_and_platform_field_shape() -> No
         "tags": [],
         "enableTimer": True,
         "videosPerDay": 2,
-        "dailyTimes": [10],
+        "dailyTimes": ["10:00"],
         "startDays": 0,
         "platformFields": {"douyin": {"declaration": "no_need"}},
     }
@@ -487,7 +476,7 @@ def test_execution_adapter_normalizes_before_invoking_official_seam() -> None:
     assert calls == []
 
 
-def test_single_and_legacy_batch_payloads_share_the_same_effective_command() -> None:
+def test_repeated_normalization_shares_the_same_effective_command() -> None:
     payload = {
         "fileList": ["video.mp4"],
         "accountList": ["douyin.json"],
@@ -501,17 +490,16 @@ def test_single_and_legacy_batch_payloads_share_the_same_effective_command() -> 
         "isDraft": True,
         "enableTimer": True,
         "videosPerDay": 1,
-        "dailyTimes": [10],
+        "dailyTimes": ["10:00"],
         "startDays": 1,
     }
 
     single = normalize_publish_payloads([deepcopy(payload)], ACCOUNT_FIXTURES)
-    legacy_batch = normalize_publish_payloads([deepcopy(payload)], ACCOUNT_FIXTURES)
+    repeated = normalize_publish_payloads([deepcopy(payload)], ACCOUNT_FIXTURES)
 
-    assert single.effective[0].effective == legacy_batch.effective[0].effective
+    assert single.effective[0].effective == repeated.effective[0].effective
     assert (
-        single.effective[0].account_snapshot
-        == legacy_batch.effective[0].account_snapshot
+        single.effective[0].account_snapshot == repeated.effective[0].account_snapshot
     )
 
 
@@ -645,54 +633,26 @@ def test_declaration_consumer_reads_canonical_fields(
 
 
 @pytest.mark.parametrize(
-    ("platform", "item", "expected"),
+    "item",
     [
-        (
-            1,
-            {"platform": 1, "xiaohongshu": {"source": "小红书声明"}},
-            {"source": "小红书声明"},
-        ),
-        (
-            1,
-            {"platform": 1, "source": "小红书声明"},
-            {"source": "小红书声明"},
-        ),
-        (
-            2,
-            {"platform": 2, "tencent": {"declaration": "视频号声明"}},
-            {"declaration": "视频号声明"},
-        ),
-        (
-            2,
-            {"platform": 2, "declaration": "视频号声明"},
-            {"declaration": "视频号声明"},
-        ),
-        (
-            3,
-            {"platform": 3, "douyin": {"declaration": "抖音声明"}},
-            {"declaration": "抖音声明"},
-        ),
-        (
-            3,
-            {"platform": 3, "declaration": "抖音声明"},
-            {"declaration": "抖音声明"},
-        ),
+        {"platform": 3, "douyin": {"declaration": "抖音声明"}},
+        {"platform": 3, "declaration": "抖音声明"},
     ],
 )
-def test_declaration_consumer_keeps_legacy_shapes_readable(
-    platform: int, item: dict[str, Any], expected: dict[str, Any]
-) -> None:
-    assert uploader_wrapper._fields_for(item, platform) == expected
+def test_declaration_consumer_rejects_legacy_shapes(item: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="canonical"):
+        uploader_wrapper._fields_for(item, 3)
 
 
-def test_declaration_consumer_prefers_canonical_fields_over_legacy_fields() -> None:
+def test_declaration_consumer_rejects_canonical_fields_with_legacy_siblings() -> None:
     item = {
         "platform": 3,
         "fields": {"declaration": "canonical"},
         "douyin": {"declaration": "legacy"},
     }
 
-    assert uploader_wrapper._fields_for(item, 3) == {"declaration": "canonical"}
+    with pytest.raises(ValueError, match="canonical"):
+        uploader_wrapper._fields_for(item, 3)
 
 
 @pytest.mark.parametrize(
@@ -701,10 +661,12 @@ def test_declaration_consumer_prefers_canonical_fields_over_legacy_fields() -> N
         ({"platform": 3, "fields": None}, TypeError, "object"),
         ({"platform": 3, "fields": {"declaration": True}}, ValueError, "类型非法"),
         ({"platform": 3, "fields": {"origin": True}}, ValueError, "非法字段"),
-        ({"platform": 3, "douyin": None}, TypeError, "object"),
-        ({"platform": 3, "douyin": {"declaration": 1}}, ValueError, "类型非法"),
-        ({"platform": 3, "declaration": 1}, ValueError, "类型非法"),
-        ({"platform": 3, "origin": True}, ValueError, "非法字段"),
+        ({"platform": 3, "fields": {"declaration": 1}}, ValueError, "类型非法"),
+        (
+            {"platform": 3, "fields": {"declaration": "ok"}, "douyin": {}},
+            ValueError,
+            "canonical",
+        ),
     ],
 )
 def test_declaration_consumer_rejects_malformed_context(

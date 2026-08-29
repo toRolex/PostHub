@@ -6,7 +6,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select";
-import { Switch } from "../ui/switch";
 import { cn } from "../../lib/utils";
 import type {
   DouyinDeclaration,
@@ -29,23 +28,6 @@ function toSelectValue(v: string | undefined): string {
 
 function fromSelectValue(v: string): string | undefined {
   return v === NONE_VALUE ? undefined : v;
-}
-
-function OriginSwitch({
-  label,
-  checked,
-  onCheckedChange,
-}: {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (b: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
-      <span className="text-label text-fg-2">{label}</span>
-    </div>
-  );
 }
 
 /** 单平台声明编辑块：按平台独立显示对应候选下拉 + 原创开关（如适用）。 */
@@ -86,7 +68,7 @@ export function PlatformDeclarationPicker({
   }
 
   if (platform === "xiaohongshu") {
-    const cur = (value as { source?: XiaohongshuSource; origin?: boolean } | undefined);
+    const cur = (value as { source?: XiaohongshuSource } | undefined);
     return (
       <div className="flex flex-col gap-2">
         <div className="flex flex-col gap-1.5">
@@ -96,7 +78,6 @@ export function PlatformDeclarationPicker({
             onValueChange={(v) =>
               onChange({
                 source: fromSelectValue(v) as XiaohongshuSource | undefined,
-                origin: cur?.origin,
               })
             }
           >
@@ -113,17 +94,12 @@ export function PlatformDeclarationPicker({
             </SelectContent>
           </Select>
         </div>
-        <OriginSwitch
-          label="声明原创"
-          checked={!!cur?.origin}
-          onCheckedChange={(b) => onChange({ ...cur, origin: b })}
-        />
       </div>
     );
   }
 
   // wechat
-  const cur = (value as { declaration?: WechatDeclaration; origin?: boolean } | undefined);
+  const cur = (value as { declaration?: WechatDeclaration } | undefined);
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-1.5">
@@ -133,7 +109,6 @@ export function PlatformDeclarationPicker({
           onValueChange={(v) =>
             onChange({
               declaration: fromSelectValue(v) as WechatDeclaration | undefined,
-              origin: cur?.origin,
             })
           }
         >
@@ -150,11 +125,6 @@ export function PlatformDeclarationPicker({
           </SelectContent>
         </Select>
       </div>
-      <OriginSwitch
-        label="声明原创"
-        checked={!!cur?.origin}
-        onCheckedChange={(b) => onChange({ ...cur, origin: b })}
-      />
     </div>
   );
 }

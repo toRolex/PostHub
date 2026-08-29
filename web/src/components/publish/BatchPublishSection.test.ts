@@ -3,7 +3,7 @@
  *
  * 注：本项目未装 @testing-library/react，本测试只覆盖纯逻辑 helper
  * （summarizeItem / summarizeDailyTimes）。DOM 渲染与交互（展开/折叠、
- * openPreview 触发、itemResults 逐项渲染）需 dev 环境手动验证
+ * openPreview 触发、RunStore 状态条展示）需 dev 环境手动验证
  * （见 acceptance criteria 第 1 条）。
  */
 

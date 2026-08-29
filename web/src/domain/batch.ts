@@ -4,7 +4,7 @@
  * - 批量相关类型唯一定义于此文件。
  * - itemKey 拼接/解析约定唯一定义于 keyOf / parseKey；不 escape
  *   （信任 filePath 与 cookie 文件名不含 "|"），parseKey 用 lastIndexOf 防御。
- * - 展开规则唯一定义于 buildBatchItemRefs；preview / result / submit 各自 map 加字段。
+ * - 展开规则唯一定义于 buildBatchItemRefs；preview / submit 共用该展开结果。
  */
 
 import type { Platform } from "../api/types";
@@ -43,31 +43,6 @@ export interface BatchItem {
   timeOfDay?: string;
   /** 内容声明按平台分键透传（issue #43）；覆盖账号 defaultPlatformFields。 */
   platformFields?: PlatformFields;
-}
-
-/**
- * 单视频条目提交结果（按 item 维度反馈，不再按平台聚合）。
- *
- * 矩阵模式下同一平台可能有多个账号 → 展开为多个 PostVideoRequest 项，
- * 每项独立反馈；itemKey 由 keyOf 生成（filePath + cookie 组合），用于稳定去重。
- */
-export interface BatchItemResult {
-  /** keyOf(filePath, cookie) 生成的稳定 key。便于 UI 按 key 渲染行反馈。 */
-  itemKey: string;
-  fileName: string;
-  platform: Platform;
-  /** 展开项对应的账号 cookie 文件名（渲染时直接取，不再从 itemKey 反解）。 */
-  accountCookie: string;
-  mode: BatchMode;
-  /** mode='timer' 时透传。 */
-  timeOfDay?: string;
-  startDays?: number;
-  /** 该账号×视频展开项是否提交成功（官方返回 200）。 */
-  ok: boolean;
-  /** 失败原因（成功时为「批量发布任务已提交」之类的固定文案）。 */
-  msg: string;
-  /** 409 时后端返回的已有活动 run，可供 UI 打开。 */
-  existingRunId?: string;
 }
 
 /** itemKey 唯一拼接点：filePath + "|" + cookie，不 escape。 */
