@@ -360,12 +360,22 @@ export interface PublishRecord {
   recordedAt: string;
 }
 
-export interface PublishDuplicateCheck {
-  record: PublishRecord;
-}
-
 export interface PublishDuplicateResponse {
   duplicates: PublishRecord[];
+}
+
+/** 展示跨提交历史重复并取得用户确认；非浏览器环境按取消处理。 */
+export function confirmDuplicateRecords(records: PublishRecord[]): boolean {
+  if (records.length === 0) return true;
+  const detail = records
+    .map(
+      (record) =>
+        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
+    )
+    .join("\n");
+  return typeof window !== "undefined" && window.confirm(
+    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
+  );
 }
 
 async function parseOfficialResponse<T>(res: Response): Promise<T> {

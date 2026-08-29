@@ -2,9 +2,9 @@ import { create } from "zustand";
 import {
   officialApi,
   buildPostVideoRequest,
+  confirmDuplicateRecords,
   duplicateRecordsFromError,
   existingRunIdFromError,
-  type PublishRecord,
 } from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
@@ -118,17 +118,11 @@ export interface PublishFormValues {
   platformFields: PlatformFields;
 }
 
-export function confirmDuplicateRecords(records: PublishRecord[]): boolean {
-  if (records.length === 0) return true;
-  const detail = records
-    .map(
-      (record) =>
-        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
-    )
-    .join("\n");
-  return typeof window !== "undefined" && window.confirm(
-    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
-  );
+class DuplicateConfirmationCancelled extends Error {
+  constructor() {
+    super("发现历史发布记录，已取消发布");
+    this.name = "DuplicateConfirmationCancelled";
+  }
 }
 
 async function acceptWithDuplicateConfirmation(
@@ -287,6 +281,7 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
     await withMutation(
       set,
       async () => {
+        const payloads: { platform: Platform; payload: ReturnType<typeof buildPostVideoRequest> }[] = [];
         for (const p of s.selectedPlatforms) {
           const accId = accounts[p];
           // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
@@ -295,23 +290,59 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
           // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
           const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
           try {
-            const payload = buildPostVideoRequest({
+            payloads.push({
               platform: p,
-              files: s.selectedFile ? [s.selectedFile] : [],
-              accounts: [cookieFile],
-              title: s.title,
-              caption: s.caption,
-              tags,
-              platformFields: trimmed,
-              timer: {
-                enableTimer: s.timerEnabled,
-                videosPerDay: s.videosPerDay,
-                dailyTimes: s.dailyTimes,
-                startDays: s.startDays,
-              },
+              payload: buildPostVideoRequest({
+                platform: p,
+                files: s.selectedFile ? [s.selectedFile] : [],
+                accounts: [cookieFile],
+                title: s.title,
+                caption: s.caption,
+                tags,
+                platformFields: trimmed,
+                timer: {
+                  enableTimer: s.timerEnabled,
+                  videosPerDay: s.videosPerDay,
+                  dailyTimes: s.dailyTimes,
+                  startDays: s.startDays,
+                },
+              }),
             });
+          } catch (e) {
+            results[p] = {
+              ok: false,
+              msg: e instanceof Error ? e.message : String(e),
+            };
+          }
+        }
+
+        let confirmedDuplicates = false;
+        if (!s.timerEnabled && payloads.length > 1) {
+          const duplicates = await officialApi.checkPublishRecords(
+            base,
+            payloads.map(({ payload }) => payload),
+          );
+          if (duplicates.length > 0) {
+            if (!confirmDuplicateRecords(duplicates)) {
+              for (const { platform } of payloads) {
+                results[platform] = {
+                  ok: false,
+                  msg: "发现历史发布记录，已取消发布",
+                };
+              }
+              set({ results });
+              throw new DuplicateConfirmationCancelled();
+            }
+            confirmedDuplicates = true;
+          }
+        }
+
+        for (const { platform: p, payload } of payloads) {
+          try {
             if (!s.timerEnabled) {
-              const accepted = await acceptWithDuplicateConfirmation(base, payload);
+              const accepted = confirmedDuplicates
+                ? await officialApi.acceptRun(base, payload, { confirmDuplicates: true })
+                : await acceptWithDuplicateConfirmation(base, payload);
               useRunStore.getState().rememberAcceptedRun(accepted);
               results[p] = {
                 ok: true,
@@ -325,18 +356,20 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
           } catch (e) {
             const duplicates = duplicateRecordsFromError(e);
             const existingRunId = existingRunIdFromError(e);
-            results[p] = duplicates.length > 0
-              ? { ok: false, msg: "发现历史发布记录，已取消发布" }
-              : existingRunId
-              ? {
-                  ok: false,
-                  msg: `本次未受理：已有运行 ${existingRunId}`,
-                  existingRunId,
-                }
-              : {
-                  ok: false,
-                  msg: e instanceof Error ? e.message : String(e),
-                };
+            if (duplicates.length > 0) {
+              results[p] = { ok: false, msg: "发现历史发布记录，已取消发布" };
+            } else if (existingRunId) {
+              results[p] = {
+                ok: false,
+                msg: `本次未受理：已有运行 ${existingRunId}`,
+                existingRunId,
+              };
+            } else {
+              results[p] = {
+                ok: false,
+                msg: e instanceof Error ? e.message : String(e),
+              };
+            }
           }
         }
         set({ results });

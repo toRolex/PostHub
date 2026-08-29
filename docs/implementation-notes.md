@@ -1033,3 +1033,15 @@
 - Tauri：首次因忽略的 `src-tauri/resources/{daemon,bin,browser}` 不存在失败；仅补齐本地空目录后 `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未进入 Git。
 - Runtime verify：隔离 Flask socket 通过真实 HTTP 观察 immediate `/postVideo` 返回 200 并写 `publishedAt`、两个时间字段为 null；`/publishRecords/check` 返回 1 条 published duplicate；未确认 `/postRuns` 返回 409 `kind=history_duplicate` 且未创建 run；带确认 header/query 返回 200，查询 run 为 `completed/success`。空查重数组返回 JSON 400；未触发真实平台发布。
 - `git diff --check` 通过；未修改官方 `daemon/sau_backend.py`/`uploader/*`，未 push、未建 PR、未 merge、未关闭 Issue #99。
+
+### Reviewer refinement（2026-08-29）
+
+- 已按要求复核 `git diff develop..HEAD`、Issue #99/#80、CONTEXT 与 ADR-0001/0005/0006/0009；daemon `236 passed`，web `247 passed`/build 通过。
+- 发现待修 P1：单视频 immediate 多平台提交仍逐平台创建 run；若前一平台已受理、后一平台历史重复且用户取消确认，会产生部分 run，违背受理前完成确认、取消不创建 run 的批量语义。
+- 计划：先补多平台回归，所有 immediate payload 在创建任一 run 前统一查重并单次确认；确认后逐平台发送带确认的 accepted 请求，保留活动 run 409 与平台级错误语义。
+- Red：新增多平台取消确认回归；现有实现直接进入 `/postRuns` 并误受理，测试失败，确认缺少跨平台提交前统一查重。
+- Green：单视频 immediate 多平台先对全部 payload 调用 `/publishRecords/check`，历史重复只弹一次确认；取消在任一 run 创建前结束，确认后所有平台 accepted 请求带确认标记。同步把该测试与既有多平台请求断言改为包含一次预检。
+- Refine：将重复确认文案 helper 收敛到 `web/src/api/official.ts`，移除 stores 间重复实现及未使用的 `PublishDuplicateCheck` 类型；单视频提交错误分支改为显式 if/else，避免嵌套三元。
+- 修补后定向验证：`web/src/stores/publish.test.ts` → `10 passed`；随后 web 全量 → `23 files / 248 tests passed`，build 通过；此前 daemon 全量 → `236 passed`。
+- 最终复验：daemon `uv run pytest -q` → `236 passed`；相关 Ruff check/format → 通过；web `pnpm test -- --run` → `23 files / 248 tests passed`，build 通过；Tauri → lib `17 passed`、bin `0 tests`；`git diff --check` 通过。
+- Runtime GUI 验证未执行：Playwright skill 调用被用户中断；不据此宣称 GUI runtime 通过。

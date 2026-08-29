@@ -11,8 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-import sau_backend
 from flask import Flask
+
+import sau_backend
 from posthub.composition import compose_posthub_backend, shutdown_posthub_backend
 from posthub.publish_adapter import (
     normalize_publish_payload,

@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import {
   buildBatchItemsFromMatrix,
+  confirmDuplicateRecords,
   duplicateRecordsFromError,
   existingRunIdFromError,
   officialApi,
-  type PublishRecord,
 } from "../api/official";
 import type { PlatformFields } from "../api/types";
 import {
@@ -108,19 +108,6 @@ function expandItemResults(
 }
 
 /* ───────────────────────── store 实现 ───────────────────────── */
-
-function confirmDuplicateRecords(records: PublishRecord[]): boolean {
-  if (records.length === 0) return true;
-  const detail = records
-    .map(
-      (record) =>
-        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
-    )
-    .join("\n");
-  return typeof window !== "undefined" && window.confirm(
-    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
-  );
-}
 
 async function acceptWithDuplicateConfirmation(
   base: string,
