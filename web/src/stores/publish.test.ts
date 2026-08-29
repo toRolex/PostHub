@@ -50,13 +50,18 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
   });
 
   it("submit 成功 -> 每平台各调一次 /postVideo，携带官方契约体", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({
-        code: 200,
-        msg: "已受理",
-        data: { runId: "run-1", status: "pending", itemCount: 1 },
-      }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [] } }),
+      )
+      .mockResolvedValue(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "run-1", status: "pending", itemCount: 1 },
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     usePublishStore.setState({
@@ -70,9 +75,9 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
 
     await usePublishStore.getState().submit();
 
-    // 两个平台各一次 accepted POST /postRuns
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    // 先一次跨平台历史预检，再各平台一次 accepted POST /postRuns
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const calls = fetchMock.mock.calls.slice(1) as [string, RequestInit][];
     for (const [url, init] of calls) {
       expect(url).toBe("http://127.0.0.1:9999/postRuns");
       expect(init.method).toBe("POST");
@@ -119,6 +124,9 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [] } }),
+      )
+      .mockResolvedValueOnce(
         jsonResponse({ code: 400, msg: "账号列表不能为空", data: null }, false, 400),
       )
       .mockResolvedValueOnce(
@@ -150,6 +158,146 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(s.results.douyin?.ok).toBe(false);
     expect(s.results.douyin?.msg).toBe("账号列表不能为空");
     expect(s.results.wechat?.ok).toBe(true);
+  });
+
+  it("跨提交历史重复先二次确认；取消不创建 run，确认后重发", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "new-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+    await usePublishStore.getState().submit();
+    expect(confirm).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePublishStore.getState().results.douyin?.msg).toBe(
+      "发现历史发布记录，已取消发布",
+    );
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValueOnce(true);
+    await usePublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const confirmedInit = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((confirmedInit.headers as Record<string, string>)["X-PostHub-Confirm-Duplicates"]).toBe("true");
+    expect(useRunStore.getState().runId).toBe("new-run");
+  });
+
+  it("多平台历史重复先统一确认，取消不创建任何 run", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [duplicate] } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [duplicate] } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "douyin-run", status: "pending", itemCount: 1 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "wechat-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin", "wechat"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: 2, kuaishou: null },
+    });
+
+    await expect(usePublishStore.getState().submit()).rejects.toThrow(
+      "历史发布记录",
+    );
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValueOnce(true);
+    await usePublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const [, init] of fetchMock.mock.calls.slice(2) as [string, RequestInit][]) {
+      expect((init.headers as Record<string, string>)["X-PostHub-Confirm-Duplicates"]).toBe(
+        "true",
+      );
+    }
+    expect(useRunStore.getState().runId).toBe("wechat-run");
   });
 
   it("409 冲突显示本次未受理并保留已有 run，不能生成本地成功状态", async () => {

@@ -315,6 +315,78 @@ describe("batchPublish store（矩阵批量 → 官方 /postVideoBatch）", () =
     expect(s.itemResults!.every((r) => r.ok)).toBe(true);
   });
 
+  it("跨提交历史重复取消不创建 run，确认后才允许批量重发", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "new-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    useBatchPublishStore.getState().addItem({
+      filePath: "a.mp4",
+      title: "标题",
+      caption: "",
+      tags: "",
+      accountCookiesByPlatform: { douyin: ["douyin_a.json"] },
+      mode: "immediate",
+    });
+
+    await expect(useBatchPublishStore.getState().submit()).rejects.toThrow(
+      "发现已有成功发布记录，请确认是否重新发布",
+    );
+    expect(confirm).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValue(true);
+    await useBatchPublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useRunStore.getState().runId).toBe("new-run");
+  });
+
   it("409 冲突显示本次未受理并保留已有 run，不写入本地 accepted run", async () => {
     vi.stubGlobal(
       "fetch",

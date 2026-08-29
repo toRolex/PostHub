@@ -128,6 +128,58 @@ def test_composition_rejects_reusing_official_db_for_run_history(
         compose_posthub_backend(app, official_db, run_db_path=official_db)
 
 
+def test_successful_immediate_run_writes_published_record_with_run_link(
+    tmp_path: Path,
+) -> None:
+    app = Flask(__name__)
+    app.add_url_rule(
+        "/postVideo",
+        endpoint="postVideo",
+        view_func=sau_backend.postVideo,
+        methods=["POST"],
+    )
+    official_db = tmp_path / "official" / "db" / "database.db"
+    compose_posthub_backend(app, official_db, uploader=lambda _effective: None)
+    with sqlite3.connect(official_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_info (type, filePath, userName, status)
+            VALUES (3, 'douyin.json', '受理时账号名', 1)
+            """
+        )
+        conn.commit()
+    try:
+        with app.test_client() as client:
+            accepted = client.post("/postRuns", json=immediate_payload())
+            assert accepted.status_code == 200
+            run_id = accepted.get_json()["data"]["runId"]
+            completed = wait_for_status(client, run_id, "completed")
+            records = client.get("/publishRecords?from=2020-01-01&to=2030-01-01")
+
+        assert completed["items"][0]["status"] == "success"
+        assert records.status_code == 200
+        assert records.get_json()["data"] == [
+            {
+                "id": records.get_json()["data"][0]["id"],
+                "accountId": 1,
+                "accountFile": "douyin.json",
+                "accountName": "受理时账号名",
+                "platform": "douyin",
+                "videoId": "video.mp4",
+                "videoTitle": "立即 item",
+                "effectiveScheduledFor": None,
+                "scheduledFor": None,
+                "status": "published",
+                "publishedAt": records.get_json()["data"][0]["publishedAt"],
+                "runId": run_id,
+                "runItemId": completed["items"][0]["itemId"],
+                "recordedAt": records.get_json()["data"][0]["recordedAt"],
+            }
+        ]
+    finally:
+        shutdown_posthub_backend(app)
+
+
 def test_accept_immediate_item_returns_run_id_and_accepted_only(
     run_app: tuple[Flask, Path],
 ) -> None:
