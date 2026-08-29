@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:prototype-smoke": "node e2e/prototype-route-smoke.mjs"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.1.0",

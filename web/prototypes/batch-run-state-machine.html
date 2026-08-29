@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-prototype="batch-run-state-machine">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostHub Logic 原型：批量 run 状态机</title>
+<style>
+  :root { --accent:#2867d6; --success:#087c48; --danger:#b42318; --warn:#9a5b00; --border:#d9dce2; --surface:#f6f7f9; --muted:#667085; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#18191c; background:#fff; font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:980px; margin:0 auto; padding:24px 20px 72px; }
+  h1 { margin:0; font-size:22px; } h2 { margin:0 0 12px; font-size:15px; }
+  .sub,.note { color:var(--muted); font-size:13px; }
+  .badge { display:inline-block; margin-right:8px; border:1px solid #e5ad57; border-radius:6px; padding:1px 8px; color:var(--warn); background:#fff7e8; font-size:12px; }
+  .error { display:none; margin:14px 0; border:1px solid #f2a29b; border-radius:9px; padding:12px; color:var(--danger); background:#fff1f0; white-space:pre-wrap; }
+  .panel { margin-top:16px; border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; }
+  button { border:1px solid var(--border); border-radius:8px; padding:7px 11px; color:#24262b; background:#fff; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:5px 14px; margin:0; }
+  dt { color:var(--muted); } dd { margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  table { width:100%; margin-top:12px; border-collapse:collapse; }
+  th,td { border-top:1px solid #eceef2; padding:7px 8px; text-align:left; }
+  th { color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; border-radius:999px; padding:1px 8px; font-size:12px; background:var(--surface); }
+  .success { color:var(--success); background:#ecfdf3; } .failure,.interrupted,.invalid { color:var(--danger); background:#fff1f0; }
+  .skipped { color:var(--warn); background:#fff7e8; } .running { color:var(--accent); background:#eff5ff; }
+  .log { min-height:54px; margin-top:12px; border-radius:8px; padding:9px 11px; color:var(--muted); background:var(--surface); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1><span class="badge">PROTOTYPE · throwaway</span>批量 run 状态机</h1>
+  <p class="sub">纯 JavaScript，可通过 Vite URL 或双击文件运行；不连接 daemon，不代表正式 batch runner。</p>
+  <div id="prototypeError" class="error" role="alert"></div>
+
+  <section class="panel">
+    <h2>当前 synthetic run</h2>
+    <dl id="statePanel"></dl>
+    <div id="items"></div>
+    <div id="log" class="log">等待操作</div>
+  </section>
+
+  <section class="panel">
+    <h2>场景与状态动作</h2>
+    <div class="actions">
+      <button data-action="partial">部分成功 run-101</button>
+      <button data-action="conflict">409 后查看 run-099</button>
+      <button data-action="resume">模拟恢复 run-077</button>
+      <button data-action="retry">重试全部可重试项</button>
+      <button data-action="late">终态后合并迟到 running</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>单快照 localStorage 演示</h2>
+    <div class="actions">
+      <button data-action="save">保存 synthetic 快照</button>
+      <button data-action="restore">模拟恢复快照</button>
+      <button data-action="corrupt">写入损坏快照</button>
+      <button data-action="clear">清理损坏快照</button>
+    </div>
+    <p class="note">若 localStorage 不可用，将显示可操作错误；旧版本或错误 schema 会拒绝恢复。</p>
+  </section>
+</main>
+
+<script src="./batch-run-contract.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const STORAGE_VERSION = 1;
+  const STORAGE_KEY = 'posthub-prototype-batch-run-v1';
+  const contract = globalThis.PostHubBatchRunContract;
+  const ITEM_STATUSES = new Set(['pending', 'running', 'success', 'failure', 'skipped', 'interrupted', 'invalid']);
+  const RUN_STATUSES = new Set(['running', 'completed', 'completed_with_failures', 'interrupted', 'invalid']);
+
+  let run = contract.getSyntheticRun('run-101');
+  let log = '已加载 synthetic run-101';
+  const statePanel = document.getElementById('statePanel');
+  const items = document.getElementById('items');
+  const logElement = document.getElementById('log');
+  const errorElement = document.getElementById('prototypeError');
+
+  function showError(message) { errorElement.textContent = message; errorElement.style.display = 'block'; }
+  function clearError() { errorElement.textContent = ''; errorElement.style.display = 'none'; }
+
+  function validateRun(candidate, requireVersion) {
+    if (!candidate || typeof candidate !== 'object') return '快照不是对象';
+    if (requireVersion && candidate.version !== STORAGE_VERSION) return `不支持的快照版本：${String(candidate.version)}`;
+    if (typeof candidate.runId !== 'string' || candidate.runId.trim() === '') return '快照缺少 runId';
+    if (!RUN_STATUSES.has(candidate.status)) return `未知 run 状态：${String(candidate.status)}`;
+    if (!Array.isArray(candidate.items)) return '快照缺少 items 数组';
+    for (const item of candidate.items) {
+      if (!item || typeof item.id !== 'string' || typeof item.file !== 'string') return '快照 item 缺少 id/file';
+      if (!ITEM_STATUSES.has(item.status)) return `未知 item 状态：${String(item.status)}`;
+    }
+    return null;
+  }
+
+  function safeStorage(operation, action) {
+    try {
+      clearError();
+      return action(window.localStorage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      showError(`localStorage 不可用（${operation}）：${message}\n可点击“清理损坏快照”后重试，或直接继续内存演示。`);
+      log = `✗ localStorage ${operation} 失败`;
+      render();
+      return null;
+    }
+  }
+
+  function savedRun() {
+    const raw = safeStorage('读取', (storage) => storage.getItem(STORAGE_KEY));
+    if (!raw) return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (error) {
+      showError(`快照 JSON 已损坏：${error instanceof Error ? error.message : String(error)}\n请点击“清理损坏快照”。`);
+      return null;
+    }
+    const validationError = validateRun(parsed, true);
+    if (validationError) {
+      showError(`拒绝恢复旧版本或错误 schema：${validationError}\n请点击“清理损坏快照”。`);
+      return null;
+    }
+    return parsed;
+  }
+
+  function render() {
+    statePanel.innerHTML = `<dt>runId</dt><dd>${run.runId}</dd><dt>parentRunId</dt><dd>${run.parentRunId || '—'}</dd><dt>status</dt><dd>${run.status}</dd><dt>pollTimerActive</dt><dd>${contract.isTerminalRunStatus(run.status) ? 'false' : 'true'}</dd>`;
+    items.innerHTML = `<table><thead><tr><th>文件</th><th>状态</th><th>原因</th></tr></thead><tbody>${run.items.map((item) => `<tr><td>${item.file}</td><td><span class="pill ${item.status}">${item.status}</span></td><td>${item.reason || ''}</td></tr>`).join('')}</tbody></table>`;
+    logElement.textContent = log + (run.error ? `\n${run.error}` : '');
+  }
+
+  function handleAction(action) {
+    clearError();
+    try {
+      if (action === 'partial') { run = contract.getSyntheticRun('run-101'); log = '打开 synthetic run-101'; }
+      if (action === 'conflict') { run = contract.getSyntheticRun('run-099'); log = '409 existingRunId=run-099：已真正打开 run-099'; }
+      if (action === 'resume') { run = contract.getSyntheticRun('run-077'); log = '模拟恢复 synthetic run-077'; }
+      if (action === 'retry') { const parentId = run.runId; run = contract.retryRun(run, 'run-102'); log = `创建 ${run.runId}，parentRunId=${parentId}；旧 run 未修改`; }
+      if (action === 'late') {
+        const before = run.status;
+        run = contract.mergePollResult(run, { ...run, status:'running', items:run.items.map((item) => ({ ...item, status:'running' })) });
+        log = `迟到 running 合并：${before} → ${run.status}（终态不回退）`;
+      }
+      if (action === 'save') {
+        const saved = safeStorage('写入', (storage) => { storage.setItem(STORAGE_KEY, JSON.stringify({ ...run, version:STORAGE_VERSION })); return true; });
+        if (saved) log = `已保存 synthetic ${run.runId}`;
+      }
+      if (action === 'restore') {
+        const restored = savedRun();
+        if (restored) { run = restored; log = `模拟恢复 ${run.runId}`; }
+        else if (!errorElement.textContent) log = '没有可模拟恢复的快照';
+      }
+      if (action === 'corrupt') {
+        const saved = safeStorage('写入', (storage) => { storage.setItem(STORAGE_KEY, '{bad-json'); return true; });
+        if (saved) log = '已写入损坏快照；点击“模拟恢复快照”观察拒绝路径';
+      }
+      if (action === 'clear') {
+        const cleared = safeStorage('清理', (storage) => { storage.removeItem(STORAGE_KEY); return true; });
+        if (cleared) { clearError(); log = '已清理损坏快照'; }
+      }
+    } catch (error) {
+      log = `✗ ${error instanceof Error ? error.message : String(error)}`;
+    }
+    render();
+  }
+
+  document.querySelectorAll('[data-action]').forEach((button) => {
+    button.addEventListener('click', () => handleAction(button.dataset.action));
+  });
+
+  window.addEventListener('error', (event) => showError(`原型加载错误：${event.message}`));
+  window.addEventListener('unhandledrejection', (event) => showError(`原型异步错误：${String(event.reason)}`));
+  render();
+})();
+</script>
+</body>
+</html>
