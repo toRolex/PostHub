@@ -483,7 +483,8 @@ function DeclarationSection() {
 
 /* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
-function runItemStatusLabel(status: string): string {
+export function runItemStatusLabel(status: string, error?: string | null): string {
+  if (status === "failed" && error?.includes("超时")) return "超时";
   return {
     pending: "待执行",
     running: "执行中",
@@ -614,7 +615,7 @@ function RunDetailPanel() {
             >
               <span className="font-mono text-caption text-meta">#{seq}</span>
               <span className="font-mono text-caption text-meta">{item.itemId.slice(0, 8)}</span>
-              <span className="text-fg-2">{runItemStatusLabel(item.status)}</span>
+              <span className="text-fg-2">{runItemStatusLabel(item.status, errorSummary)}</span>
               {douyin && (
                 <span className="rounded-sm bg-accent-tint px-1.5 py-0.5 text-caption text-accent-ink">
                   抖音声明：{douyin.value ? `${douyin.value} · ${douyin.label}` : douyin.label}

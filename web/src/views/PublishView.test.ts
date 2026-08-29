@@ -3,6 +3,7 @@ import {
   isRetryableRunItemStatus,
   retryableRunItemIds,
   runItemDiagnostics,
+  runItemStatusLabel,
 } from "./PublishView";
 
 describe("最近运行 item 诊断", () => {
@@ -17,6 +18,11 @@ describe("最近运行 item 诊断", () => {
 
   it("旧 run 没有诊断时不渲染占位内容", () => {
     expect(runItemDiagnostics(undefined)).toEqual([]);
+  });
+
+  it("将超时失败显示为可识别的超时状态", () => {
+    expect(runItemStatusLabel("failed", "item 执行超时：超过 0.1 秒，已终止子进程树")).toBe("超时");
+    expect(runItemStatusLabel("failed", "平台拒绝")).toBe("失败");
   });
 
   it("只允许 failure/skipped/interrupted item retry", () => {

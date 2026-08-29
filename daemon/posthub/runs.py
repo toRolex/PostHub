@@ -9,8 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import multiprocessing
+import os
+import signal
 import sqlite3
+import subprocess
 import threading
+import time
 import traceback
 import uuid
 from collections import Counter
@@ -31,8 +37,26 @@ _RUN_ROUTE_MARKER = "_posthub_run_routes_registered"
 _RUN_SERVICE_MARKER = "_posthub_run_service"
 DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_STOP_TIMEOUT = 1.0
+DEFAULT_ITEM_TIMEOUT_SECONDS = 300.0
+ITEM_TIMEOUT_ENV = "POSTHUB_ITEM_TIMEOUT_SECONDS"
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
 logger = logging.getLogger(__name__)
+
+
+def configured_item_timeout_seconds() -> float:
+    """读取受控的单 item 超时配置；未配置时使用 300 秒。"""
+    raw = os.environ.get(ITEM_TIMEOUT_ENV)
+    if raw is None:
+        return DEFAULT_ITEM_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{ITEM_TIMEOUT_ENV} 必须是正数") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{ITEM_TIMEOUT_ENV} 必须是正数")
+    return value
+
+
 LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
 RETRYABLE_ITEM_STATUSES = frozenset({"failed", "skipped", "interrupted"})
 TERMINAL_ITEM_STATUSES = frozenset({"success", "failed", "skipped", "interrupted"})
@@ -845,6 +869,75 @@ class FailClosedUploader:
         raise RuntimeError(FAIL_CLOSED_ERROR)
 
 
+def _run_uploader_in_child(
+    uploader: Callable[[Mapping[str, Any]], None],
+    effective: Mapping[str, Any],
+    result_conn: Any,
+) -> None:
+    """子进程入口：建立独立进程组并把执行结果传回 worker。"""
+    if os.name != "nt":
+        os.setsid()
+    from posthub.uploader_wrapper import (
+        clear_declaration_diagnostics,
+        get_declaration_diagnostics,
+    )
+
+    clear_declaration_diagnostics()
+    try:
+        uploader(effective)
+    except BaseException as exc:  # noqa: BLE001 - 结果必须回传给父进程
+        result = {
+            "error": str(exc),
+            "detail": traceback.format_exc(),
+            "diagnostics": get_declaration_diagnostics(),
+        }
+    else:
+        result = {
+            "error": None,
+            "detail": None,
+            "diagnostics": get_declaration_diagnostics(),
+        }
+    try:
+        result_conn.send(result)
+    except (BrokenPipeError, EOFError, OSError):
+        pass
+    finally:
+        result_conn.close()
+
+
+def _terminate_process_tree(process: multiprocessing.Process) -> None:
+    """强制终止 item 子进程及其后代，并回收父进程句柄。"""
+    pid = process.pid
+    if pid is None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            process.terminate()
+    else:
+        try:
+            process_group = os.getpgid(pid)
+            if process_group != os.getpgrp():
+                os.killpg(process_group, signal.SIGKILL)
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            process.terminate()
+    process.join(timeout=1.0)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=1.0)
+
+
 class RunWorker:
     """独立于页面生命周期的本地后台 worker。"""
 
@@ -856,12 +949,33 @@ class RunWorker:
         *,
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         stop_timeout: float = DEFAULT_STOP_TIMEOUT,
+        item_timeout_seconds: float | None = None,
+        isolate_processes: bool | None = None,
     ) -> None:
         self.store = store
         self.uploader = uploader if uploader is not None else FailClosedUploader()
         self.step_delay = step_delay
         self.lease_seconds = lease_seconds
         self.stop_timeout = stop_timeout
+        self.item_timeout_seconds = (
+            configured_item_timeout_seconds()
+            if item_timeout_seconds is None
+            else item_timeout_seconds
+        )
+        if (
+            not math.isfinite(self.item_timeout_seconds)
+            or self.item_timeout_seconds <= 0
+        ):
+            raise ValueError("item_timeout_seconds 必须是正数")
+        # 生产组合显式开启子进程边界；无闭包的可序列化 uploader 也默认隔离。
+        # 仅保留闭包 fake 的直接调用兼容性，避免旧测试中的 threading.Event
+        # 因 fork 内存隔离而失去共享语义；显式传入 timeout 始终强制隔离。
+        has_closure = bool(getattr(self.uploader, "__closure__", None))
+        self._isolate_processes = (
+            isolate_processes
+            if isolate_processes is not None
+            else item_timeout_seconds is not None or not has_closure
+        )
         self._owner_token = str(uuid.uuid4())
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -935,6 +1049,55 @@ class RunWorker:
                         item_id,
                     )
 
+    def _execute_isolated_item(
+        self, effective: Mapping[str, Any]
+    ) -> tuple[str | None, str | None, list[dict[str, Any]]]:
+        """在独立子进程执行一个 item，超时后强杀整个进程组。"""
+        methods = multiprocessing.get_all_start_methods()
+        method = "fork" if "fork" in methods else "spawn"
+        context = multiprocessing.get_context(method)
+        parent_conn, child_conn = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_run_uploader_in_child,
+            args=(self.uploader, dict(effective), child_conn),
+            name="posthub-run-item",
+        )
+        try:
+            process.start()
+        except Exception as exc:  # noqa: BLE001 - 启动失败落当前 item 终态
+            child_conn.close()
+            parent_conn.close()
+            return (
+                f"item 子进程启动失败：{exc}",
+                traceback.format_exc(),
+                [],
+            )
+        child_conn.close()
+        try:
+            deadline = time.monotonic() + self.item_timeout_seconds
+            while process.is_alive():
+                # 先消费结果再 join，避免异常 traceback 较大时填满 pipe 导致
+                # 子进程无法退出、父进程误判为 timeout。
+                if parent_conn.poll(0.01):
+                    result = parent_conn.recv()
+                    process.join(timeout=1.0)
+                    return result["error"], result["detail"], result["diagnostics"]
+                if time.monotonic() >= deadline:
+                    _terminate_process_tree(process)
+                    message = (
+                        f"item 执行超时：超过 {self.item_timeout_seconds:g} 秒，"
+                        "已终止子进程树"
+                    )
+                    return message, message, []
+            if parent_conn.poll():
+                result = parent_conn.recv()
+                return result["error"], result["detail"], result["diagnostics"]
+            message = f"item 子进程异常退出（退出码 {process.exitcode}）"
+            return message, message, []
+        finally:
+            parent_conn.close()
+            process.join(timeout=0)
+
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
     ) -> tuple[str | None, str | None]:
@@ -996,56 +1159,59 @@ class RunWorker:
             heartbeat.start()
         error: str | None = None
         detail: str | None = None
+        diagnostics: list[dict[str, Any]] = []
         diagnostics_error: str | None = None
-        from posthub.uploader_wrapper import (
-            clear_declaration_diagnostics,
-            get_declaration_diagnostics,
-        )
+        if self._isolate_processes:
+            error, detail, diagnostics = self._execute_isolated_item(effective)
+        else:
+            from posthub.uploader_wrapper import (
+                clear_declaration_diagnostics,
+                get_declaration_diagnostics,
+            )
 
-        clear_declaration_diagnostics()
-        try:
-            self.uploader(effective)
-        except Exception as exc:  # noqa: BLE001 - item 必须落终态
-            error = str(exc)
-            detail = traceback.format_exc()
-        finally:
+            clear_declaration_diagnostics()
             try:
-                diagnostics = get_declaration_diagnostics()
-                if diagnostics:
-                    try:
-                        persisted = self.store.record_item_diagnostics(
-                            run_id,
-                            item_id,
-                            owner_token=self._owner_token,
-                            diagnostics=diagnostics,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - 终态清理不能被 DB 打断
-                        diagnostics_error = str(exc)
-                    else:
-                        if not persisted:
-                            diagnostics_error = "record_item_diagnostics 返回 False"
-                    if diagnostics_error:
-                        logger.warning(
-                            "诊断写入失败：run=%s item=%s account=%s reason=%s error=%s",
-                            run_id,
-                            item_id,
-                            diagnostics[0].get("account", "unknown"),
-                            diagnostics[0].get("reason", "unknown"),
-                            diagnostics_error,
-                        )
-            except Exception as exc:
-                diagnostics_error = str(exc)
-                logger.exception(
-                    "读取 item 诊断失败：run=%s item=%s error=%s",
-                    run_id,
-                    item_id,
-                    diagnostics_error,
-                )
-            finally:
-                # 无论诊断 DB 是否可写，都必须停止 lease heartbeat 并返回 item 终态。
-                finished.set()
-                if heartbeat is not None:
-                    heartbeat.join(timeout=1.0)
+                self.uploader(effective)
+            except Exception as exc:  # noqa: BLE001 - item 必须落终态
+                error = str(exc)
+                detail = traceback.format_exc()
+            diagnostics = get_declaration_diagnostics()
+        try:
+            if diagnostics:
+                try:
+                    persisted = self.store.record_item_diagnostics(
+                        run_id,
+                        item_id,
+                        owner_token=self._owner_token,
+                        diagnostics=diagnostics,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 终态清理不能被 DB 打断
+                    diagnostics_error = str(exc)
+                else:
+                    if not persisted:
+                        diagnostics_error = "record_item_diagnostics 返回 False"
+                if diagnostics_error:
+                    logger.warning(
+                        "诊断写入失败：run=%s item=%s account=%s reason=%s error=%s",
+                        run_id,
+                        item_id,
+                        diagnostics[0].get("account", "unknown"),
+                        diagnostics[0].get("reason", "unknown"),
+                        diagnostics_error,
+                    )
+        except Exception as exc:
+            diagnostics_error = str(exc)
+            logger.exception(
+                "读取 item 诊断失败：run=%s item=%s error=%s",
+                run_id,
+                item_id,
+                diagnostics_error,
+            )
+        finally:
+            # 无论诊断 DB 是否可写，都必须停止 lease heartbeat 并返回 item 终态。
+            finished.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=1.0)
         if diagnostics_error and error is None:
             error = f"诊断写入失败：{diagnostics_error}"
             detail = diagnostics_error
@@ -1076,6 +1242,7 @@ def register_run_routes(
     run_db_path: Path,
     *,
     uploader: Callable[[Mapping[str, Any]], None] | None = None,
+    item_timeout_seconds: float | None = None,
 ) -> RunWorker:
     """注册 accepted-run 路由并启动独立 worker；重复注册保持幂等。"""
     existing = app.extensions.get(_RUN_SERVICE_MARKER)
@@ -1083,7 +1250,12 @@ def register_run_routes(
         return existing["worker"]
 
     store = RunStore(run_db_path)
-    worker = RunWorker(store, uploader=uploader)
+    worker = RunWorker(
+        store,
+        uploader=uploader,
+        item_timeout_seconds=item_timeout_seconds,
+        isolate_processes=True,
+    )
 
     @app.post("/postRuns")
     @app.post("/posthub/runs")

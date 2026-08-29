@@ -1848,3 +1848,88 @@ def test_worker_persists_wrapper_diagnostics_before_item_finishes(
 
     assert detail["items"][0]["diagnostics"][0]["reason"] == "entry_unavailable"
     assert detail["items"][0]["diagnostics"][0]["screenshot"] == "/tmp/debug.png"
+
+
+def _hang_with_descendant(effective: dict) -> None:
+    """测试 fake：留下孙进程后永久阻塞，等待硬超时清理。"""
+    import subprocess
+    import sys
+
+    marker = Path(effective["timeoutMarker"])
+    descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    marker.write_text(str(descendant.pid))
+    while True:
+        time.sleep(0.01)
+
+
+def _timeout_then_success(effective: dict) -> None:
+    if effective["title"] == "超时 item":
+        _hang_with_descendant(effective)
+    Path(effective["successMarker"]).write_text(effective["title"])
+
+
+def test_item_timeout_kills_process_tree_and_continues_next_item(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "descendant.pid"
+    success_marker = tmp_path / "success.txt"
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [
+            {
+                **immediate_payload(),
+                "fileList": ["hang.mp4"],
+                "title": "超时 item",
+                "timeoutMarker": str(marker),
+            },
+            {
+                **immediate_payload(),
+                "fileList": ["success.mp4"],
+                "title": "后续成功",
+                "successMarker": str(success_marker),
+            },
+        ],
+        [account],
+    )
+    store = RunStore(tmp_path / "runs.db")
+    run_id = store.create_run(normalized.effective)
+    worker = RunWorker(store, uploader=_timeout_then_success, item_timeout_seconds=0.15)
+    worker.start()
+    try:
+        completed = wait_for_status_from_store(store, run_id, "completed_with_failures")
+    finally:
+        worker.stop()
+
+    assert [item["status"] for item in completed["items"]] == ["failed", "success"]
+    assert "超时" in completed["items"][0]["errorSummary"]
+    assert success_marker.read_text() == "后续成功"
+    deadline = time.monotonic() + 1
+    descendant_pid = int(marker.read_text())
+    while time.monotonic() < deadline:
+        try:
+            import os
+
+            os.kill(descendant_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("超时 item 的子进程树未被回收")
+
+
+def test_default_item_timeout_is_300_seconds_and_can_be_overridden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    worker = RunWorker(store, item_timeout_seconds=1.25)
+    assert worker.item_timeout_seconds == 1.25
+    assert RunWorker(store).item_timeout_seconds == 300.0
+    monkeypatch.setenv("POSTHUB_ITEM_TIMEOUT_SECONDS", "2.5")
+    assert RunWorker(store).item_timeout_seconds == 2.5

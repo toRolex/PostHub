@@ -997,3 +997,30 @@
 - #95、#98 已完成全量验证、关闭，并通过 `wt remove afk/issue-95 -D --foreground`、`wt remove afk/issue-98 -D --foreground` 清理对应 worktree/branch。
 - 最终验证：daemon `231 passed`；web `23 files / 244 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；冲突标记为 0，`git diff --check` 通过。
 - 父 Issue #80 仍为 OPEN，未关闭；本轮未 push、未创建 PR。
+
+## Issue #96：单 item 硬超时隔离
+
+### 目标与计划
+
+- 仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-96` 的 `afk/issue-96` 分支实现；不 push、建 PR、merge 或关闭 Issue。
+- 以现有 `RunWorker` / `RunStore` / `/postRuns` / retry 与 `RunDetailPanel` 为 seam，先锁定每 item 独立子进程、默认 300 秒可控覆盖、超时进程树回收、当前 item 失败后继续后续 item。
+- Python 一律通过 `uv`；不修改官方 `sau_backend.py` 或 `uploader/*`，不恢复通用 scheduler，不改变既有 retry 契约。
+
+### 预确认 seams
+
+- `RunWorker` 注入可序列化 fake uploader：success/hang/success 顺序、timeout 摘要与子进程/孙进程退出。
+- `RunStore.finish_item` 与 `/postRuns/<runId>`：超时只写当前 item，run 聚合 `completed_with_failures`，失败 item 保持现有 retryable 状态。
+- `RunDetailPanel`：沿用失败详情与“重试此项/全部可重试项”，补充可见超时摘要，不新增 retry API。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已读取 Issue #96、父 Issue #80 及 #93/#95 约束、`CONTEXT.md`、ADR-0001/0006/0007/0008/0009、现有 RunWorker/RunStore/官方 wrapper 与前端 run 详情；当前 worker 仍在线程内直接调用 uploader，无法强制终止阻塞执行。
+- 下一步按 TDD 先新增独立进程超时与进程树回收失败测试，再实现最小 process boundary 与 UI 摘要。
+- Red：新增 success/hang/success fake 与孙进程回收测试、默认 300 秒/环境覆盖测试及前端超时状态文案测试；定向 daemon 初次为 `2 failed, 49 passed`（构造器尚无 timeout 参数），web 为 `1 failed, 244 passed`（状态 helper 未导出）。
+- Green：RunWorker 增加 `item_timeout_seconds` 与 `POSTHUB_ITEM_TIMEOUT_SECONDS`，生产组合显式为每 item 启动独立进程；POSIX 用独立进程组 `SIGKILL`，Windows 用 `taskkill /F /T`，超时落当前 item 失败并继续队列；子进程回传异常/诊断，保留现有详情与 retry。前端将超时摘要显示为“超时”。
+- Deviations：为兼容既有闭包 fake 使用的 `threading.Event` 测试，直接构造含闭包 uploader 时保留旧线程执行；生产 `register_run_routes` 始终显式开启子进程隔离，显式配置 timeout 的 fake 也强制隔离，不影响产品路径。
+- 定向 Green：daemon `tests/test_runs.py` → `51 passed`；web `PublishView.test.ts` → `23 files / 245 tests passed`；相关 Ruff/format 与 `git diff --check` 通过。
