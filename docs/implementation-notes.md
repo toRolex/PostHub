@@ -927,3 +927,6 @@
 - Green：仅将真正的零字节 body 视为省略 `itemIds`；空白体、malformed JSON 均返回 JSON 400。定向 `tests/test_runs.py` → `49 passed`，相关 Ruff check/format → 通过。
 - Runtime verify：隔离 daemon HTTP 服务中，空体返回 JSON 200 并创建 retry run；whitespace-only 与 malformed JSON 均返回 `{"code":400,"data":null,"msg":"retry 请求体不是合法 JSON object"}`；将 run DB 置只读后 retry 返回 `{"code":500,"data":null,"msg":"attempt to write a readonly database"}`，服务已停止。真实发布因缺 cookie 自动失败，未触发外部平台。
 - 最终复验：daemon `uv run pytest -q` → `227 passed`；web `pnpm test -- --run` → `21 files / 237 tests passed`，`pnpm run build` 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；retry 相关 Ruff/format 与 `git diff --check` 通过。
+
+- `git merge afk/issue-95 --no-edit` 发生唯一冲突：`docs/implementation-notes.md`；已逐侧保留 develop 的本轮准备记录与 #95 完整实现/审查记录，未使用 `-X`，生成 merge commit `488b817`。
+- 下一步：立即执行 daemon、web、build、Tauri 全量验证；通过后清理 #95 worktree/branch，再处理 #98。
