@@ -1089,3 +1089,11 @@
 - 发现实现提交新增的两个 Python 测试文件存在 Ruff import-order 检查错误；已按项目 Ruff 规则整理 `test_composition.py` 与 `test_runs.py` 导入，仅修复 lint 阻断，不改变测试行为。
 - 修补后验证：daemon `uv run pytest -q` → `233 passed`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `3 files already formatted`；web `pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` 通过；Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；`git diff --check` 通过。
 - 未修改官方源码、未 push、未创建 PR、未 merge、未关闭 Issue #97。
+
+### Issue #97 Merger 执行记录（2026-08-29）
+
+- `git merge afk/issue-97 --no-edit` 仅冲突于 `docs/implementation-notes.md`；逐侧保留 #96 隔离实现/验证与 #97 启动 reconciliation 全部记录，业务文件自动合并，未使用 `-X`，生成 merge commit `94a5a8d`。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `236 passed in 13.86s`。
+- 合并后 web：`pnpm test -- --run` → `23 files / 245 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
+- 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- #97 合并与全量验证通过；下一步清理 #97 worktree/branch，再处理 #99。
