@@ -557,6 +557,54 @@ class RunStore:
                     ) from err
         return run_id
 
+    def reconcile_daemon_startup(self) -> None:
+        """将上次 daemon 遗留的活动 item 收敛为 interrupted，不自动续跑。"""
+        now = _now()
+        with self._lock, self._connect() as conn:
+            # 组合入口在新 worker 启动前调用此方法；此时所有活动 item
+            # 都属于已退出 daemon，不能再沿用普通 lease recovery 的 pending 语义。
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'interrupted', updated_at = ?, completed_at = ?
+                WHERE EXISTS (
+                    SELECT 1 FROM run_items
+                    WHERE run_items.run_id = runs.id
+                      AND run_items.status IN ('pending', 'running')
+                )
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                UPDATE run_items
+                SET status = 'interrupted', lease_owner = NULL, lease_until = NULL,
+                    updated_at = ?
+                WHERE status IN ('pending', 'running')
+                """,
+                (now,),
+            )
+            # 兼容历史上 run 已经是 running、但 item 全部落终态的数据库，
+            # 不让启动后遗留一个永远执行中的聚合状态。
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = CASE WHEN EXISTS (
+                        SELECT 1 FROM run_items
+                        WHERE run_items.run_id = runs.id
+                          AND run_items.status IN ('failed', 'skipped', 'interrupted')
+                    ) THEN 'completed_with_failures' ELSE 'completed' END,
+                    updated_at = ?, completed_at = COALESCE(completed_at, ?)
+                WHERE status IN ('pending', 'running')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_items
+                      WHERE run_items.run_id = runs.id
+                        AND run_items.status IN ('pending', 'running')
+                  )
+                """,
+                (now, now),
+            )
+
     def recover_incomplete(self) -> None:
         """只回收 lease 已过期的 running item，保留仍由其他 worker 持有的 item。"""
         now = _now()
@@ -1522,6 +1570,7 @@ def register_run_routes(
         "store": store,
         "worker": worker,
     }
+    store.reconcile_daemon_startup()
     worker.start()
     return worker
 

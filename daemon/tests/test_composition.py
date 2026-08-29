@@ -7,15 +7,16 @@ from pathlib import Path
 
 import myUtils.postVideo as official_post_video
 import pytest
-from flask import Flask
-
 import sau_backend
+from flask import Flask
 from posthub import uploader_wrapper
 from posthub.composition import (
     compose_official_backend,
     compose_posthub_backend,
     shutdown_posthub_backend,
 )
+from posthub.publish_adapter import normalize_publish_payload
+from posthub.runs import RunStore
 
 
 def _rule_count(app, path: str) -> int:
@@ -30,6 +31,52 @@ def test_composition_injects_real_effective_dispatcher(tmp_path: Path) -> None:
     try:
         worker = app.extensions["_posthub_run_service"]["worker"]
         assert worker.uploader is uploader_wrapper.execute_effective_item
+    finally:
+        shutdown_posthub_backend(app)
+
+
+def test_composition_marks_previous_run_interrupted_before_worker_starts(
+    tmp_path: Path,
+) -> None:
+    app = Flask(__name__)
+    official_db = tmp_path / "official" / "db" / "database.db"
+    run_db = tmp_path / "posthub-runs.db"
+    effective = normalize_publish_payload(
+        {
+            "fileList": ["stale.mp4"],
+            "accountList": ["douyin.json"],
+            "type": 3,
+            "title": "遗留任务",
+            "enableTimer": False,
+        },
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    ).effective[0]
+    run_id = RunStore(run_db).create_run((effective,))
+    calls: list[dict] = []
+
+    compose_posthub_backend(
+        app,
+        official_db,
+        run_db_path=run_db,
+        uploader=lambda item: calls.append(dict(item)),
+    )
+    try:
+        store = app.extensions["_posthub_run_service"]["store"]
+        snapshot = store.get_run(run_id)
+        assert snapshot is not None
+        assert snapshot["status"] == "interrupted"
+        assert snapshot["items"][0]["status"] == "interrupted"
+        assert store.claim_next_item("new-daemon") is None
+        assert calls == []
     finally:
         shutdown_posthub_backend(app)
 

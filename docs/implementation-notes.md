@@ -1048,3 +1048,44 @@
 - 合并后 web：`pnpm test -- --run` → `23 files / 245 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
 - 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - #96 合并与全量验证通过；Windows `taskkill /F /T` 未在 Windows 实机验证，作为已知 concern 记录。
+
+## Issue #97：daemon 重启后的 interrupted 恢复
+
+### 目标与计划
+
+- 仅实现 daemon 启动时对遗留 pending/running item 的一次性 reconciliation：改为 interrupted、清除执行 lease、run 查询保留真实中断状态，且新 worker 不自动续跑。
+- 保留普通 `recover_incomplete()` 的 lease recovery 语义，避免把活动 worker 的 lease 误判为 daemon 重启；通过组合入口的启动边界调用专用 seam。
+- 先在 `daemon/tests/test_runs.py` 写失败测试，覆盖混合终态、查询/summary、无 uploader 调用及 retry 仍能复制 interrupted；再做最小实现并运行 daemon/web/Tauri 全量验证。
+
+### 当前调研
+
+- Issue #97 验收要求：陈旧 pending/running → interrupted，success/failed 等已有终态不改写，不自动执行；前端已有 `interrupted` 类型、展示和 retry 支持。
+- 当前 `RunWorker.start()` 直接调用 `recover_incomplete()`，其语义是过期 running → pending，因此重启后会继续 claim；普通 worker 之间的活动 lease 保护已有测试，不能无条件改写该方法。
+- `compose_posthub_backend()`/`register_run_routes()` 是 daemon 生命周期组合边界；启动 reconciliation 应在接受新请求前、worker 线程启动前完成。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已读取 Issue #97/#80、`CONTEXT.md`、ADR-0007/0009、现有 RunStore/RunWorker/组合入口与全量 runs 测试；仅在 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-97` 工作。
+- 已先追加启动 reconciliation 的失败测试并运行定向测试，确认现有行为确实会自动执行遗留 item。
+- Red：新增 RunStore 混合终态启动恢复测试；`cd daemon && uv run pytest tests/test_runs.py -q` → `1 failed, 49 passed`，失败确认启动专用 reconciliation seam 尚不存在。
+- Green：新增 `RunStore.reconcile_daemon_startup()`，在同一事务内将存在 pending/running item 的 run/item 标记为 interrupted、设置 `completed_at`、清空 lease；保留普通 `recover_incomplete()` 的过期 lease → pending 语义。组合入口在 worker 启动前调用该 seam，新增组合层回归确认遗留 item 不会被 fake uploader 执行；相关定向测试 → `54 passed`。
+- 精炼复核：定向 `tests/test_runs.py tests/test_composition.py` → `54 passed`；Ruff 检查通过，但发现 `test_composition.py` 新增断言未按 formatter 规范换行。
+- 精炼修正：在组合测试中绑定已组合的 `RunStore`，避免重复深层 `app.extensions` 访问；按 Ruff formatter 规范整理断言，仅改善可读性，不改变测试契约或运行行为。
+
+### 最终验证
+
+- daemon：`cd daemon && uv run pytest -q` → `233 passed`；相关 Python Ruff check/format check 通过。
+- web：`cd web && pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` 的 TypeScript/Vite 均通过；保留既有 jsdom navigation stderr。
+- Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地忽略的空 resources 目录，未纳入提交。
+- `git diff --check` 通过；未修改官方源码，未 push、未创建 PR、未 merge、未关闭 Issue #97。
+
+### Reviewer refinement（2026-08-29）
+
+- 完整复核 `git diff develop..HEAD` 与 Issue #97 验收项；启动 reconciliation 在 worker 启动前执行，终态 item 保持不变，interrupted item 可沿用既有 retry 契约；未发现业务逻辑缺陷。
+- 发现实现提交新增的两个 Python 测试文件存在 Ruff import-order 检查错误；已按项目 Ruff 规则整理 `test_composition.py` 与 `test_runs.py` 导入，仅修复 lint 阻断，不改变测试行为。
+- 修补后验证：daemon `uv run pytest -q` → `233 passed`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `3 files already formatted`；web `pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` 通过；Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；`git diff --check` 通过。
+- 未修改官方源码、未 push、未创建 PR、未 merge、未关闭 Issue #97。
