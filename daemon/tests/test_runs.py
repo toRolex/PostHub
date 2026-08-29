@@ -357,6 +357,69 @@ def test_worker_restart_recovers_expired_running_item(tmp_path: Path) -> None:
     assert store.get_run(run_id)["items"][0]["status"] == "success"
 
 
+def test_daemon_startup_reconciles_stale_items_as_interrupted_without_running_them(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "posthub-runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    payloads = [
+        {**immediate_payload(), "fileList": ["success.mp4"], "title": "已成功"},
+        {**immediate_payload(), "fileList": ["failed.mp4"], "title": "已失败"},
+        {**immediate_payload(), "fileList": ["skipped.mp4"], "title": "已跳过"},
+        {**immediate_payload(), "fileList": ["pending.mp4"], "title": "遗留 pending"},
+        {**immediate_payload(), "fileList": ["running.mp4"], "title": "遗留 running"},
+    ]
+    normalized = normalize_publish_payloads(payloads, [account])
+    run_id = store.create_run(normalized.effective)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE run_items SET status = 'success' WHERE run_id = ? AND ordinal = 0",
+            (run_id,),
+        )
+        conn.execute(
+            "UPDATE run_items SET status = 'failed' WHERE run_id = ? AND ordinal = 1",
+            (run_id,),
+        )
+        conn.execute(
+            "UPDATE run_items SET status = 'skipped' WHERE run_id = ? AND ordinal = 2",
+            (run_id,),
+        )
+        conn.commit()
+    claimed = store.claim_next_item("old-daemon", lease_seconds=60)
+    assert claimed is not None
+
+    store.reconcile_daemon_startup()
+
+    snapshot = store.get_run(run_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "interrupted"
+    assert snapshot["completedAt"] is not None
+    assert [item["status"] for item in snapshot["items"]] == [
+        "success",
+        "failed",
+        "skipped",
+        "interrupted",
+        "interrupted",
+    ]
+    assert store.claim_next_item("new-daemon") is None
+
+    calls: list[dict] = []
+    worker = RunWorker(store, uploader=lambda effective: calls.append(effective))
+    worker.start()
+    try:
+        time.sleep(0.05)
+    finally:
+        worker.stop()
+    assert calls == []
+
+
 def test_recover_incomplete_closes_running_run_with_terminal_items(
     tmp_path: Path,
 ) -> None:
