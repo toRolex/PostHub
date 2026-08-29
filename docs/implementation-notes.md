@@ -1027,3 +1027,6 @@
 - 修补后定向 daemon `tests/test_runs.py` → `51 passed`，success/fail-closed/timeout/EOF IPC 回归均通过；待最终全量复验后提交。
 - 定向 Green：daemon `tests/test_runs.py` → `51 passed`；web `PublishView.test.ts` → `23 files / 245 tests passed`；相关 Ruff/format 与 `git diff --check` 通过。
 - 最终全量：daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；Python Ruff/format 与 `git diff --check` 通过。
+- Reviewer 初审：发现异常 IPC 早退未必终止仍存活的 child，且收到 result 后仍可能沿用执行超时判断；另外隔离执行抛异常时 heartbeat 清理不完整。计划用统一 finally 回收 child、result 后停止执行预算，并确保 heartbeat 始终结束。
+- Reviewer 修补：隔离 child 的 IPC 轮询在收到 result 后停止执行超时判断；所有异常早退统一在 finally 等待并强杀残留 child；校验 result 的 error/detail/diagnostics 形状；wrapper 导入/安装失败也回传带 traceback 的 result；heartbeat 对隔离执行异常始终清理。
+- Reviewer 验证：实际启动 Flask `/postRuns` 服务并通过 HTTP 提交 immediate item，GET 观察到 child 回传 fail-closed 错误及 `completed_with_failures`；malformed JSON 返回 400。daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`；web build、Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets`、Ruff 与 `git diff --check` 均通过。

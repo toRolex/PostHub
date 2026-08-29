@@ -875,40 +875,43 @@ def _run_uploader_in_child(
     result_conn: Any,
 ) -> None:
     """子进程入口：建立独立进程组并把执行结果传回 worker。"""
-    if os.name != "nt":
-        os.setsid()
-    from posthub.uploader_wrapper import (
-        clear_declaration_diagnostics,
-        get_declaration_diagnostics,
-    )
-    from posthub.uploader_wrapper import install as install_uploader_wrapper
-
-    # child 不依赖 Flask request，独立重建 wrapper 的运行时引用，保证官方
-    # publish_strategy、定时与声明适配不会因 spawn 而回退到上游原实现。
-    install_uploader_wrapper()
-    clear_declaration_diagnostics()
+    get_diagnostics: Callable[[], list[dict[str, Any]]] | None = None
     try:
+        if os.name != "nt":
+            os.setsid()
+        from posthub.uploader_wrapper import (
+            clear_declaration_diagnostics,
+            get_declaration_diagnostics,
+        )
+        from posthub.uploader_wrapper import install as install_uploader_wrapper
+
+        get_diagnostics = get_declaration_diagnostics
+        # child 不依赖 Flask request，独立重建 wrapper 的运行时引用，保证官方
+        # publish_strategy、定时与声明适配不会因 spawn 而回退到上游原实现。
+        install_uploader_wrapper()
+        clear_declaration_diagnostics()
         result_conn.send({"kind": "ready"})
         acknowledgement = result_conn.recv()
         if (
             not isinstance(acknowledgement, dict)
             or acknowledgement.get("kind") != "ack"
         ):
-            return
+            raise RuntimeError("item 子进程收到非法 ack")
         uploader(effective)
     except BaseException as exc:  # noqa: BLE001 - 结果必须回传给父进程
+        diagnostics = get_diagnostics() if get_diagnostics is not None else []
         result = {
             "kind": "result",
             "error": str(exc),
             "detail": traceback.format_exc(),
-            "diagnostics": get_declaration_diagnostics(),
+            "diagnostics": diagnostics,
         }
     else:
         result = {
             "kind": "result",
             "error": None,
             "detail": None,
-            "diagnostics": get_declaration_diagnostics(),
+            "diagnostics": get_diagnostics(),
         }
     try:
         result_conn.send(result)
@@ -1130,21 +1133,36 @@ class RunWorker:
             startup_deadline = time.monotonic() + max(5.0, self.item_timeout_seconds)
             deadline: float | None = None
             result: dict[str, Any] | None = None
-            while process.is_alive():
-                if result is None and parent_conn.poll(0.01):
+            # 收到最终 result 后不再按 uploader 执行预算判定；finally 会负责
+            # 等待/回收 child，避免“结果已到但 child 尚未退出”时误报超时。
+            while process.is_alive() and result is None:
+                try:
+                    has_message = parent_conn.poll(0.01)
+                except (EOFError, OSError) as exc:
+                    abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
+                    return abnormal, abnormal, []
+                if has_message:
                     try:
                         message = parent_conn.recv()
                     except (EOFError, OSError) as exc:
                         abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
-                        process.join(timeout=1.0)
                         return abnormal, abnormal, []
                     if not isinstance(message, dict):
                         abnormal = "item 子进程返回结果格式非法：必须是 object"
                         return abnormal, abnormal, []
                     kind = message.get("kind")
                     if kind == "ready":
+                        if deadline is not None:
+                            abnormal = "item 子进程重复发送 ready"
+                            return abnormal, abnormal, []
                         # spawn 启动成本不计入 uploader 的 item 超时预算。
-                        parent_conn.send({"kind": "ack"})
+                        try:
+                            parent_conn.send({"kind": "ack"})
+                        except (EOFError, OSError) as exc:
+                            abnormal = (
+                                f"item 子进程 IPC 写入失败：{str(exc) or '管道关闭'}"
+                            )
+                            return abnormal, abnormal, []
                         deadline = time.monotonic() + self.item_timeout_seconds
                     elif kind == "result":
                         result = message
@@ -1166,36 +1184,56 @@ class RunWorker:
                     return message, message, []
             if result is None:
                 try:
-                    if parent_conn.poll():
-                        message = parent_conn.recv()
-                        if (
-                            isinstance(message, dict)
-                            and message.get("kind") == "result"
-                        ):
-                            result = message
-                        elif (
-                            isinstance(message, dict) and message.get("kind") == "ready"
-                        ):
-                            abnormal = f"item 子进程异常退出（退出码 {process.exitcode}）：缺少 result"
-                            return abnormal, abnormal, []
-                        else:
-                            abnormal = "item 子进程返回结果格式非法：缺少 result"
-                            return abnormal, abnormal, []
+                    has_message = parent_conn.poll()
                 except (EOFError, OSError) as exc:
                     abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
                     return abnormal, abnormal, []
+                if has_message:
+                    try:
+                        message = parent_conn.recv()
+                    except (EOFError, OSError) as exc:
+                        abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
+                        return abnormal, abnormal, []
+                    if isinstance(message, dict) and message.get("kind") == "result":
+                        result = message
+                    elif isinstance(message, dict) and message.get("kind") == "ready":
+                        abnormal = f"item 子进程异常退出（退出码 {process.exitcode}）：缺少 result"
+                        return abnormal, abnormal, []
+                    else:
+                        abnormal = "item 子进程返回结果格式非法：缺少 result"
+                        return abnormal, abnormal, []
             if result is not None:
                 required = {"error", "detail", "diagnostics"}
                 missing = sorted(required - result.keys())
                 if missing:
                     abnormal = f"item 子进程返回结果格式非法：缺少 {', '.join(missing)}"
                     return abnormal, abnormal, []
-                return result["error"], result["detail"], result["diagnostics"]
+                error = result["error"]
+                detail = result["detail"]
+                diagnostics = result["diagnostics"]
+                if (error is not None and not isinstance(error, str)) or (
+                    detail is not None and not isinstance(detail, str)
+                ):
+                    abnormal = "item 子进程返回结果格式非法：error/detail 必须是 string 或 null"
+                    return abnormal, abnormal, []
+                if not isinstance(diagnostics, list) or any(
+                    not isinstance(item, dict) for item in diagnostics
+                ):
+                    abnormal = (
+                        "item 子进程返回结果格式非法：diagnostics 必须是 object 数组"
+                    )
+                    return abnormal, abnormal, []
+                return error, detail, diagnostics
             message = f"item 子进程异常退出（退出码 {process.exitcode}）：未返回 result"
             return message, message, []
         finally:
             parent_conn.close()
-            process.join(timeout=0)
+            if process.is_alive():
+                process.join(timeout=DEFAULT_STOP_TIMEOUT)
+            if process.is_alive():
+                _terminate_process_tree(process)
+            else:
+                process.join(timeout=0)
 
     def _execute_with_lease_heartbeat(
         self, run_id: str, item_id: str, effective: Mapping[str, Any]
@@ -1260,61 +1298,62 @@ class RunWorker:
         detail: str | None = None
         diagnostics: list[dict[str, Any]] = []
         diagnostics_error: str | None = None
-        if self._isolate_processes:
-            error, detail, diagnostics = self._execute_isolated_item(effective)
-        else:
-            from posthub.uploader_wrapper import (
-                clear_declaration_diagnostics,
-                get_declaration_diagnostics,
-            )
-
-            clear_declaration_diagnostics()
-            try:
-                self.uploader(effective)
-            except Exception as exc:  # noqa: BLE001 - item 必须落终态
-                error = str(exc)
-                detail = traceback.format_exc()
-            diagnostics = get_declaration_diagnostics()
         try:
-            if diagnostics:
+            if self._isolate_processes:
+                error, detail, diagnostics = self._execute_isolated_item(effective)
+            else:
+                from posthub.uploader_wrapper import (
+                    clear_declaration_diagnostics,
+                    get_declaration_diagnostics,
+                )
+
+                clear_declaration_diagnostics()
                 try:
-                    persisted = self.store.record_item_diagnostics(
-                        run_id,
-                        item_id,
-                        owner_token=self._owner_token,
-                        diagnostics=diagnostics,
-                    )
-                except Exception as exc:  # noqa: BLE001 - 终态清理不能被 DB 打断
-                    diagnostics_error = str(exc)
-                else:
-                    if not persisted:
-                        diagnostics_error = "record_item_diagnostics 返回 False"
-                if diagnostics_error:
-                    logger.warning(
-                        "诊断写入失败：run=%s item=%s account=%s reason=%s error=%s",
-                        run_id,
-                        item_id,
-                        diagnostics[0].get("account", "unknown"),
-                        diagnostics[0].get("reason", "unknown"),
-                        diagnostics_error,
-                    )
-        except Exception as exc:
-            diagnostics_error = str(exc)
-            logger.exception(
-                "读取 item 诊断失败：run=%s item=%s error=%s",
-                run_id,
-                item_id,
-                diagnostics_error,
-            )
+                    self.uploader(effective)
+                except Exception as exc:  # noqa: BLE001 - item 必须落终态
+                    error = str(exc)
+                    detail = traceback.format_exc()
+                diagnostics = get_declaration_diagnostics()
+            try:
+                if diagnostics:
+                    try:
+                        persisted = self.store.record_item_diagnostics(
+                            run_id,
+                            item_id,
+                            owner_token=self._owner_token,
+                            diagnostics=diagnostics,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 终态清理不能被 DB 打断
+                        diagnostics_error = str(exc)
+                    else:
+                        if not persisted:
+                            diagnostics_error = "record_item_diagnostics 返回 False"
+                    if diagnostics_error:
+                        logger.warning(
+                            "诊断写入失败：run=%s item=%s account=%s reason=%s error=%s",
+                            run_id,
+                            item_id,
+                            diagnostics[0].get("account", "unknown"),
+                            diagnostics[0].get("reason", "unknown"),
+                            diagnostics_error,
+                        )
+            except Exception as exc:
+                diagnostics_error = str(exc)
+                logger.exception(
+                    "读取 item 诊断失败：run=%s item=%s error=%s",
+                    run_id,
+                    item_id,
+                    diagnostics_error,
+                )
+            if diagnostics_error and error is None:
+                error = f"诊断写入失败：{diagnostics_error}"
+                detail = diagnostics_error
+            return error, detail
         finally:
-            # 无论诊断 DB 是否可写，都必须停止 lease heartbeat 并返回 item 终态。
+            # 即使隔离执行自身抛出异常，也必须停止 lease heartbeat。
             finished.set()
             if heartbeat is not None:
                 heartbeat.join(timeout=1.0)
-        if diagnostics_error and error is None:
-            error = f"诊断写入失败：{diagnostics_error}"
-            detail = diagnostics_error
-        return error, detail
 
 
 def _read_publish_accounts(db_path: Path) -> list[dict[str, Any]]:
