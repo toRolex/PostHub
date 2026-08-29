@@ -881,18 +881,31 @@ def _run_uploader_in_child(
         clear_declaration_diagnostics,
         get_declaration_diagnostics,
     )
+    from posthub.uploader_wrapper import install as install_uploader_wrapper
 
+    # child 不依赖 Flask request，独立重建 wrapper 的运行时引用，保证官方
+    # publish_strategy、定时与声明适配不会因 spawn 而回退到上游原实现。
+    install_uploader_wrapper()
     clear_declaration_diagnostics()
     try:
+        result_conn.send({"kind": "ready"})
+        acknowledgement = result_conn.recv()
+        if (
+            not isinstance(acknowledgement, dict)
+            or acknowledgement.get("kind") != "ack"
+        ):
+            return
         uploader(effective)
     except BaseException as exc:  # noqa: BLE001 - 结果必须回传给父进程
         result = {
+            "kind": "result",
             "error": str(exc),
             "detail": traceback.format_exc(),
             "diagnostics": get_declaration_diagnostics(),
         }
     else:
         result = {
+            "kind": "result",
             "error": None,
             "detail": None,
             "diagnostics": get_declaration_diagnostics(),
@@ -905,11 +918,41 @@ def _run_uploader_in_child(
         result_conn.close()
 
 
+def _descendant_pids(root_pid: int) -> list[int]:
+    """读取当前进程表中的后代，补足 POSIX 下 setsid 后代脱离进程组的情况。"""
+    if os.name == "nt":
+        return []
+    try:
+        output = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid="], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, parent_pid = (int(value) for value in fields)
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append(pid)
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
 def _terminate_process_tree(process: multiprocessing.Process) -> None:
     """强制终止 item 子进程及其后代，并回收父进程句柄。"""
     pid = process.pid
     if pid is None:
         return
+    descendants = _descendant_pids(pid)
     if os.name == "nt":
         try:
             subprocess.run(
@@ -922,6 +965,17 @@ def _terminate_process_tree(process: multiprocessing.Process) -> None:
         except OSError:
             process.terminate()
     else:
+        # 先按父子关系杀已发现的后代，再杀进程组；这样即使某个后代自行
+        # setsid 脱离进程组，也不会因只 killpg 而遗留。
+        for descendant_pid in reversed(descendants):
+            try:
+                os.kill(descendant_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                logger.debug(
+                    "终止 item 后代失败：pid=%s", descendant_pid, exc_info=True
+                )
         try:
             process_group = os.getpgid(pid)
             if process_group != os.getpgrp():
@@ -967,9 +1021,8 @@ class RunWorker:
             or self.item_timeout_seconds <= 0
         ):
             raise ValueError("item_timeout_seconds 必须是正数")
-        # 生产组合显式开启子进程边界；无闭包的可序列化 uploader 也默认隔离。
-        # 仅保留闭包 fake 的直接调用兼容性，避免旧测试中的 threading.Event
-        # 因 fork 内存隔离而失去共享语义；显式传入 timeout 始终强制隔离。
+        # 生产组合显式开启子进程边界；闭包 fake 保留旧线程 seam，避免
+        # 既有测试依赖的 threading.Event 在进程边界后失去共享语义。
         has_closure = bool(getattr(self.uploader, "__closure__", None))
         self._isolate_processes = (
             isolate_processes
@@ -1053,10 +1106,10 @@ class RunWorker:
         self, effective: Mapping[str, Any]
     ) -> tuple[str | None, str | None, list[dict[str, Any]]]:
         """在独立子进程执行一个 item，超时后强杀整个进程组。"""
-        methods = multiprocessing.get_all_start_methods()
-        method = "fork" if "fork" in methods else "spawn"
-        context = multiprocessing.get_context(method)
-        parent_conn, child_conn = context.Pipe(duplex=False)
+        # worker 本身运行在线程中，禁止 fork 继承可能持锁的解释器状态；
+        # spawn 也要求 run_backend.py 有 main guard，避免子进程重复启动 daemon。
+        context = multiprocessing.get_context("spawn")
+        parent_conn, child_conn = context.Pipe()
         process = context.Process(
             target=_run_uploader_in_child,
             args=(self.uploader, dict(effective), child_conn),
@@ -1074,25 +1127,71 @@ class RunWorker:
             )
         child_conn.close()
         try:
-            deadline = time.monotonic() + self.item_timeout_seconds
+            startup_deadline = time.monotonic() + max(5.0, self.item_timeout_seconds)
+            deadline: float | None = None
+            result: dict[str, Any] | None = None
             while process.is_alive():
-                # 先消费结果再 join，避免异常 traceback 较大时填满 pipe 导致
-                # 子进程无法退出、父进程误判为 timeout。
-                if parent_conn.poll(0.01):
-                    result = parent_conn.recv()
-                    process.join(timeout=1.0)
-                    return result["error"], result["detail"], result["diagnostics"]
-                if time.monotonic() >= deadline:
+                if result is None and parent_conn.poll(0.01):
+                    try:
+                        message = parent_conn.recv()
+                    except (EOFError, OSError) as exc:
+                        abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
+                        process.join(timeout=1.0)
+                        return abnormal, abnormal, []
+                    if not isinstance(message, dict):
+                        abnormal = "item 子进程返回结果格式非法：必须是 object"
+                        return abnormal, abnormal, []
+                    kind = message.get("kind")
+                    if kind == "ready":
+                        # spawn 启动成本不计入 uploader 的 item 超时预算。
+                        parent_conn.send({"kind": "ack"})
+                        deadline = time.monotonic() + self.item_timeout_seconds
+                    elif kind == "result":
+                        result = message
+                    else:
+                        abnormal = f"item 子进程返回未知消息类型：{kind!r}"
+                        return abnormal, abnormal, []
+                now = time.monotonic()
+                if deadline is None:
+                    if now >= startup_deadline:
+                        _terminate_process_tree(process)
+                        message = "item 子进程启动超时：未进入执行状态，已终止子进程树"
+                        return message, message, []
+                elif now >= deadline:
                     _terminate_process_tree(process)
                     message = (
                         f"item 执行超时：超过 {self.item_timeout_seconds:g} 秒，"
                         "已终止子进程树"
                     )
                     return message, message, []
-            if parent_conn.poll():
-                result = parent_conn.recv()
+            if result is None:
+                try:
+                    if parent_conn.poll():
+                        message = parent_conn.recv()
+                        if (
+                            isinstance(message, dict)
+                            and message.get("kind") == "result"
+                        ):
+                            result = message
+                        elif (
+                            isinstance(message, dict) and message.get("kind") == "ready"
+                        ):
+                            abnormal = f"item 子进程异常退出（退出码 {process.exitcode}）：缺少 result"
+                            return abnormal, abnormal, []
+                        else:
+                            abnormal = "item 子进程返回结果格式非法：缺少 result"
+                            return abnormal, abnormal, []
+                except (EOFError, OSError) as exc:
+                    abnormal = f"item 子进程 IPC 管道异常关闭：{str(exc) or 'EOF'}"
+                    return abnormal, abnormal, []
+            if result is not None:
+                required = {"error", "detail", "diagnostics"}
+                missing = sorted(required - result.keys())
+                if missing:
+                    abnormal = f"item 子进程返回结果格式非法：缺少 {', '.join(missing)}"
+                    return abnormal, abnormal, []
                 return result["error"], result["detail"], result["diagnostics"]
-            message = f"item 子进程异常退出（退出码 {process.exitcode}）"
+            message = f"item 子进程异常退出（退出码 {process.exitcode}）：未返回 result"
             return message, message, []
         finally:
             parent_conn.close()

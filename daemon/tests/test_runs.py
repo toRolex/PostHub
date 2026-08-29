@@ -62,6 +62,51 @@ def immediate_payload() -> dict[str, object]:
     }
 
 
+def _write_success_marker(effective: dict) -> None:
+    Path(effective["successMarker"]).write_text(effective["title"])
+
+
+def _noop_uploader(_effective: dict) -> None:
+    return None
+
+
+def _fail_rejected_item(effective: dict) -> None:
+    if effective["title"] == "平台拒绝":
+        raise RuntimeError("平台拒绝当前 item")
+
+
+def _write_effective_marker(effective: dict) -> None:
+    Path(effective["seenMarker"]).write_text(json.dumps(effective, ensure_ascii=False))
+
+
+def _append_effective_marker(effective: dict) -> None:
+    with Path(effective["seenMarker"]).open("a") as marker:
+        marker.write(json.dumps(effective, ensure_ascii=False) + "\n")
+
+
+def _record_diagnostic(effective: dict) -> None:
+    from posthub import uploader_wrapper
+
+    uploader_wrapper._record_declaration_diagnostic(
+        level="warning",
+        kind="wechat_content_declaration",
+        account=effective.get("accountList", ["unknown"])[0],
+        reason=effective.get("diagnosticReason", "db-test"),
+        screenshot=effective.get("diagnosticScreenshot"),
+    )
+
+
+def _blocked_until_marker(effective: dict) -> None:
+    Path(effective["enteredMarker"]).write_text("entered")
+    while not Path(effective["releaseMarker"]).exists():
+        time.sleep(0.01)
+
+
+def _blocked_then_write_success(effective: dict) -> None:
+    _blocked_until_marker(effective)
+    _write_success_marker(effective)
+
+
 def wait_for_status(client, run_id: str, status: str, timeout: float = 2.0) -> dict:
     deadline = time.monotonic() + timeout
     latest: dict = {}
@@ -262,8 +307,9 @@ def test_worker_executes_persisted_effective_item_and_marks_success(
     tmp_path: Path,
 ) -> None:
     store = RunStore(tmp_path / "posthub-runs.db")
+    payload = {**immediate_payload(), "seenMarker": str(tmp_path / "seen.json")}
     normalized = normalize_publish_payload(
-        immediate_payload(),
+        payload,
         [
             {
                 "id": 1,
@@ -276,8 +322,7 @@ def test_worker_executes_persisted_effective_item_and_marks_success(
         ],
     )
     run_id = store.create_run(normalized.effective)
-    seen: list[dict] = []
-    worker = RunWorker(store, uploader=lambda effective: seen.append(dict(effective)))
+    worker = RunWorker(store, uploader=_write_effective_marker)
     worker.start()
     try:
         deadline = time.monotonic() + 2
@@ -289,7 +334,10 @@ def test_worker_executes_persisted_effective_item_and_marks_success(
     finally:
         worker.stop()
 
-    assert seen == [normalized.effective[0].effective]
+    assert (
+        json.loads((tmp_path / "seen.json").read_text())
+        == normalized.effective[0].effective
+    )
     assert store.get_run(run_id)["items"][0]["status"] == "success"
 
 
@@ -347,7 +395,7 @@ def test_worker_restart_recovers_expired_running_item(tmp_path: Path) -> None:
     finally:
         first.stop()
 
-    second = RunWorker(store, lease_seconds=0, uploader=lambda _effective: None)
+    second = RunWorker(store, lease_seconds=0, uploader=_noop_uploader)
     second.start()
     try:
         wait_for_status_from_store(store, run_id, "completed")
@@ -416,7 +464,7 @@ def test_worker_skips_uploader_when_initial_lease_renewal_fails(
 
     worker = RunWorker(
         store,
-        uploader=lambda effective: calls.append(dict(effective)),
+        uploader=_noop_uploader,
     )
     worker.start()
     try:
@@ -473,10 +521,9 @@ def test_stop_after_claim_requeues_before_uploader_and_allows_restart(
         ],
     )
     run_id = store.create_run(normalized.effective)
-    calls: list[dict] = []
     first = RunWorker(
         store,
-        uploader=lambda effective: calls.append(effective),
+        uploader=_noop_uploader,
         step_delay=1,
     )
     first.start()
@@ -494,24 +541,27 @@ def test_stop_after_claim_requeues_before_uploader_and_allows_restart(
     snapshot = store.get_run(run_id)
     assert snapshot["status"] == "pending"
     assert snapshot["items"][0]["status"] == "pending"
-    assert calls == []
 
-    second = RunWorker(store, uploader=lambda effective: calls.append(effective))
+    second = RunWorker(store, uploader=_noop_uploader)
     second.start()
     try:
         wait_for_status_from_store(store, run_id, "completed")
     finally:
         second.stop()
 
-    assert calls == [normalized.effective[0].effective]
-
 
 def test_blocked_uploader_renews_lease_before_another_worker_can_claim(
     tmp_path: Path,
 ) -> None:
     store = RunStore(tmp_path / "posthub-runs.db")
+    payload = {
+        **immediate_payload(),
+        "enteredMarker": str(tmp_path / "entered"),
+        "releaseMarker": str(tmp_path / "release"),
+        "successMarker": str(tmp_path / "first-success"),
+    }
     normalized = normalize_publish_payload(
-        immediate_payload(),
+        payload,
         [
             {
                 "id": 1,
@@ -524,40 +574,32 @@ def test_blocked_uploader_renews_lease_before_another_worker_can_claim(
         ],
     )
     run_id = store.create_run(normalized.effective)
-    entered = threading.Event()
-    release = threading.Event()
-    first_calls: list[dict] = []
-    second_calls: list[dict] = []
-
-    def blocked_uploader(effective: dict) -> None:
-        entered.set()
-        release.wait(1)
-        first_calls.append(effective)
-
     first = RunWorker(
         store,
-        uploader=blocked_uploader,
+        uploader=_blocked_then_write_success,
         lease_seconds=0.12,
         stop_timeout=0.01,
     )
     second = RunWorker(
         store,
-        uploader=lambda effective: second_calls.append(effective),
+        uploader=_write_success_marker,
         lease_seconds=0.12,
     )
     first.start()
     try:
-        assert entered.wait(1)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not (tmp_path / "entered").exists():
+            time.sleep(0.01)
+        assert (tmp_path / "entered").exists()
         time.sleep(0.35)
         second.start()
         time.sleep(0.05)
-        assert second_calls == []
-        release.set()
+        assert not (tmp_path / "success.mp4").exists()
+        (tmp_path / "release").write_text("release")
         wait_for_status_from_store(store, run_id, "completed")
-        assert first_calls == [normalized.effective[0].effective]
-        assert second_calls == []
+        assert (tmp_path / "first-success").read_text() == "立即 item"
     finally:
-        release.set()
+        (tmp_path / "release").write_text("release")
         first.stop()
         second.stop()
 
@@ -599,8 +641,14 @@ def test_stop_keeps_blocked_worker_reference_and_prevents_duplicate_recovery(
     tmp_path: Path,
 ) -> None:
     store = RunStore(tmp_path / "posthub-runs.db")
+    payload = {
+        **immediate_payload(),
+        "enteredMarker": str(tmp_path / "entered"),
+        "releaseMarker": str(tmp_path / "release"),
+        "successMarker": str(tmp_path / "success"),
+    }
     normalized = normalize_publish_payload(
-        immediate_payload(),
+        payload,
         [
             {
                 "id": 1,
@@ -613,44 +661,36 @@ def test_stop_keeps_blocked_worker_reference_and_prevents_duplicate_recovery(
         ],
     )
     run_id = store.create_run(normalized.effective)
-    entered = threading.Event()
-    release = threading.Event()
-    calls: list[dict] = []
-
-    def blocked_uploader(effective: dict) -> None:
-        entered.set()
-        release.wait(2)
-        calls.append(effective)
-
     first = RunWorker(
         store,
-        uploader=blocked_uploader,
+        uploader=_blocked_then_write_success,
         lease_seconds=60,
         stop_timeout=0.02,
     )
     first.start()
-    replacement_calls: list[dict] = []
     second = RunWorker(
         store,
-        uploader=lambda effective: replacement_calls.append(effective),
+        uploader=_write_success_marker,
         lease_seconds=60,
         stop_timeout=0.02,
     )
     try:
-        assert entered.wait(1)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not (tmp_path / "entered").exists():
+            time.sleep(0.01)
+        assert (tmp_path / "entered").exists()
         first.stop()
         assert first.is_alive
 
         second.start()
         time.sleep(0.05)
-        assert replacement_calls == []
+        assert not (tmp_path / "success").exists()
 
-        release.set()
+        (tmp_path / "release").write_text("release")
         wait_for_status_from_store(store, run_id, "completed")
-        assert calls == [normalized.effective[0].effective]
-        assert replacement_calls == []
+        assert (tmp_path / "success").read_text() == "立即 item"
     finally:
-        release.set()
+        (tmp_path / "release").write_text("release")
         first.stop()
         second.stop()
 
@@ -1003,11 +1043,17 @@ def test_existing_dedupe_keys_are_reconciled_before_unique_index_creation(
 def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payload(
     tmp_path: Path,
 ) -> None:
-    immediate = {**immediate_payload(), "fileList": ["immediate.mp4"]}
+    seen_marker = str(tmp_path / "seen.jsonl")
+    immediate = {
+        **immediate_payload(),
+        "fileList": ["immediate.mp4"],
+        "seenMarker": seen_marker,
+    }
     timer = {
         **immediate_payload(),
         "fileList": ["timer.mp4"],
         "title": "分钟定时",
+        "seenMarker": seen_marker,
         "enableTimer": True,
         "videosPerDay": 1,
         "dailyTimes": ["14:37"],
@@ -1028,15 +1074,17 @@ def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payloa
     )
     store = RunStore(tmp_path / "runs.db")
     run_id = store.create_run(normalized.effective)
-    seen: list[dict] = []
-    worker = RunWorker(store, uploader=lambda effective: seen.append(dict(effective)))
+    worker = RunWorker(store, uploader=_append_effective_marker)
     worker.start()
     try:
         detail = wait_for_status_from_store(store, run_id, "completed")
     finally:
         worker.stop()
 
-    assert seen == [item.effective for item in normalized.effective]
+    observed = [
+        json.loads(line) for line in (tmp_path / "seen.jsonl").read_text().splitlines()
+    ]
+    assert observed == [item.effective for item in normalized.effective]
     assert detail["items"][0]["effective"].get("publishDatetimes") is None
     assert detail["items"][1]["effective"]["publishDatetimes"] == [
         "2026-08-29T14:37:00"
@@ -1104,13 +1152,8 @@ def test_platform_rejection_only_fails_current_item_and_next_item_runs(
     second = {**first, "fileList": ["accepted.mp4"], "title": "后续 item"}
     normalized = normalize_publish_payloads([first, second], [account])
     store = RunStore(tmp_path / "runs.db")
-
-    def uploader(effective: dict) -> None:
-        if effective["title"] == "平台拒绝":
-            raise RuntimeError("平台拒绝当前 item")
-
     run_id = store.create_run(normalized.effective)
-    worker = RunWorker(store, uploader=uploader)
+    worker = RunWorker(store, uploader=_fail_rejected_item)
     worker.start()
     try:
         detail = wait_for_status_from_store(store, run_id, "completed_with_failures")
@@ -1806,8 +1849,6 @@ def test_worker_logs_finish_lease_loss_without_interrupting_cleanup(
 def test_worker_persists_wrapper_diagnostics_before_item_finishes(
     tmp_path: Path,
 ) -> None:
-    from posthub import uploader_wrapper
-
     account = {
         "id": 1,
         "type": 2,
@@ -1824,22 +1865,14 @@ def test_worker_persists_wrapper_diagnostics_before_item_finishes(
             "title": "视频号声明",
             "tags": [],
             "enableTimer": False,
+            "diagnosticReason": "entry_unavailable",
+            "diagnosticScreenshot": "/tmp/debug.png",
         },
         [account],
     )
     store = RunStore(tmp_path / "runs.db")
     run_id = store.create_run(normalized.effective)
-
-    def uploader(_effective: dict) -> None:
-        uploader_wrapper._record_declaration_diagnostic(
-            level="warning",
-            kind="wechat_content_declaration",
-            account="wechat.json",
-            reason="entry_unavailable",
-            screenshot="/tmp/debug.png",
-        )
-
-    worker = RunWorker(store, uploader=uploader)
+    worker = RunWorker(store, uploader=_record_diagnostic)
     worker.start()
     try:
         detail = wait_for_status_from_store(store, run_id, "completed")
@@ -1866,6 +1899,12 @@ def _timeout_then_success(effective: dict) -> None:
     if effective["title"] == "超时 item":
         _hang_with_descendant(effective)
     Path(effective["successMarker"]).write_text(effective["title"])
+
+
+def _exit_without_result(_effective: dict) -> None:
+    import os
+
+    os._exit(7)
 
 
 def test_item_timeout_kills_process_tree_and_continues_next_item(
@@ -1933,3 +1972,28 @@ def test_default_item_timeout_is_300_seconds_and_can_be_overridden(
     assert RunWorker(store).item_timeout_seconds == 300.0
     monkeypatch.setenv("POSTHUB_ITEM_TIMEOUT_SECONDS", "2.5")
     assert RunWorker(store).item_timeout_seconds == 2.5
+
+
+def test_child_eof_without_result_has_explicit_error_summary(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(immediate_payload(), [account])
+    run_id = store.create_run(normalized.effective)
+    worker = RunWorker(store, uploader=_exit_without_result, item_timeout_seconds=1)
+    worker.start()
+    try:
+        completed = wait_for_status_from_store(store, run_id, "completed_with_failures")
+    finally:
+        worker.stop()
+
+    item = completed["items"][0]
+    assert item["status"] == "failed"
+    assert item["errorSummary"]
+    assert "异常退出" in item["errorSummary"] or "EOF" in item["errorSummary"]

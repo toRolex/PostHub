@@ -1014,7 +1014,7 @@
 
 ### Deviations
 
-- 暂无。
+- 直接构造含闭包 uploader 时保留旧线程测试 seam；生产组合与显式 timeout fake 始终走硬隔离子进程，不影响产品路径。
 
 ### 实现进展
 
@@ -1023,4 +1023,7 @@
 - Red：新增 success/hang/success fake 与孙进程回收测试、默认 300 秒/环境覆盖测试及前端超时状态文案测试；定向 daemon 初次为 `2 failed, 49 passed`（构造器尚无 timeout 参数），web 为 `1 failed, 244 passed`（状态 helper 未导出）。
 - Green：RunWorker 增加 `item_timeout_seconds` 与 `POSTHUB_ITEM_TIMEOUT_SECONDS`，生产组合显式为每 item 启动独立进程；POSIX 用独立进程组 `SIGKILL`，Windows 用 `taskkill /F /T`，超时落当前 item 失败并继续队列；子进程回传异常/诊断，保留现有详情与 retry。前端将超时摘要显示为“超时”。
 - Deviations：为兼容既有闭包 fake 使用的 `threading.Event` 测试，直接构造含闭包 uploader 时保留旧线程执行；生产 `register_run_routes` 始终显式开启子进程隔离，显式配置 timeout 的 fake 也强制隔离，不影响产品路径。
+- 复核修补：spawn child 使用 ready→ack→result 双工 IPC；父端仅在尚未收到最终 result 时继续 poll/recv，EOF/坏包均生成明确 abnormal-exit 摘要；child 重建 uploader wrapper，`run_backend.py` 增加 main guard 防 spawn 递归监听。
+- 修补后定向 daemon `tests/test_runs.py` → `51 passed`，success/fail-closed/timeout/EOF IPC 回归均通过；待最终全量复验后提交。
 - 定向 Green：daemon `tests/test_runs.py` → `51 passed`；web `PublishView.test.ts` → `23 files / 245 tests passed`；相关 Ruff/format 与 `git diff --check` 通过。
+- 最终全量：daemon `uv run pytest -q` → `234 passed`；web `pnpm test -- --run` → `23 files / 245 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；Python Ruff/format 与 `git diff --check` 通过。

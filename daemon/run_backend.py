@@ -25,8 +25,13 @@ HOST = "127.0.0.1"
 PORT = 5409
 
 
-app = compose_official_backend()
+def main() -> None:
+    """启动官方后端；spawn item 子进程导入本模块时不得重复监听端口。"""
+    app = compose_official_backend()
+    # 官方 `__main__` 是 app.run(host='0.0.0.0', port=5409)；
+    # 仅监听 127.0.0.1:5409，不暴露局域网（ADR-0006 安全项）。
+    app.run(host=HOST, port=PORT)
 
-# 官方 `__main__` 是 app.run(host='0.0.0.0', port=5409)；
-# 仅监听 127.0.0.1:5409，不暴露局域网（ADR-0006 安全项）。
-app.run(host=HOST, port=PORT)
+
+if __name__ == "__main__":
+    main()
