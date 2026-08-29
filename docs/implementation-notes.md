@@ -1062,20 +1062,6 @@
 - Issue #97 验收要求：陈旧 pending/running → interrupted，success/failed 等已有终态不改写，不自动执行；前端已有 `interrupted` 类型、展示和 retry 支持。
 - 当前 `RunWorker.start()` 直接调用 `recover_incomplete()`，其语义是过期 running → pending，因此重启后会继续 claim；普通 worker 之间的活动 lease 保护已有测试，不能无条件改写该方法。
 - `compose_posthub_backend()`/`register_run_routes()` 是 daemon 生命周期组合边界；启动 reconciliation 应在接受新请求前、worker 线程启动前完成。
-## Issue #99：记录 immediate 发布并提供跨提交重复确认
-
-### 目标与计划
-
-- 仅处理 immediate 成功记录、可空 scheduled 时间、日历时间回退，以及基于稳定 fingerprint 的跨提交成功重复软警示与二次确认；不改官方源码、不恢复通用 scheduler，不混入其它 issue。
-- 严格 TDD：先补 publish record nullable/immediate 写入与 calendar fallback 失败测试，再补 worker 成功记录与 fingerprint lookup，最后补 HTTP preflight/confirm 与前端确认 seam。
-- 复用现有 `PublishRecordStore` 作为日历与重复检查的唯一 adapter；同批重复 400 和活动 run 409 保持 #94 语义不变；取消确认不得创建 run，确认后仅创建一次。
-
-### 调研结论
-
-- Issue #99 明确要求：immediate success 写 `publishedAt`；`effectiveScheduledFor` 可空；日历使用 `effectiveScheduledFor ?? publishedAt`；仅本地 success 记录参与跨提交 fingerprint 检查；取消确认不创建 run，确认后可重发。
-- 当前 `publish_records` 的两个 scheduled 时间列为 `NOT NULL`，且 `persist_one_success()` 跳过 immediate；`RunWorker` 没有成功记录回调，`PublishRecord` 无 fingerprint。
-- 当前单视频 immediate 按平台逐个 `/postRuns`，批量 immediate 一次 `/postRuns`；确认必须在所有 run 创建前完成，避免部分提交。
-- prototype 没有 #99 重复确认 UI；可复用 BatchPreviewDialog 结构，但正式实现需要纯函数/状态 seam 覆盖取消与确认。
 
 ### Deviations
 
@@ -1111,6 +1097,28 @@
 - 合并后 web：`pnpm test -- --run` → `23 files / 245 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
 - 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - #97 合并与全量验证通过；下一步清理 #97 worktree/branch，再处理 #99。
+
+## Issue #99：记录 immediate 发布并提供跨提交重复确认
+
+### 目标与计划
+
+- 仅处理 immediate 成功记录、可空 scheduled 时间、日历时间回退，以及基于稳定 fingerprint 的跨提交成功重复软警示与二次确认；不改官方源码、不恢复通用 scheduler，不混入其它 issue。
+- 严格 TDD：先补 publish record nullable/immediate 写入与 calendar fallback 失败测试，再补 worker 成功记录与 fingerprint lookup，最后补 HTTP preflight/confirm 与前端确认 seam。
+- 复用现有 `PublishRecordStore` 作为日历与重复检查的唯一 adapter；同批重复 400 和活动 run 409 保持 #94 语义不变；取消确认不得创建 run，确认后仅创建一次。
+
+### 调研结论
+
+- Issue #99 明确要求：immediate success 写 `publishedAt`；`effectiveScheduledFor` 可空；日历使用 `effectiveScheduledFor ?? publishedAt`；仅本地 success 记录参与跨提交 fingerprint 检查；取消确认不创建 run，确认后可重发。
+- 当前 `publish_records` 的两个 scheduled 时间列为 `NOT NULL`，且 `persist_one_success()` 跳过 immediate；`RunWorker` 没有成功记录回调，`PublishRecord` 无 fingerprint。
+- 当前单视频 immediate 按平台逐个 `/postRuns`，批量 immediate 一次 `/postRuns`；确认必须在所有 run 创建前完成，避免部分提交。
+- prototype 没有 #99 重复确认 UI；可复用 BatchPreviewDialog 结构，但正式实现需要纯函数/状态 seam 覆盖取消与确认。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
 - 已确认目标 worktree `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-99`、分支 `afk/issue-99`，初始工作树干净；已读取 Issue #99/#80、CONTEXT、ADR-0001/0006/0009、相关实现记录及 prototype。
 - 已完成只读调研，未修改业务代码；下一步先新增 daemon publish-record immediate/nullable 失败测试并运行 Red。
 - Red：新增 immediate record、nullable 时间、publishedAt 日期回退、稳定 fingerprint 与重复确认 HTTP 契约测试；定向测试首轮 `4 failed, 4 passed`，失败集中于 immediate 被跳过、schema NOT NULL、缺 fingerprint/查重 API/路由。
@@ -1137,3 +1145,12 @@
 - 修补后定向验证：`web/src/stores/publish.test.ts` → `10 passed`；随后 web 全量 → `23 files / 248 tests passed`，build 通过；此前 daemon 全量 → `236 passed`。
 - 最终复验：daemon `uv run pytest -q` → `236 passed`；相关 Ruff check/format → 通过；web `pnpm test -- --run` → `23 files / 248 tests passed`，build 通过；Tauri → lib `17 passed`、bin `0 tests`；`git diff --check` 通过。
 - Runtime GUI 验证未执行：Playwright skill 调用被用户中断；不据此宣称 GUI runtime 通过。
+
+### Issue #99 Merger 执行记录（2026-08-29）
+
+- `git merge afk/issue-99 --no-edit` 冲突于 `daemon/posthub/runs.py` 与 `docs/implementation-notes.md`；逐侧保留 #96 的 item 进程隔离、#97 的启动 reconciliation 与 #99 的成功记录/跨提交查重，未使用 `-X`，生成 merge commit `94f399c`。
+- 初次合并后 daemon 出现 1 项回归：#99 注入的无捕获局部 lambda 被 #96 强制 spawn，因不可 pickle 失败；这是两侧测试 seam 的冲突，不改变生产 dispatcher 隔离边界。
+- 最小修复：RunWorker 对不可 pickle 的注入 fake 保留线程 seam；显式 timeout 仍强制隔离，生产顶层 dispatcher 继续走子进程。修复后 daemon 全量 `uv run pytest -q` → `241 passed`；runs.py Ruff check/format 通过。
+- 最终 web：`pnpm test -- --run` → `23 files / 249 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
+- 最终 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
+- #99 合并与全量验证通过；Windows `taskkill /F /T` 未在 Windows 实机验证，继续作为 concern 记录。

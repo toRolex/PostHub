@@ -12,6 +12,7 @@ import logging
 import math
 import multiprocessing
 import os
+import pickle
 import signal
 import sqlite3
 import subprocess
@@ -1122,13 +1123,19 @@ class RunWorker:
             or self.item_timeout_seconds <= 0
         ):
             raise ValueError("item_timeout_seconds 必须是正数")
-        # 生产组合显式开启子进程边界；闭包 fake 保留旧线程 seam，避免
-        # 既有测试依赖的 threading.Event 在进程边界后失去共享语义。
+        # 生产组合使用可序列化 dispatcher，走子进程边界；注入的闭包或
+        # 不可 pickle fake 保留线程测试 seam，避免共享状态丢失或 spawn 失败。
         has_closure = bool(getattr(self.uploader, "__closure__", None))
+        try:
+            pickle.dumps(self.uploader)
+        except Exception:  # noqa: BLE001 - 不可序列化时必须保守走线程
+            is_picklable = False
+        else:
+            is_picklable = True
         self._isolate_processes = (
             isolate_processes
             if isolate_processes is not None
-            else item_timeout_seconds is not None or not has_closure
+            else item_timeout_seconds is not None or (not has_closure and is_picklable)
         )
         self.on_success = on_success
         self._owner_token = str(uuid.uuid4())
@@ -1508,7 +1515,8 @@ def register_run_routes(
         store,
         uploader=uploader,
         item_timeout_seconds=item_timeout_seconds,
-        isolate_processes=True,
+        # 默认生产 dispatcher 是顶层可序列化 callable，会走进程隔离；
+        # 注入闭包 fake 时保留线程测试 seam，避免合并 #99 的回调测试丢失共享状态。
         on_success=on_success,
     )
 
