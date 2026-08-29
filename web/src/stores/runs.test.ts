@@ -141,6 +141,47 @@ describe("run store（查询 API 是生命周期事实来源）", () => {
     expect(useRunStore.getState().status).toBe("completed");
   });
 
+  it("retryRun 受理新 run 并切换到新的 parent retry 观察链", async () => {
+    const retryRun = vi.spyOn(officialApi, "retryRun").mockResolvedValue({
+      runId: "run-retry",
+      status: "pending",
+      itemCount: 1,
+      parentRunId: "run-1",
+    });
+    useRunStore.setState({
+      runId: "run-1",
+      status: "completed_with_failures",
+      snapshot: {
+        ...SNAPSHOT,
+        status: "completed_with_failures",
+        items: [
+          { itemId: "item-success", status: "success", error: null },
+          { itemId: "item-failed", status: "failed", error: "失败" },
+        ],
+      },
+    });
+
+    await useRunStore.getState().retryRun("http://127.0.0.1:5409", ["item-failed"]);
+
+    expect(retryRun).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409",
+      "run-1",
+      ["item-failed"],
+    );
+    expect(useRunStore.getState().runId).toBe("run-retry");
+    expect(useRunStore.getState().status).toBe("pending");
+    expect(useRunStore.getState().snapshot).toBeNull();
+  });
+
+  it("retryRun 没有当前 run 时不发起请求并保留错误", async () => {
+    const retryRun = vi.spyOn(officialApi, "retryRun");
+
+    await useRunStore.getState().retryRun("http://127.0.0.1:5409");
+
+    expect(retryRun).not.toHaveBeenCalled();
+    expect(useRunStore.getState().error).toContain("没有可重试的运行");
+  });
+
   it("刷新保留 completed_with_failures 和每项错误详情", async () => {
     const partial = {
       ...SNAPSHOT,

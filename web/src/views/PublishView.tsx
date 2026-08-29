@@ -489,7 +489,21 @@ function runItemStatusLabel(status: string): string {
     running: "执行中",
     success: "成功",
     failed: "失败",
+    skipped: "已跳过",
+    interrupted: "已中断",
   }[status] ?? status;
+}
+
+export function isRetryableRunItemStatus(status: string): boolean {
+  return status === "failed" || status === "skipped" || status === "interrupted";
+}
+
+export function retryableRunItemIds(
+  items: Array<{ itemId: string; status: string }>,
+): string[] {
+  return items
+    .filter((item) => isRetryableRunItemStatus(item.status))
+    .map((item) => item.itemId);
 }
 
 export function runItemDiagnostics(
@@ -551,11 +565,35 @@ function RunDiagnosticList({ diagnostics }: { diagnostics: RunItemDiagnostic[] }
 /** 最近 accepted run 详情：展示首次受理时冻结的最终 effective 声明。 */
 function RunDetailPanel() {
   const snapshot = useRunStore((s) => s.snapshot);
+  const daemonUrl = useDaemonStore((s) => s.url);
+  const retryRun = useRunStore((s) => s.retryRun);
+  const retrying = useRunStore((s) => s.retrying);
+  const retryError = useRunStore((s) => s.error);
   if (!snapshot) return null;
+  const retryableItemIds = retryableRunItemIds(snapshot.items);
 
   return (
     <section className="border-t border-border-soft py-6">
-      <SectionHead title="最近运行详情" hint="展示首次受理时冻结的最终值" />
+      <div className="mb-4 flex items-baseline gap-3">
+        <h3 className="text-title font-semibold tracking-[-0.01em]">最近运行详情</h3>
+        <span className="text-label text-muted">展示首次受理时冻结的最终值</span>
+        {snapshot.parentRunId && (
+          <span className="text-caption text-meta">重试自 {snapshot.parentRunId.slice(0, 8)}</span>
+        )}
+        {retryableItemIds.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7"
+            disabled={retrying}
+            onClick={() => void retryRun(daemonUrl)}
+          >
+            <RefreshCw className="size-3.5" />
+            {retrying ? "重试中…" : `重试全部可重试项（${retryableItemIds.length}）`}
+          </Button>
+        )}
+      </div>
+      {retryError && <p className="mb-2 text-label text-danger-deep" role="alert">{retryError}</p>}
       <div className="flex flex-col gap-2">
         {snapshot.items.map((item, index) => {
           const effective = item.effective;
@@ -612,6 +650,18 @@ function RunDetailPanel() {
               )}
               {item.diagnostics && item.diagnostics.length > 0 && (
                 <RunDiagnosticList diagnostics={item.diagnostics} />
+              )}
+              {isRetryableRunItemStatus(item.status) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-7"
+                  disabled={retrying}
+                  onClick={() => void retryRun(daemonUrl, [item.itemId])}
+                >
+                  <RefreshCw className="size-3.5" />
+                  重试此项
+                </Button>
               )}
             </div>
           );

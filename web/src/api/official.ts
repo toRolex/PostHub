@@ -252,13 +252,25 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-export type RunStatus = "pending" | "running" | "completed" | "completed_with_failures";
-export type RunItemStatus = "pending" | "running" | "success" | "failed";
+export type RunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_failures"
+  | "interrupted";
+export type RunItemStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "skipped"
+  | "interrupted";
 
 export interface AcceptedRun {
   runId: string;
   status: "pending" | "running";
   itemCount: number;
+  parentRunId?: string;
 }
 
 export interface RunSummary {
@@ -301,7 +313,8 @@ export interface RunItemSnapshot {
   submitted?: PostVideoRequest;
   /** 账号粒度 effective payload；抖音 timer 含 naive ISO publishDatetimes。 */
   effective?: PostVideoRequest & { publishDatetimes?: string[] };
-
+  /** retry 新 run 中对应首次受理 run item 的 id。 */
+  sourceItemId?: string;
 }
 
 export interface RunSnapshot {
@@ -313,6 +326,8 @@ export interface RunSnapshot {
   /** 后端按持久化 run_items 聚合的事实汇总。 */
   summary: RunSummary;
   items: RunItemSnapshot[];
+  /** retry 链的父 run；首次受理 run 没有该字段。 */
+  parentRunId?: string;
 }
 
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
@@ -473,6 +488,17 @@ export const officialApi = {
     request<RunSnapshot>(base, `/postRuns/${encodeURIComponent(runId)}`),
   /** 刷新后读取最近一次受理的 run；空库返回 null。 */
   getLatestRun: (base: string) => request<RunSnapshot | null>(base, "/postRuns/latest"),
+  /** 重试指定或全部可重试 item；只复制后端首次受理时的 effective 快照。 */
+  retryRun: (
+    base: string,
+    runId: string,
+    itemIds?: string[],
+  ): Promise<AcceptedRun> =>
+    request<AcceptedRun>(base, `/postRuns/${encodeURIComponent(runId)}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(itemIds ? { itemIds } : {}),
+    }),
   /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
   postVideoBatch: (base: string, payload: PostVideoRequest[]) =>
     request<null>(base, "/postVideoBatch", {

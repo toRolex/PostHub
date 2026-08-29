@@ -882,10 +882,48 @@
 - 待合入分支：`afk/issue-95`、`afk/issue-98`；严格按顺序执行 `git merge <branch> --no-edit`，不使用 squash、`-X`，不 push、不创建 PR。
 - 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；冲突仅逐侧读取后做最小整合。全部成功后清理对应 worktree/branch、关闭 #95/#98，并提交本轮 summarizing commit。
 
+## Issue #95：逐项与全部可重试项 retry
+
+### 目标与计划
+
+- 仅实现 failure/skipped/interrupted item 的逐项与批量 retry；success、pending、running 不可复制，原 run 不变。
+- 复用既有 `RunStore`、`/postRuns` HTTP seam、effective payload 与前端 runs store/detail seam；retry 新建 run，保存 `parentRunId`、`sourceItemId`，只回放首次受理的 effective snapshot。
+- 严格 TDD：先补后端 retry 选择/快照/追溯/状态边界失败测试，再实现最小 API 与 worker 接线；随后补前端可操作性与 API/store 回归。
+- 不修改官方源码、不引入通用 scheduler；完成 daemon、web、build、Tauri 全量验证后提交中文语义原子 commit，不 push、PR、merge 或关闭 issue。
+
+### 预确认 seams
+
+- `RunStore.retry_run()` / `/postRuns/{runId}/retry`：选择可重试 item，拒绝非法状态，复制 effective payload，创建 parent/source 追溯关系。
+- `RunStore.get_run()` 与 run worker：新 run 的 item 状态、旧 run 不变、账号默认/平台配置变化不影响 effective snapshot。
+- `officialApi.retryRun`、runs store 与 `RunDetailPanel`：逐项/全部 retry 操作只对可重试项启用并观察新 run。
+
 ### Deviations
 
 - 暂无。
 
 ### 实现进展
 
-- 已完成目标仓库、分支和 worktree 初检；下一步获取 #95/#98 标题与 labels，随后提交本准备记录以满足 Git merge 工作树保护。
+- 已完成目标仓库、分支和 worktree 初检；已获取 #95/#98 标题与 labels，并提交本准备记录以满足 Git merge 工作树保护。
+- 已确认当前基线为 `e9d41d1`，分支 `afk/issue-95`，工作树干净；已读取 Issue #95/#80、`CONTEXT.md`、相关 runs/adapter/API/store 测试与实现。
+- 当前 `RunStore` 已支持 accepted run、状态聚合、diagnostics/dedupe，但尚无 retry route、parent/source 字段或前端 retry seam；下一步先写失败测试。
+- Red（后端第一切片）：新增选择性 retry、全部可重试状态、无可重试项拒绝、effective 快照回放和 worker 执行测试；`cd daemon && uv run pytest tests/test_runs.py -q` → `5 failed, 38 passed`。失败确认 `RunStore.retry_run` 不存在，现有 item CHECK 也不接受 `skipped/interrupted`。
+- Green（后端）：RunStore schema 迁移加入 `skipped/interrupted`、`parent_run_id`、`source_item_id`；`retry_run()` 在事务内筛选可重试 item、复制原始 submitted/effective JSON 并建立追溯；Flask 新增 `/postRuns/<runId>/retry`（含别名）与 400/404/409 契约。后端定向测试 → `46 passed`。
+- Red→Green（前端）：先补 official API、runs store、终态轮询与 retry 状态 helper，定向 Red 暴露 API/store/helper 缺口；随后新增 `retryRun`、`parentRunId/sourceItemId` 类型、failure/skipped/interrupted 专属按钮及“重试全部可重试项”，成功测试 → `237 passed`，build 通过。
+- 文档：更新 `CONTEXT.md` 与 ADR-0009，明确受限 item retry 只回放首次 effective snapshot，不恢复通用 scheduler/retry。
+- Reviewer 边界修复：retry 路由区分空请求体与非法 JSON/null，非法输入返回 400，不误触发全量 retry；SQLite 锁/损坏等数据库异常记录日志并返回 500。新增回归后 daemon 定向 → `48 passed`，Ruff 通过。
+
+### 最终验证
+
+- daemon：`uv run pytest -q` → `226 passed`；retry 相关 Ruff check/format check 通过。
+- web：`pnpm test -- --run` → `21 files / 237 tests passed`；`pnpm run build` → TypeScript 与 Vite 通过。
+- Tauri：首次因仓库忽略的 `src-tauri/resources/{daemon,bin,browser}` 缺失失败；仅补本地空目录后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未入 Git。
+- `git diff --check` 通过；未修改官方 `sau_backend.py`/`uploader/*`，未 push、未建 PR、未 merge、未关闭 Issue。
+
+### Reviewer 复核（2026-08-29）
+
+- 复核基线：`a953322`，相对 `develop` 的变更覆盖 retry 的 RunStore/schema、HTTP route、前端 API/store/detail 及测试；官方 `sau_backend.py`/`uploader/*` 未修改。
+- 重点检查 HTTP 非法 JSON 与 `sqlite3.Error` 契约；现有非法 JSON 回归仅覆盖非空 malformed body，需额外锁定 whitespace-only body 不得被误判为省略请求体。
+- Red：新增 whitespace-only retry body 回归；原 `raw_body.strip()` 将空白体误当作省略 body，存在未经确认即重试全部 item 的风险。
+- Green：仅将真正的零字节 body 视为省略 `itemIds`；空白体、malformed JSON 均返回 JSON 400。定向 `tests/test_runs.py` → `49 passed`，相关 Ruff check/format → 通过。
+- Runtime verify：隔离 daemon HTTP 服务中，空体返回 JSON 200 并创建 retry run；whitespace-only 与 malformed JSON 均返回 `{"code":400,"data":null,"msg":"retry 请求体不是合法 JSON object"}`；将 run DB 置只读后 retry 返回 `{"code":500,"data":null,"msg":"attempt to write a readonly database"}`，服务已停止。真实发布因缺 cookie 自动失败，未触发外部平台。
+- 最终复验：daemon `uv run pytest -q` → `227 passed`；web `pnpm test -- --run` → `21 files / 237 tests passed`，`pnpm run build` 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；retry 相关 Ruff/format 与 `git diff --check` 通过。

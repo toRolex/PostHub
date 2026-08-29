@@ -1,7 +1,8 @@
-"""PostHub-owned 单 immediate item accepted-run 观察主干。
+"""PostHub-owned accepted-run 观察与受限 retry 主干。
 
-该模块只保存本机 run/item 记录并驱动可替换的 fake uploader；不替代官方
-发布执行，也不实现通用 scheduler、重试、限速或并发策略。
+该模块只保存本机 run/item 记录并驱动可替换的 uploader；不替代官方
+发布执行，也不实现通用 scheduler、限速或并发策略。retry 只复制首次
+受理时冻结的 effective payload。
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ DEFAULT_STOP_TIMEOUT = 1.0
 FAIL_CLOSED_ERROR = "未配置 immediate 发布执行器；生产组合必须注入真实官方执行 seam"
 logger = logging.getLogger(__name__)
 LEASE_LOST_ERROR = "item lease 已失效，跳过外部执行"
+RETRYABLE_ITEM_STATUSES = frozenset({"failed", "skipped", "interrupted"})
+TERMINAL_ITEM_STATUSES = frozenset({"success", "failed", "skipped", "interrupted"})
 
 
 class DuplicateSubmissionError(ValueError):
@@ -109,16 +112,17 @@ class RunStore:
                 """
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures')),
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures', 'interrupted')),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    completed_at TEXT
+                    completed_at TEXT,
+                    parent_run_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS run_items (
                     id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
                     ordinal INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed', 'skipped', 'interrupted')),
                     submitted_json TEXT NOT NULL,
                     effective_json TEXT NOT NULL,
                     error TEXT,
@@ -127,7 +131,10 @@ class RunStore:
                     diagnostics_json TEXT NOT NULL DEFAULT '[]',
                     dedupe_key TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_until TEXT,
+                    source_item_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_run_items_status ON run_items(status);
@@ -136,7 +143,24 @@ class RunStore:
             runs_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
             ).fetchone()[0]
-            if "completed_with_failures" not in runs_sql:
+            items_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run_items'"
+            ).fetchone()[0]
+            run_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+            }
+            if (
+                "completed_with_failures" not in runs_sql
+                or "interrupted" not in runs_sql
+                or "parent_run_id" not in run_columns
+                or "skipped" not in items_sql
+                or "interrupted" not in items_sql
+                or "source_item_id"
+                not in {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
+                }
+            ):
                 self._migrate_runs_table(conn)
 
             columns = {
@@ -237,7 +261,7 @@ class RunStore:
                 WHERE status = 'completed'
                   AND EXISTS (
                       SELECT 1 FROM run_items
-                      WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                      WHERE run_items.run_id = runs.id AND run_items.status IN ('failed', 'skipped', 'interrupted')
                   )
                 """
             )
@@ -246,7 +270,7 @@ class RunStore:
                 UPDATE runs
                 SET status = CASE WHEN EXISTS (
                         SELECT 1 FROM run_items
-                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                        WHERE run_items.run_id = runs.id AND run_items.status IN ('failed', 'skipped', 'interrupted')
                     ) THEN 'completed_with_failures' ELSE 'completed' END,
                     completed_at = COALESCE(completed_at, updated_at)
                 WHERE status = 'running'
@@ -260,18 +284,26 @@ class RunStore:
 
     @staticmethod
     def _migrate_runs_table(conn: sqlite3.Connection) -> None:
-        """重建旧 runs/run_items，更新 runs 的 CHECK 并保持外键指向。"""
+        """重建旧 runs/run_items，扩展正式状态与 retry 追溯列。"""
+        run_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
         item_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(run_items)").fetchall()
         }
-        error_summary = "error_summary" if "error_summary" in item_columns else "NULL"
-        error_detail = "error_detail" if "error_detail" in item_columns else "NULL"
-        diagnostics_json = (
-            "diagnostics_json" if "diagnostics_json" in item_columns else "'[]'"
-        )
-        dedupe_key = "dedupe_key" if "dedupe_key" in item_columns else "NULL"
-        lease_owner = "lease_owner" if "lease_owner" in item_columns else "NULL"
-        lease_until = "lease_until" if "lease_until" in item_columns else "NULL"
+        run_parent = "parent_run_id" if "parent_run_id" in run_columns else "NULL"
+        item_expressions = {
+            name: name if name in item_columns else default
+            for name, default in {
+                "error_summary": "NULL",
+                "error_detail": "NULL",
+                "diagnostics_json": "'[]'",
+                "dedupe_key": "NULL",
+                "lease_owner": "NULL",
+                "lease_until": "NULL",
+                "source_item_id": "NULL",
+            }.items()
+        }
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("ALTER TABLE run_items RENAME TO run_items_old")
         conn.execute("ALTER TABLE runs RENAME TO runs_old")
@@ -279,16 +311,17 @@ class RunStore:
             """
             CREATE TABLE runs (
                 id TEXT PRIMARY KEY,
-                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures')),
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures', 'interrupted')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                parent_run_id TEXT
             );
             CREATE TABLE run_items (
                 id TEXT PRIMARY KEY,
                 run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
                 ordinal INTEGER NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed', 'skipped', 'interrupted')),
                 submitted_json TEXT NOT NULL,
                 effective_json TEXT NOT NULL,
                 error TEXT,
@@ -299,20 +332,29 @@ class RunStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 lease_owner TEXT,
-                lease_until TEXT
+                lease_until TEXT,
+                source_item_id TEXT
             );
             """
         )
-        conn.execute("INSERT INTO runs SELECT * FROM runs_old")
+        conn.execute(
+            f"""
+            INSERT INTO runs (id, status, created_at, updated_at, completed_at, parent_run_id)
+            SELECT id, status, created_at, updated_at, completed_at, {run_parent}
+            FROM runs_old
+            """
+        )
         conn.execute(
             f"""
             INSERT INTO run_items
               (id, run_id, ordinal, status, submitted_json, effective_json, error,
                error_summary, error_detail, diagnostics_json, dedupe_key, created_at,
-               updated_at, lease_owner, lease_until)
+               updated_at, lease_owner, lease_until, source_item_id)
             SELECT id, run_id, ordinal, status, submitted_json, effective_json, error,
-                   {error_summary}, {error_detail}, {diagnostics_json}, {dedupe_key},
-                   created_at, updated_at, {lease_owner}, {lease_until}
+                   {item_expressions["error_summary"]}, {item_expressions["error_detail"]},
+                   {item_expressions["diagnostics_json"]}, {item_expressions["dedupe_key"]},
+                   created_at, updated_at, {item_expressions["lease_owner"]},
+                   {item_expressions["lease_until"]}, {item_expressions["source_item_id"]}
             FROM run_items_old
             """
         )
@@ -391,6 +433,106 @@ class RunStore:
                     ) from err
         return run_id
 
+    def retry_run(
+        self,
+        parent_run_id: str,
+        item_ids: Iterable[str] | None = None,
+    ) -> str:
+        """从旧 run 复制可重试 item，创建一个只回放 effective 的新 run。
+
+        ``item_ids`` 省略时选择全部 failure/skipped/interrupted；传入时只从
+        指定集合中选择这些状态。原 run 的 submitted/effective 与生命周期都
+        不会被改写，新的 item 通过 source_item_id 建立追溯关系。
+        """
+        requested_ids: list[str] | None = None
+        if item_ids is not None:
+            requested_ids = list(item_ids)
+            if not requested_ids or any(
+                not isinstance(item_id, str) or not item_id for item_id in requested_ids
+            ):
+                raise ValueError("itemIds 必须是非空字符串数组")
+
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent = conn.execute(
+                "SELECT id FROM runs WHERE id = ?", (parent_run_id,)
+            ).fetchone()
+            if parent is None:
+                raise LookupError("run 不存在")
+
+            if requested_ids is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, ordinal, status, submitted_json, effective_json
+                    FROM run_items WHERE run_id = ? ORDER BY ordinal
+                    """,
+                    (parent_run_id,),
+                ).fetchall()
+            else:
+                placeholders = ",".join("?" for _ in requested_ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, ordinal, status, submitted_json, effective_json
+                    FROM run_items
+                    WHERE run_id = ? AND id IN ({placeholders})
+                    ORDER BY ordinal
+                    """,
+                    (parent_run_id, *requested_ids),
+                ).fetchall()
+            selected = [row for row in rows if row["status"] in RETRYABLE_ITEM_STATUSES]
+            if not selected:
+                raise ValueError("没有可重试 item")
+
+            run_id = str(uuid.uuid4())
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO runs
+                  (id, status, created_at, updated_at, parent_run_id)
+                VALUES (?, 'pending', ?, ?, ?)
+                """,
+                (run_id, now, now, parent_run_id),
+            )
+            for ordinal, row in enumerate(selected):
+                effective = json.loads(row["effective_json"])
+                key, file_path, account_path = _dedupe_key(effective)
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO run_items
+                          (id, run_id, ordinal, status, submitted_json, effective_json,
+                           dedupe_key, created_at, updated_at, source_item_id)
+                        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            run_id,
+                            ordinal,
+                            row["submitted_json"],
+                            row["effective_json"],
+                            key,
+                            now,
+                            now,
+                            row["id"],
+                        ),
+                    )
+                except sqlite3.IntegrityError as err:
+                    existing = conn.execute(
+                        """
+                        SELECT run_id FROM run_items
+                        WHERE dedupe_key = ? AND status IN ('pending', 'running')
+                        ORDER BY created_at, ordinal
+                        LIMIT 1
+                        """,
+                        (key,),
+                    ).fetchone()
+                    if existing is None:
+                        raise
+                    raise ActiveRunConflict(
+                        existing["run_id"], f"{file_path} × {account_path}"
+                    ) from err
+        return run_id
+
     def recover_incomplete(self) -> None:
         """只回收 lease 已过期的 running item，保留仍由其他 worker 持有的 item。"""
         now = _now()
@@ -425,7 +567,7 @@ class RunStore:
                 UPDATE runs
                 SET status = CASE WHEN EXISTS (
                         SELECT 1 FROM run_items
-                        WHERE run_items.run_id = runs.id AND run_items.status = 'failed'
+                        WHERE run_items.run_id = runs.id AND run_items.status IN ('failed', 'skipped', 'interrupted')
                     ) THEN 'completed_with_failures' ELSE 'completed' END,
                     updated_at = ?, completed_at = COALESCE(completed_at, ?)
                 WHERE status = 'running'
@@ -609,7 +751,7 @@ class RunStore:
                 failed = conn.execute(
                     """
                     SELECT COUNT(*) FROM run_items
-                    WHERE run_id = ? AND status = 'failed'
+                    WHERE run_id = ? AND status IN ('failed', 'skipped', 'interrupted')
                     """,
                     (run_id,),
                 ).fetchone()[0]
@@ -636,14 +778,14 @@ class RunStore:
             items = conn.execute(
                 """
                 SELECT id, ordinal, status, error, error_summary, error_detail,
-                       diagnostics_json, submitted_json, effective_json
+                       diagnostics_json, submitted_json, effective_json, source_item_id
                 FROM run_items WHERE run_id = ? ORDER BY ordinal
                 """,
                 (run_id,),
             ).fetchall()
         counts = Counter(item["status"] for item in items)
         item_count = len(items)
-        return {
+        result: dict[str, Any] = {
             "runId": run["id"],
             "status": run["status"],
             "createdAt": run["created_at"],
@@ -656,30 +798,37 @@ class RunStore:
                 "runningCount": counts["running"],
                 "successCount": counts["success"],
                 "failedCount": counts["failed"],
-                "completedCount": counts["success"] + counts["failed"],
+                "completedCount": sum(
+                    counts[status] for status in TERMINAL_ITEM_STATUSES
+                ),
             },
-            "items": [
-                {
-                    "itemId": item["id"],
-                    "seq": item["ordinal"] + 1,
-                    "status": item["status"],
-                    "error": item["error_summary"]
-                    if item["error_summary"] is not None
-                    else item["error"],
-                    "errorSummary": item["error_summary"]
-                    if item["error_summary"] is not None
-                    else item["error"],
-                    "errorDetail": item["error_detail"]
-                    if item["error_detail"] is not None
-                    else item["error"],
-                    "diagnostics": json.loads(item["diagnostics_json"] or "[]"),
-                    "submitted": json.loads(item["submitted_json"]),
-                    # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
-                    "effective": json.loads(item["effective_json"]),
-                }
-                for item in items
-            ],
+            "items": [],
         }
+        if run["parent_run_id"] is not None:
+            result["parentRunId"] = run["parent_run_id"]
+        for item in items:
+            item_result: dict[str, Any] = {
+                "itemId": item["id"],
+                "seq": item["ordinal"] + 1,
+                "status": item["status"],
+                "error": item["error_summary"]
+                if item["error_summary"] is not None
+                else item["error"],
+                "errorSummary": item["error_summary"]
+                if item["error_summary"] is not None
+                else item["error"],
+                "errorDetail": item["error_detail"]
+                if item["error_detail"] is not None
+                else item["error"],
+                "diagnostics": json.loads(item["diagnostics_json"] or "[]"),
+                "submitted": json.loads(item["submitted_json"]),
+                # effective 在首次受理时写入，查询只读该快照，不重新合并账号默认。
+                "effective": json.loads(item["effective_json"]),
+            }
+            if item["source_item_id"] is not None:
+                item_result["sourceItemId"] = item["source_item_id"]
+            result["items"].append(item_result)
+        return result
 
     def latest_run(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
@@ -998,6 +1147,64 @@ def register_run_routes(
         if result is None:
             return jsonify({"code": 404, "msg": "run 不存在", "data": None}), 404
         return jsonify({"code": 200, "msg": None, "data": result}), 200
+
+    @app.post("/postRuns/<run_id>/retry")
+    @app.post("/posthub/runs/<run_id>/retry")
+    def retry_run(run_id: str):
+        raw_body = request.get_data(cache=True)
+        payload = request.get_json(silent=True)
+        if not raw_body:
+            item_ids = None
+        elif payload is None:
+            return jsonify(
+                {"code": 400, "msg": "retry 请求体不是合法 JSON object", "data": None}
+            ), 400
+        elif isinstance(payload, dict):
+            item_ids = payload.get("itemIds")
+            if item_ids is not None and (
+                not isinstance(item_ids, list)
+                or any(
+                    not isinstance(item_id, str) or not item_id for item_id in item_ids
+                )
+            ):
+                return jsonify(
+                    {"code": 400, "msg": "itemIds 必须是字符串数组", "data": None}
+                ), 400
+        else:
+            return jsonify(
+                {"code": 400, "msg": "retry 请求体必须是 object", "data": None}
+            ), 400
+        try:
+            new_run_id = store.retry_run(run_id, item_ids=item_ids)
+            snapshot = store.get_run(new_run_id)
+        except LookupError as err:
+            return jsonify({"code": 404, "msg": str(err), "data": None}), 404
+        except ActiveRunConflict as err:
+            return jsonify(
+                {
+                    "code": 409,
+                    "msg": str(err),
+                    "data": {"existingRunId": err.existing_run_id},
+                }
+            ), 409
+        except sqlite3.Error as err:
+            logger.exception("retry run 写入失败")
+            return jsonify({"code": 500, "msg": str(err), "data": None}), 500
+        except ValueError as err:
+            return jsonify({"code": 400, "msg": str(err), "data": None}), 400
+        assert snapshot is not None
+        return jsonify(
+            {
+                "code": 200,
+                "msg": "已受理",
+                "data": {
+                    "runId": new_run_id,
+                    "status": "pending",
+                    "itemCount": len(snapshot["items"]),
+                    "parentRunId": run_id,
+                },
+            }
+        ), 200
 
     app.extensions[_RUN_ROUTE_MARKER] = True
     app.extensions[_RUN_SERVICE_MARKER] = {

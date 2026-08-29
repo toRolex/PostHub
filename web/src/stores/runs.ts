@@ -17,7 +17,9 @@ export interface RunState {
   summary: RunSummary | null;
   snapshot: RunSnapshot | null;
   error: string;
+  retrying: boolean;
   rememberAcceptedRun: (accepted: AcceptedRun) => void;
+  retryRun: (base: string, itemIds?: string[]) => Promise<void>;
   openRun: (base: string, runId: string) => Promise<void>;
   refresh: (base: string) => Promise<void>;
   restoreLatestRun: (base: string) => Promise<void>;
@@ -25,7 +27,7 @@ export interface RunState {
 
 export const initialRunState: Omit<
   RunState,
-  "rememberAcceptedRun" | "openRun" | "refresh" | "restoreLatestRun"
+  "rememberAcceptedRun" | "retryRun" | "openRun" | "refresh" | "restoreLatestRun"
 > = {
   runId: null,
   status: null,
@@ -33,6 +35,7 @@ export const initialRunState: Omit<
   summary: null,
   snapshot: null,
   error: "",
+  retrying: false,
 };
 
 function saveRunId(runId: string): void {
@@ -126,6 +129,23 @@ export const useRunStore = create<RunState>()((set, get) => {
         snapshot: null,
         error: "",
       });
+    },
+
+    retryRun: async (base, itemIds) => {
+      const runId = get().runId;
+      if (!runId) {
+        set({ error: "没有可重试的运行" });
+        return;
+      }
+      set({ retrying: true, error: "" });
+      try {
+        const accepted = await officialApi.retryRun(base, runId, itemIds);
+        get().rememberAcceptedRun(accepted);
+      } catch (error) {
+        set({ error: messageOf(error) });
+      } finally {
+        set({ retrying: false });
+      }
     },
 
     openRun: async (base, runId) => {

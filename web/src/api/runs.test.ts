@@ -86,6 +86,52 @@ describe("accepted run API", () => {
     }
   });
 
+  it("retryRun 只发送选中的 itemIds，并解析 parentRunId", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: {
+          runId: "run-retry",
+          status: "pending",
+          itemCount: 1,
+          parentRunId: "run-parent",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      officialApi.retryRun("http://127.0.0.1:5409", "run-parent", ["item-2"]),
+    ).resolves.toEqual({
+      runId: "run-retry",
+      status: "pending",
+      itemCount: 1,
+      parentRunId: "run-parent",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/postRuns/run-parent/retry",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ itemIds: ["item-2"] }),
+      }),
+    );
+  });
+
+  it("retryRun 省略 itemIds 时请求全部可重试项", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-retry", status: "pending", itemCount: 2 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await officialApi.retryRun("http://127.0.0.1:5409", "run-parent");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+  });
+
   it("查询 API 保留 completed_with_failures、seq 与错误详情", async () => {
     const snapshot = {
       runId: "run-partial",
