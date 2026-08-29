@@ -330,6 +330,26 @@ export interface RunSnapshot {
   parentRunId?: string;
 }
 
+export type PublishRecordStatus = "scheduled" | "published" | "failed" | "canceled";
+
+/** 本机 publish_record 的账号/时间快照；不随官方账号变更而更新。 */
+export interface PublishRecord {
+  id: number;
+  accountId: number;
+  accountFile: string;
+  accountName: string;
+  platform: Platform;
+  videoId: string;
+  videoTitle: string;
+  effectiveScheduledFor: string;
+  scheduledFor: string;
+  status: PublishRecordStatus;
+  publishedAt: string | null;
+  runId: string | null;
+  runItemId: string | null;
+  recordedAt: string;
+}
+
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
   // 先读文本再解析，避免 `res.json()` 直接抛在非 JSON 响应（如 500 错误页）上，
   // 也避免 `.catch(() => ({}))` 静默吞掉 HTTP 状态——统一走 `body.msg ?? HTTP {status}`。
@@ -468,6 +488,17 @@ export const officialApi = {
 
   getFiles: (base: string): Promise<OfficialFileRecord[]> =>
     request<OfficialFileRecord[]>(base, "/getFiles"),
+
+  /** 查询本机 scheduled/published 记录；空结果是 []，查询失败由 request 抛错。 */
+  getPublishRecords: (
+    base: string,
+    from: string,
+    to: string,
+  ): Promise<PublishRecord[]> =>
+    request<PublishRecord[]>(
+      base,
+      `/publishRecords?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
 
   /** 单视频发布：走官方 /postVideo（仅契约级提交，真实发布需登录态）。 */
   postVideo: (base: string, payload: PostVideoRequest) =>

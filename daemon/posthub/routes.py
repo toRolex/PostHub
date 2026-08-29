@@ -97,7 +97,9 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
 
         try:
             normalized = normalize_publish_payloads(
-                items, _read_publish_account_rows(db_path)
+                items,
+                _read_publish_account_rows(db_path),
+                now=getattr(g, "posthub_schedule_snapshot_at", None),
             )
             g.posthub_normalized_batch = normalized
             set_pending_effective_items(normalized.effective)
