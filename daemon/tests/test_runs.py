@@ -1474,6 +1474,30 @@ def test_retry_http_route_rejects_invalid_json_instead_of_retrying_all(
     assert response.get_json()["data"] is None
 
 
+def test_retry_http_route_rejects_whitespace_only_json_body(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    with app.test_client() as client:
+        accepted = client.post("/postRuns", json=immediate_payload())
+        parent_id = accepted.get_json()["data"]["runId"]
+        wait_for_status(client, parent_id, "completed_with_failures")
+        response = client.post(
+            f"/postRuns/{parent_id}/retry",
+            data=b" \n\t",
+            content_type="application/json",
+        )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "code": 400,
+        "msg": "retry 请求体不是合法 JSON object",
+        "data": None,
+    }
+    with sqlite3.connect(_official_db.parent / "posthub-runs.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
 def test_retry_http_route_reports_database_error_as_server_error(
     run_app: tuple[Flask, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

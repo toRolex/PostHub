@@ -1153,7 +1153,7 @@ def register_run_routes(
     def retry_run(run_id: str):
         raw_body = request.get_data(cache=True)
         payload = request.get_json(silent=True)
-        if not raw_body.strip():
+        if not raw_body:
             item_ids = None
         elif payload is None:
             return jsonify(

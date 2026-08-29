@@ -909,3 +909,12 @@
 - web：`pnpm test -- --run` → `21 files / 237 tests passed`；`pnpm run build` → TypeScript 与 Vite 通过。
 - Tauri：首次因仓库忽略的 `src-tauri/resources/{daemon,bin,browser}` 缺失失败；仅补本地空目录后 `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`，空目录未入 Git。
 - `git diff --check` 通过；未修改官方 `sau_backend.py`/`uploader/*`，未 push、未建 PR、未 merge、未关闭 Issue。
+
+### Reviewer 复核（2026-08-29）
+
+- 复核基线：`a953322`，相对 `develop` 的变更覆盖 retry 的 RunStore/schema、HTTP route、前端 API/store/detail 及测试；官方 `sau_backend.py`/`uploader/*` 未修改。
+- 重点检查 HTTP 非法 JSON 与 `sqlite3.Error` 契约；现有非法 JSON 回归仅覆盖非空 malformed body，需额外锁定 whitespace-only body 不得被误判为省略请求体。
+- Red：新增 whitespace-only retry body 回归；原 `raw_body.strip()` 将空白体误当作省略 body，存在未经确认即重试全部 item 的风险。
+- Green：仅将真正的零字节 body 视为省略 `itemIds`；空白体、malformed JSON 均返回 JSON 400。定向 `tests/test_runs.py` → `49 passed`，相关 Ruff check/format → 通过。
+- Runtime verify：隔离 daemon HTTP 服务中，空体返回 JSON 200 并创建 retry run；whitespace-only 与 malformed JSON 均返回 `{"code":400,"data":null,"msg":"retry 请求体不是合法 JSON object"}`；将 run DB 置只读后 retry 返回 `{"code":500,"data":null,"msg":"attempt to write a readonly database"}`，服务已停止。真实发布因缺 cookie 自动失败，未触发外部平台。
+- 最终复验：daemon `uv run pytest -q` → `227 passed`；web `pnpm test -- --run` → `21 files / 237 tests passed`，`pnpm run build` 通过；Tauri `cargo test --manifest-path Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；retry 相关 Ruff/format 与 `git diff --check` 通过。
