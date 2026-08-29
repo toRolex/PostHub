@@ -1031,3 +1031,10 @@
 - web：`cd web && pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` 的 TypeScript/Vite 均通过；保留既有 jsdom navigation stderr。
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地忽略的空 resources 目录，未纳入提交。
 - `git diff --check` 通过；未修改官方源码，未 push、未创建 PR、未 merge、未关闭 Issue #97。
+
+### Reviewer refinement（2026-08-29）
+
+- 完整复核 `git diff develop..HEAD` 与 Issue #97 验收项；启动 reconciliation 在 worker 启动前执行，终态 item 保持不变，interrupted item 可沿用既有 retry 契约；未发现业务逻辑缺陷。
+- 发现实现提交新增的两个 Python 测试文件存在 Ruff import-order 检查错误；已按项目 Ruff 规则整理 `test_composition.py` 与 `test_runs.py` 导入，仅修复 lint 阻断，不改变测试行为。
+- 修补后验证：daemon `uv run pytest -q` → `233 passed`；相关 Python `ruff check` → `All checks passed`，`ruff format --check` → `3 files already formatted`；web `pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` 通过；Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；`git diff --check` 通过。
+- 未修改官方源码、未 push、未创建 PR、未 merge、未关闭 Issue #97。

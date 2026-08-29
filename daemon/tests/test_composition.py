@@ -7,9 +7,8 @@ from pathlib import Path
 
 import myUtils.postVideo as official_post_video
 import pytest
-from flask import Flask
-
 import sau_backend
+from flask import Flask
 from posthub import uploader_wrapper
 from posthub.composition import (
     compose_official_backend,
