@@ -982,3 +982,11 @@
 - 回归测试：账号改名/换平台仍显示历史快照；周导航并发查询的迟到响应被丢弃。
 - 最终验证：daemon `220 passed`；web `23 files / 239 tests passed`；`pnpm run build` 通过；Tauri lib `17 passed`、bin `0 tests`；`git diff --check` 通过。保留既有 jsdom navigation stderr。
 - 结论：已修复 P1，未修改官方源码；准备提交 `refine:`，不 push、merge 或关闭 Issue #98。
+
+### Issue #98 Merger 执行记录（2026-08-29）
+
+- `git merge afk/issue-98 --no-edit` 的唯一文本冲突为 `docs/implementation-notes.md`；逐侧保留 #95 retry 与 #98 publish record/calendar 全部记录。`web/src/api/official.ts` 自动合并后同时保留 retry 与 publish-record API，已通过测试核验；未使用 `-X`，生成 merge commit `f81ff42`。
+- 合并后 daemon：`cd daemon && uv run pytest -q` → `231 passed in 6.99s`。
+- 合并后 web：`pnpm test -- --run` → `23 files / 244 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）。
+- 合并后 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；web 保留既有 jsdom navigation stderr。
+- #98 合并与全量验证通过；下一步清理 #98 worktree/branch，统一关闭 #95/#98，并提交本轮 summarizing commit。
