@@ -41,7 +41,11 @@ export const RUN_POLL_INITIAL_MS = 2_000;
 export const RUN_POLL_MAX_MS = 10_000;
 
 export function shouldRefreshRun(status: RunStatus | null): boolean {
-  return status !== "completed" && status !== "completed_with_failures";
+  return (
+    status !== "completed" &&
+    status !== "completed_with_failures" &&
+    status !== "interrupted"
+  );
 }
 
 export function shouldRestartRunPolling(
@@ -108,6 +112,9 @@ export function runStatusMeta(status: RunStatus | null) {
   }
   if (status === "completed") {
     return { dot: "bg-success", text: "text-success-deep", label: "最近运行 已完成" };
+  }
+  if (status === "interrupted") {
+    return { dot: "bg-warn", text: "text-warn-deep", label: "最近运行 已中断" };
   }
   return null;
 }

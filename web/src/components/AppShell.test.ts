@@ -14,6 +14,7 @@ describe("顶部最近 run 状态条", () => {
     expect(runStatusMeta("running")?.label).toBe("最近运行 执行中");
     expect(runStatusMeta("running")?.pulse).toBe(true);
     expect(runStatusMeta("completed")?.label).toBe("最近运行 已完成");
+    expect(runStatusMeta("interrupted")?.label).toBe("最近运行 已中断");
   });
 
   it("顶部进度只使用 accepted/查询 API 返回的后端汇总", () => {
@@ -41,6 +42,7 @@ describe("顶部最近 run 状态条", () => {
   it("completed run 不再持续轮询，部分成功也是终态", () => {
     expect(shouldRefreshRun("completed")).toBe(false);
     expect(shouldRefreshRun("completed_with_failures")).toBe(false);
+    expect(shouldRefreshRun("interrupted")).toBe(false);
     expect(shouldRefreshRun("pending")).toBe(true);
     expect(shouldRefreshRun("running")).toBe(true);
     expect(shouldRefreshRun(null)).toBe(true);

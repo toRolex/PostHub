@@ -1204,6 +1204,296 @@ def test_concurrent_connections_use_sqlite_single_flight_and_return_existing_run
         assert conn.execute("SELECT COUNT(*) FROM run_items").fetchone()[0] == 1
 
 
+def test_retry_selected_copies_only_retryable_item_and_preserves_parent_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": '{"douyin":{"declaration":"marketing"}}',
+    }
+    payloads = [
+        {**immediate_payload(), "fileList": ["retry-failed.mp4"]},
+        {**immediate_payload(), "fileList": ["retry-success.mp4"]},
+    ]
+    normalized = normalize_publish_payloads(payloads, [account])
+    parent_id = store.create_run(normalized.effective)
+    failed = store.claim_next_item("owner")
+    assert failed is not None
+    _, failed_id, failed_effective = failed
+    assert store.finish_item(
+        parent_id, failed_id, owner_token="owner", error="平台拒绝"
+    )
+    succeeded = store.claim_next_item("owner")
+    assert succeeded is not None
+    _, succeeded_id, _ = succeeded
+    assert store.finish_item(parent_id, succeeded_id, owner_token="owner")
+
+    retried_id = store.retry_run(parent_id, item_ids=[failed_id, succeeded_id])
+    retried = store.get_run(retried_id)
+    original = store.get_run(parent_id)
+    assert retried is not None
+    assert original is not None
+    assert retried["parentRunId"] == parent_id
+    assert len(retried["items"]) == 1
+    assert retried["items"][0]["sourceItemId"] == failed_id
+    assert retried["items"][0]["status"] == "pending"
+    assert retried["items"][0]["submitted"] == original["items"][0]["submitted"]
+    assert retried["items"][0]["effective"] == failed_effective
+    assert original["items"][0]["status"] == "failed"
+    assert original["items"][1]["status"] == "success"
+
+
+def test_retry_without_item_ids_copies_failed_skipped_and_interrupted_only(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [
+            {**immediate_payload(), "fileList": ["failed.mp4"]},
+            {**immediate_payload(), "fileList": ["skipped.mp4"]},
+            {**immediate_payload(), "fileList": ["interrupted.mp4"]},
+            {**immediate_payload(), "fileList": ["success.mp4"]},
+            {**immediate_payload(), "fileList": ["pending.mp4"]},
+        ],
+        [account],
+    )
+    parent_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner")
+    assert claimed is not None
+    _, failed_id, _ = claimed
+    assert store.finish_item(parent_id, failed_id, owner_token="owner", error="失败")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE run_items SET status = 'skipped' WHERE run_id = ? AND ordinal = 1",
+            (parent_id,),
+        )
+        conn.execute(
+            "UPDATE run_items SET status = 'interrupted' WHERE run_id = ? AND ordinal = 2",
+            (parent_id,),
+        )
+        conn.execute(
+            "UPDATE run_items SET status = 'success' WHERE run_id = ? AND ordinal = 3",
+            (parent_id,),
+        )
+        conn.execute(
+            "UPDATE runs SET status = 'completed_with_failures' WHERE id = ?",
+            (parent_id,),
+        )
+        conn.commit()
+
+    retry_id = store.retry_run(parent_id)
+    retried = store.get_run(retry_id)
+    assert retried is not None
+    assert retried["parentRunId"] == parent_id
+    assert [item["sourceItemId"] for item in retried["items"]] == [
+        failed_id,
+        store.get_run(parent_id)["items"][1]["itemId"],
+        store.get_run(parent_id)["items"][2]["itemId"],
+    ]
+    assert [item["status"] for item in retried["items"]] == ["pending"] * 3
+
+
+def test_retry_rejects_run_without_retryable_items_without_creating_run(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [account],
+    )
+    parent_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner")
+    assert claimed is not None
+    assert store.finish_item(parent_id, claimed[1], owner_token="owner")
+
+    with pytest.raises(ValueError, match="没有可重试"):
+        store.retry_run(parent_id)
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
+def test_retry_replays_persisted_effective_after_account_default_changes(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    first_effective = {
+        **immediate_payload(),
+        "platformFields": {"douyin": {"declaration": "marketing"}},
+    }
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": '{"douyin":{"declaration":"marketing"}}',
+    }
+    normalized = normalize_publish_payload(first_effective, [account])
+    parent_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner")
+    assert claimed is not None
+    assert store.finish_item(parent_id, claimed[1], owner_token="owner", error="失败")
+    original_effective = store.get_run(parent_id)["items"][0]["effective"]
+
+    retry_id = store.retry_run(parent_id)
+    retry_effective = store.get_run(retry_id)["items"][0]["effective"]
+    assert retry_effective == original_effective
+    assert retry_effective["platformFields"] == {"douyin": {"declaration": "marketing"}}
+
+
+def test_retry_run_worker_executes_copied_effective_item(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payload(immediate_payload(), [account])
+    parent_id = store.create_run(normalized.effective)
+    claimed = store.claim_next_item("owner")
+    assert claimed is not None
+    assert store.finish_item(parent_id, claimed[1], owner_token="owner", error="失败")
+    retry_id = store.retry_run(parent_id)
+    seen: list[dict] = []
+    worker = RunWorker(store, uploader=lambda effective: seen.append(dict(effective)))
+    worker.start()
+    try:
+        retried = wait_for_status_from_store(store, retry_id, "completed")
+    finally:
+        worker.stop()
+
+    assert retried["items"][0]["status"] == "success"
+    assert seen == [normalized.effective[0].effective]
+
+
+def test_retry_http_route_accepts_selected_item_and_exposes_traceability(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    payload = [
+        immediate_payload(),
+        {**immediate_payload(), "fileList": ["second.mp4"], "title": "第二个"},
+    ]
+    with app.test_client() as client:
+        accepted = client.post("/postRuns", json=payload)
+        parent_id = accepted.get_json()["data"]["runId"]
+        parent = wait_for_status(client, parent_id, "completed_with_failures")
+        selected_id = parent["items"][0]["itemId"]
+        response = client.post(
+            f"/postRuns/{parent_id}/retry", json={"itemIds": [selected_id]}
+        )
+
+        assert response.status_code == 200
+        data = response.get_json()["data"]
+        assert data["parentRunId"] == parent_id
+        assert data["itemCount"] == 1
+        retry = wait_for_status(client, data["runId"], "completed_with_failures")
+
+    assert retry["parentRunId"] == parent_id
+    assert retry["items"][0]["sourceItemId"] == selected_id
+
+
+def test_retry_http_route_without_item_ids_copies_all_retryable_items(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    payload = [
+        immediate_payload(),
+        {**immediate_payload(), "fileList": ["second.mp4"], "title": "第二个"},
+    ]
+    with app.test_client() as client:
+        accepted = client.post("/postRuns", json=payload)
+        parent_id = accepted.get_json()["data"]["runId"]
+        parent = wait_for_status(client, parent_id, "completed_with_failures")
+        response = client.post(f"/postRuns/{parent_id}/retry")
+
+        assert response.status_code == 200
+        data = response.get_json()["data"]
+        assert data["parentRunId"] == parent_id
+        assert data["itemCount"] == 2
+        retry = wait_for_status(client, data["runId"], "completed_with_failures")
+
+    assert [item["sourceItemId"] for item in retry["items"]] == [
+        item["itemId"] for item in parent["items"]
+    ]
+
+
+def test_retry_http_route_rejects_malformed_request_and_missing_run(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    with app.test_client() as client:
+        malformed = client.post("/postRuns/missing/retry", json={"itemIds": "item"})
+        missing = client.post("/postRuns/missing/retry", json={})
+
+    assert malformed.status_code == 400
+    assert malformed.get_json()["data"] is None
+    assert missing.status_code == 404
+    assert missing.get_json()["msg"] == "run 不存在"
+
+
+def test_retry_http_route_rejects_invalid_json_instead_of_retrying_all(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, _official_db = run_app
+    with app.test_client() as client:
+        accepted = client.post("/postRuns", json=immediate_payload())
+        parent_id = accepted.get_json()["data"]["runId"]
+        wait_for_status(client, parent_id, "completed_with_failures")
+        response = client.post(
+            f"/postRuns/{parent_id}/retry",
+            data="{not-json",
+            content_type="application/json",
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["data"] is None
+
+
+def test_retry_http_route_reports_database_error_as_server_error(
+    run_app: tuple[Flask, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, _official_db = run_app
+    service = app.extensions["_posthub_run_service"]
+    monkeypatch.setattr(
+        service["store"],
+        "retry_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    with app.test_client() as client:
+        response = client.post("/postRuns/any/retry", json={})
+
+    assert response.status_code == 500
+    assert response.get_json()["code"] == 500
+
+
 def test_conflict_rolls_back_all_items_from_the_rejected_run(tmp_path: Path) -> None:
     db_path = tmp_path / "runs.db"
     account = {
