@@ -15,6 +15,7 @@ from flask import Flask, g, jsonify, request
 
 from posthub.publish_adapter import NormalizationError, normalize_publish_payloads
 from posthub.uploader_wrapper import (
+    WrapperExecutionError,
     clear_declaration_diagnostics,
     set_pending_declarations,
     set_pending_effective_items,
@@ -105,6 +106,17 @@ def register_declaration_hooks(app: Flask, db_path: Path) -> None:
             set_pending_declarations([])
             return jsonify({"code": 400, "msg": str(err), "data": None}), 400
         return None
+
+    @app.errorhandler(WrapperExecutionError)
+    def handle_wrapper_execution_error(error: WrapperExecutionError):
+        return jsonify(
+            {
+                "code": 500,
+                "msg": f"发布失败: {error}",
+                "data": None,
+                "diagnostics": error.diagnostics,
+            }
+        ), 500
 
     @app.teardown_request
     def clear_posthub_declarations(_error):

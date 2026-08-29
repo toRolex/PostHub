@@ -802,3 +802,11 @@
 - 最终验证：`cd daemon && uv run pytest -q` → `204 passed`；`cd web && pnpm test -- --run` → `20 files / 225 tests passed`；`cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过（`1706 modules transformed`）。
 - `rg` 冲突标记为 0，`git diff --check` 通过；Tauri 未触及，按要求跳过。web 测试保留既有 jsdom navigation stderr。
 - 真实账号、Windows 托盘生命周期仍无法在 macOS 环境验证，保留 concern；未 push、未建 PR、未修改 GitHub Issue、未删除 worktree/分支。
+
+### AFK Merger #92（2026-08-29）
+
+- `git merge afk/issue-92 --no-edit` 发生多文件冲突；逐侧保留 develop 的 #89/#91/#93 timer、结构化 diagnostics、部分成功与 lease 语义，并接入 #92 的小红书 source normalization、DOM wrapper、accepted-run dispatcher 与兼容 HTTP 诊断，不使用 `-X`。
+- 冲突解决后补齐小红书 source DOM 的成功、候选缺失、点击失败与 fail-closed 测试；将旧 source 拒绝断言更新为 #92 已提供安全执行 seam，origin 仍保持拒绝。
+- 合并后定向验证：daemon 147 passed；web 21 files / 228 tests passed，tsc/Vite build 通过；Python 相关 Ruff 全部通过；Tauri lib 17 passed、bin 0 tests。
+- 合并后全量验证：daemon `uv run pytest -q` → `209 passed`；web `pnpm test -- --run` → `21 files / 228 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；Python Ruff check/format 与 `git diff --check` 通过。web 保留既有 jsdom navigation stderr。
+- 下一步：提交 `Merge branch 'afk/issue-92' into develop`，随后清理并关闭 #92。

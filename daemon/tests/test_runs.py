@@ -18,7 +18,7 @@ from posthub.publish_adapter import (
     normalize_publish_payload,
     normalize_publish_payloads,
 )
-from posthub.runs import RunStore, RunWorker
+from posthub.runs import FailClosedUploader, RunStore, RunWorker
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def run_app(tmp_path: Path):
         methods=["POST"],
     )
     official_db = tmp_path / "official" / "db" / "database.db"
-    compose_posthub_backend(app, official_db)
+    compose_posthub_backend(app, official_db, uploader=FailClosedUploader())
     with sqlite3.connect(official_db) as conn:
         conn.execute(
             """

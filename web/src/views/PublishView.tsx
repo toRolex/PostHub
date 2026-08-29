@@ -492,6 +492,25 @@ function runItemStatusLabel(status: string): string {
   }[status] ?? status;
 }
 
+export function runItemDiagnostics(
+  diagnostics:
+    | RunItemDiagnostic[]
+    | { warnings: string[]; debugScreenshots: string[] }
+    | null
+    | undefined,
+): string[] {
+  if (!diagnostics) return [];
+  if (Array.isArray(diagnostics)) {
+    return diagnostics.map(
+      (diagnostic) => diagnostic.message ?? diagnostic.reason ?? diagnostic.kind,
+    );
+  }
+  return [
+    ...diagnostics.warnings.map((warning) => `告警：${warning}`),
+    ...diagnostics.debugScreenshots.map((path) => `调试截图：${path}`),
+  ];
+}
+
 function RunDiagnosticList({ diagnostics }: { diagnostics: RunItemDiagnostic[] }) {
   return (
     <ul aria-label="运行诊断" className="mt-2 flex w-full flex-col gap-1.5">

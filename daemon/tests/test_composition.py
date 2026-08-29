@@ -11,11 +11,27 @@ from flask import Flask
 
 import sau_backend
 from posthub import uploader_wrapper
-from posthub.composition import compose_official_backend, compose_posthub_backend
+from posthub.composition import (
+    compose_official_backend,
+    compose_posthub_backend,
+    shutdown_posthub_backend,
+)
 
 
 def _rule_count(app, path: str) -> int:
     return sum(1 for rule in app.url_map.iter_rules() if rule.rule == path)
+
+
+def test_composition_injects_real_effective_dispatcher(tmp_path: Path) -> None:
+    app = Flask(__name__)
+    db_path = tmp_path / "official" / "db" / "database.db"
+
+    compose_posthub_backend(app, db_path)
+    try:
+        worker = app.extensions["_posthub_run_service"]["worker"]
+        assert worker.uploader is uploader_wrapper.execute_effective_item
+    finally:
+        shutdown_posthub_backend(app)
 
 
 def test_repeated_composition_rejects_a_different_db_path(tmp_path: Path) -> None:
@@ -79,9 +95,11 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
     douyin_calls: list[tuple] = []
     pending_fields: list[dict] = []
     pending_tencent_fields: list[dict] = []
+    pending_xhs_fields: list[dict] = []
 
     def fake_xhs(*args, **kwargs):
         xhs_calls.append((args, kwargs))
+        pending_xhs_fields.append(uploader_wrapper._active_fields(1).copy())
 
     def fake_tencent(*args, **kwargs):
         tencent_calls.append((args, kwargs))
@@ -123,19 +141,18 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         assert malformed_batch.status_code == 400
         assert douyin_calls == []
 
-        unsupported_xhs = client.post(
+        xhs_with_source = client.post(
             "/postVideo",
             json={
                 "fileList": ["a.mp4"],
                 "accountList": ["a.json"],
                 "type": 1,
-                "title": "xhs-unsupported-declaration",
+                "title": "xhs-source",
                 "platformFields": {"xiaohongshu": {"source": "self_declare"}},
             },
         )
-        assert unsupported_xhs.status_code == 400
-        assert "source" in unsupported_xhs.get_json()["msg"]
-        assert xhs_calls == []
+        assert xhs_with_source.status_code == 200
+        assert pending_xhs_fields == [{"source": "自主拍摄"}]
 
         # 小红书走真实 wrapper 入口；若递归或签名错误，这里不会返回 200。
         xhs_response = client.post(
@@ -215,7 +232,7 @@ def test_repeated_composition_preserves_seams_and_uses_explicit_db(
         assert client.post("/postVideo", json=shared_payload).status_code == 200
         assert client.post("/postVideoBatch", json=[shared_payload]).status_code == 200
 
-    assert len(xhs_calls) == 1
+    assert len(xhs_calls) == 2
     assert len(tencent_calls) == 1
     assert len(douyin_calls) == 3
     assert pending_tencent_fields == [{"declaration": "无需标注"}]

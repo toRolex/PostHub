@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   nextRunPollDelay,
+  runDiagnosticsText,
   runProgressLabel,
   runStatusMeta,
   shouldRefreshRun,
@@ -61,5 +62,15 @@ describe("顶部最近 run 状态条", () => {
     expect(nextRunPollDelay(8000, false)).toBe(10000);
     expect(nextRunPollDelay(10000, false)).toBe(10000);
     expect(nextRunPollDelay(10000, true)).toBe(2000);
+  });
+
+  it("运行查询展示 wrapper warning 与 debug screenshot 信息", () => {
+    expect(
+      runDiagnosticsText({
+        warnings: ["入口未渲染"],
+        debugScreenshots: ["/tmp/xhs-source.png"],
+      }),
+    ).toBe("告警：入口未渲染；调试截图：/tmp/xhs-source.png");
+    expect(runDiagnosticsText(null)).toBeNull();
   });
 });

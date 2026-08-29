@@ -18,18 +18,20 @@ seam；本 issue 不复制小红书发布流程或另造执行引擎。
 from __future__ import annotations
 
 import re
+import tempfile
 import threading
 import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import myUtils.postVideo as _post_video_mod
 import uploader.tencent_uploader.main as _tencent_mod
-from flask import has_request_context, request
+from flask import g, has_request_context, request
 from patchright.async_api import TimeoutError as PatchrightTimeoutError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from uploader.douyin_uploader.main import DouYinVideo as _OriginalDouYinVideo
@@ -78,6 +80,48 @@ def _record_declaration_diagnostic(**diagnostic: Any) -> None:
         diagnostics = []
         _local.declaration_diagnostics = diagnostics
     diagnostics.append(diagnostic)
+
+
+def _record_warning(message: str) -> None:
+    """兼容旧 wrapper 诊断调用，同时写入结构化 item 诊断。"""
+    _record_declaration_diagnostic(
+        level="warning",
+        kind="xiaohongshu_source_declaration",
+        reason="warning",
+        message=message,
+        screenshot=None,
+    )
+
+
+def _record_debug_screenshot(path: str) -> None:
+    diagnostics = getattr(_local, "declaration_diagnostics", None)
+    if diagnostics:
+        diagnostics[-1]["screenshot"] = path
+    else:
+        _record_declaration_diagnostic(
+            level="warning",
+            kind="xiaohongshu_source_declaration",
+            reason="debug_screenshot",
+            message="小红书内容声明调试截图",
+            screenshot=path,
+        )
+
+
+def consume_diagnostics() -> dict[str, list[str]]:
+    """兼容旧 HTTP wrapper 的 warning/screenshot 诊断格式。"""
+    diagnostics = get_declaration_diagnostics()
+    result = {
+        "warnings": [
+            item["message"]
+            for item in diagnostics
+            if item.get("level") == "warning" and item.get("message")
+        ],
+        "debugScreenshots": [
+            item["screenshot"] for item in diagnostics if item.get("screenshot")
+        ],
+    }
+    clear_declaration_diagnostics()
+    return result
 
 
 def _tencent_account_label(account_file: Any) -> str:
@@ -467,12 +511,183 @@ class _DouYinVideoWithDeclaration(_OriginalDouYinVideo):
 
 
 class _XiaoHongShuVideoWithStrategy(_OriginalXiaoHongShuVideo):
-    """小红书 scheduled 薄 wrapper；发布循环仍由官方入口执行。"""
+    """小红书 scheduled/source 薄 wrapper；发布循环仍由官方类实现。"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         args, kwargs = _select_xhs_publish_date(args, kwargs)
         _ensure_publish_strategy(args, kwargs)
         super().__init__(*args, **kwargs)
+
+    async def check_original_declaration(self, page: Any) -> None:
+        source = _active_fields(1).get("source")
+        if source:
+            result = await _apply_xhs_source_declaration(page, source)
+            if result.status != "applied":
+                raise WrapperExecutionError(
+                    result.warning or "小红书内容声明未能应用 source",
+                    get_declaration_diagnostics(),
+                )
+        await super().check_original_declaration(page)
+
+
+XHS_SOURCE_ENTRY_SELECTORS = (
+    'text="笔记内容声明"',
+    'text="创作来源"',
+)
+XHS_SOURCE_OPTION_SELECTOR = 'text="{source}"'
+XHS_SOURCE_OPTION_SELECTORS = (
+    XHS_SOURCE_OPTION_SELECTOR,
+    'label:has-text("{source}")',
+)
+XHS_SOURCE_CANDIDATE_SELECTOR = '[role="option"]'
+
+
+@dataclass(frozen=True)
+class XhsSourceApplyResult:
+    """小红书 source DOM seam 的可查询结果。"""
+
+    status: Literal["applied", "warning"]
+    reason: str | None = None
+    warning: str | None = None
+    debug_screenshot: str | None = None
+
+
+class WrapperExecutionError(RuntimeError):
+    """官方执行失败，同时携带当前 item 已采集的 wrapper 诊断。"""
+
+    def __init__(self, message: str, diagnostics: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.diagnostics = {
+            "warnings": [
+                item["message"]
+                for item in diagnostics
+                if item.get("level") == "warning" and item.get("message")
+            ],
+            "debugScreenshots": [
+                item["screenshot"] for item in diagnostics if item.get("screenshot")
+            ],
+        }
+        if has_request_context():
+            g.posthub_wrapper_diagnostics = self.diagnostics
+
+
+def _capture_xhs_debug_screenshot_path() -> Path:
+    path = (
+        Path(tempfile.gettempdir())
+        / "posthub-debug"
+        / f"xhs-source-{uuid.uuid4().hex}.png"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _record_xhs_diagnostic(
+    *,
+    reason: str,
+    message: str,
+    screenshot: str | None = None,
+    **extra: Any,
+) -> None:
+    _record_declaration_diagnostic(
+        level="warning",
+        kind="xiaohongshu_source_declaration",
+        reason=reason,
+        message=message,
+        screenshot=screenshot,
+        **extra,
+    )
+
+
+async def _capture_xhs_debug_screenshot(page: Any) -> str | None:
+    try:
+        path = _capture_xhs_debug_screenshot_path()
+        await page.screenshot(path=str(path), full_page=True)
+    except Exception as exc:  # noqa: BLE001 - 诊断失败不能覆盖原 warning
+        _record_declaration_diagnostic(
+            level="warning",
+            kind="xiaohongshu_source_declaration",
+            reason="screenshot_failed",
+            message=f"小红书内容声明 debug screenshot 失败：{exc}",
+            screenshot=None,
+        )
+        return None
+    return str(path)
+
+
+XHS_DOM_WAIT_TIMEOUT_MS = 1_000
+
+
+async def _visible_first_locator(page: Any, selectors: tuple[str, ...]) -> Any:
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            await locator.wait_for(state="visible", timeout=XHS_DOM_WAIT_TIMEOUT_MS)
+        except (PatchrightTimeoutError, PlaywrightTimeoutError, TimeoutError):
+            continue
+        if await locator.count() and await locator.is_visible():
+            return locator
+    return None
+
+
+async def _apply_xhs_source_declaration(page: Any, source: str) -> XhsSourceApplyResult:
+    """通过稳定 selector 尝试选择小红书“笔记内容声明”，失败即留诊断。"""
+    try:
+        entry = await _visible_first_locator(page, XHS_SOURCE_ENTRY_SELECTORS)
+        if entry is None:
+            warning = "小红书内容声明入口未渲染，未能应用 source"
+            screenshot = await _capture_xhs_debug_screenshot(page)
+            _record_xhs_diagnostic(
+                reason="entry_missing", message=warning, screenshot=screenshot
+            )
+            return XhsSourceApplyResult("warning", "entry_missing", warning, screenshot)
+
+        await entry.click()
+        option_selectors = tuple(
+            selector.format(source=source) for selector in XHS_SOURCE_OPTION_SELECTORS
+        )
+        option = await _visible_first_locator(page, option_selectors)
+        if option is not None:
+            await option.click()
+            _record_declaration_diagnostic(
+                level="info",
+                kind="xiaohongshu_source_declaration",
+                reason="applied",
+                message=f"小红书内容声明已应用：{source}",
+                selector=option_selectors[0],
+                requestedValue=source,
+                displayValue=source,
+            )
+            return XhsSourceApplyResult("applied")
+
+        candidates = await _visible_first_locator(
+            page, (XHS_SOURCE_CANDIDATE_SELECTOR,)
+        )
+        if candidates is not None:
+            reason = "candidate_missing"
+            warning = f"小红书内容声明候选已变化，未找到：{source}"
+        else:
+            reason = "option_selectors_missed"
+            warning = f"小红书内容声明双 selector 均未命中：{source}"
+        screenshot = await _capture_xhs_debug_screenshot(page)
+        _record_xhs_diagnostic(
+            reason=reason,
+            message=warning,
+            screenshot=screenshot,
+            requestedValue=source,
+        )
+        return XhsSourceApplyResult("warning", reason, warning, screenshot)
+    except Exception as exc:  # noqa: BLE001 - DOM 变化必须可诊断且 fail-closed
+        warning = f"小红书内容声明 DOM 操作失败，未能应用 source：{exc}"
+        screenshot = await _capture_xhs_debug_screenshot(page)
+        _record_xhs_diagnostic(
+            reason="dom_operation_failed",
+            message=warning,
+            screenshot=screenshot,
+            requestedValue=source,
+        )
+        return XhsSourceApplyResult(
+            "warning", "dom_operation_failed", warning, screenshot
+        )
 
 
 async def _apply_tencent_content_declaration(
@@ -1022,25 +1237,30 @@ def _inject_declaration_to_xhs(
     videos_per_day: int = 1,
     daily_times: Any = None,
     start_days: int = 0,
-) -> None:
-    """委托官方小红书发布函数，避免替换后回调自身造成递归。"""
+) -> Any:
+    """委托官方小红书发布函数并在 source 失败时保留诊断。"""
     effective_group = _pop_effective_group_for_request(1)
     if effective_group:
         _execute_effective_group(effective_group, _invoke_xhs_command)
         return None
 
-    with _xhs_file_context(files, account_file), _declaration_context(_pop_for(1)):
-        return _ORIGINAL_POST_VIDEO_XHS(
-            title=title,
-            files=files,
-            tags=tags,
-            account_file=account_file,
-            category=category,
-            enableTimer=enableTimer,
-            videos_per_day=videos_per_day,
-            daily_times=daily_times,
-            start_days=start_days,
-        )
+    try:
+        with _xhs_file_context(files, account_file), _declaration_context(_pop_for(1)):
+            return _ORIGINAL_POST_VIDEO_XHS(
+                title=title,
+                files=files,
+                tags=tags,
+                account_file=account_file,
+                category=category,
+                enableTimer=enableTimer,
+                videos_per_day=videos_per_day,
+                daily_times=daily_times,
+                start_days=start_days,
+            )
+    except WrapperExecutionError:
+        raise
+    except Exception as exc:
+        raise WrapperExecutionError(str(exc), get_declaration_diagnostics()) from exc
 
 
 def _inject_effective_to_ks(
@@ -1070,6 +1290,58 @@ def _inject_effective_to_ks(
         daily_times=daily_times,
         start_days=start_days,
     )
+
+
+def _declaration_item_for_payload(effective: Mapping[str, Any]) -> dict[str, Any]:
+    """把持久化 effective payload 转为直接 wrapper 调用所需的 context。"""
+    platform_type = effective.get("type")
+    if not isinstance(platform_type, int) or isinstance(platform_type, bool):
+        raise TypeError(f"effective item 平台非法：{platform_type!r}")
+    fields = effective.get("platformFields")
+    selected = (
+        select_for_platform(resolve_platform_fields(fields), platform_type)
+        if fields
+        else {}
+    )
+    return {"platform": platform_type, "fields": selected}
+
+
+def execute_effective_item(effective: Mapping[str, Any]) -> Any:
+    """生产 accepted-run dispatcher：按官方平台交给 PostHub wrapper。"""
+    platform_type = effective.get("type")
+    common = {
+        "title": effective["title"],
+        "files": effective["fileList"],
+        "tags": effective.get("tags", []),
+        "account_file": effective["accountList"],
+        "category": effective.get("category"),
+        "enableTimer": effective.get("enableTimer", False),
+        "videos_per_day": effective.get("videosPerDay", 1),
+        "daily_times": effective.get("dailyTimes"),
+        "start_days": effective.get("startDays", 0),
+    }
+    wrapper = {
+        1: _inject_declaration_to_xhs,
+        2: _inject_declaration_to_tencent,
+        3: _inject_declaration_to_douyin,
+        4: _inject_effective_to_ks,
+    }.get(platform_type)
+    if wrapper is None:
+        raise ValueError(f"effective item 平台非法：{platform_type!r}")
+
+    set_pending_declarations([_declaration_item_for_payload(effective)])
+    try:
+        if platform_type == 2:
+            common["is_draft"] = effective.get("isDraft", False)
+        elif platform_type == 3:
+            common.update(
+                thumbnail_path=effective.get("thumbnail", ""),
+                productLink=effective.get("productLink", ""),
+                productTitle=effective.get("productTitle", ""),
+            )
+        return wrapper(**common)
+    finally:
+        set_pending_declarations([])
 
 
 _INSTALLED = False

@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 import db_init
 from posthub.routes import register_declaration_hooks, register_posthub_routes
 from posthub.runs import register_run_routes, shutdown_run_worker
+from posthub.uploader_wrapper import execute_effective_item
 from posthub.uploader_wrapper import install as install_uploader_wrapper
 
 _COMPOSITION_MARKER = "_posthub_composition"
@@ -50,6 +52,8 @@ def compose_posthub_backend(
     app: Any,
     db_path: Path | str,
     run_db_path: Path | str | None = None,
+    *,
+    uploader: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> Any:
     """在指定 Flask 应用上一次性组合 PostHub-owned 生命周期与路由。"""
     path = Path(db_path).resolve()
@@ -76,7 +80,12 @@ def compose_posthub_backend(
     install_uploader_wrapper()
     register_posthub_routes(app, path)
     register_declaration_hooks(app, path)
-    register_run_routes(app, path, run_path)
+    register_run_routes(
+        app,
+        path,
+        run_path,
+        uploader=execute_effective_item if uploader is None else uploader,
+    )
     app.extensions[_COMPOSITION_MARKER] = {
         "db_path": path,
         "run_db_path": run_path,

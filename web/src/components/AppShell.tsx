@@ -4,7 +4,7 @@ import { FilePlus2, Send, Settings, Timer, User } from "lucide-react";
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useRunStore } from "../stores/runs";
-import type { RunStatus, RunSummary } from "../api/official";
+import type { RunItemDiagnostic, RunStatus, RunSummary } from "../api/official";
 import { useViewStore, type View } from "../stores/view";
 import { isTauri } from "../lib/isTauri";
 import { cn } from "../lib/utils";
@@ -69,6 +69,26 @@ export function runProgressLabel(
   if (summary) return `完成 ${summary.completedCount}/${summary.itemCount}`;
   if (acceptedItemCount !== null) return `完成 0/${acceptedItemCount}`;
   return null;
+}
+
+export function runDiagnosticsText(
+  diagnostics:
+    | RunItemDiagnostic[]
+    | { warnings: string[]; debugScreenshots: string[] }
+    | null
+    | undefined,
+): string | null {
+  if (!diagnostics) return null;
+  const entries = Array.isArray(diagnostics)
+    ? diagnostics.map(
+        (diagnostic) =>
+          `告警：${diagnostic.message ?? diagnostic.reason ?? diagnostic.kind}`,
+      )
+    : [
+        ...diagnostics.warnings.map((warning) => `告警：${warning}`),
+        ...diagnostics.debugScreenshots.map((path) => `调试截图：${path}`),
+      ];
+  return entries.length > 0 ? entries.join("；") : null;
 }
 
 export function runStatusMeta(status: RunStatus | null) {

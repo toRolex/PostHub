@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -844,3 +845,118 @@ def test_wechat_wrapper_uses_final_hour_and_cross_day_datetime_snapshot(
     assert calls[0]["args"][3] == datetime(2026, 8, 29, 0, 0, tzinfo=UTC).replace(
         tzinfo=None
     )
+
+
+class _XhsStubLocator:
+    def __init__(
+        self, available: bool, *, click_error: Exception | None = None
+    ) -> None:
+        self.available = available
+        self.click_error = click_error
+        self.clicks = 0
+        self.wait_calls = 0
+
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, *, state: str, timeout: float) -> None:
+        assert state == "visible"
+        assert timeout > 0
+        self.wait_calls += 1
+        if not self.available:
+            raise TimeoutError("not rendered")
+
+    async def count(self) -> int:
+        return int(self.available)
+
+    async def is_visible(self) -> bool:
+        return self.available
+
+    async def click(self) -> None:
+        if self.click_error:
+            raise self.click_error
+        self.clicks += 1
+
+
+class _XhsStubPage:
+    def __init__(self, locators: dict[str, _XhsStubLocator]) -> None:
+        self.locators = locators
+        self.requested: list[str] = []
+        self.screenshots: list[str] = []
+
+    def locator(self, selector: str) -> _XhsStubLocator:
+        self.requested.append(selector)
+        return self.locators.get(selector, _XhsStubLocator(False))
+
+    async def screenshot(self, *, path: str, full_page: bool = False) -> None:
+        assert full_page
+        self.screenshots.append(path)
+
+
+def test_xhs_source_dom_success_and_wait(monkeypatch) -> None:
+    source = "笔记含AI合成内容"
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    option = uploader_wrapper.XHS_SOURCE_OPTION_SELECTOR.format(source=source)
+    page = _XhsStubPage(
+        {
+            entry: _XhsStubLocator(False),
+            option: _XhsStubLocator(False),
+        }
+    )
+    page.locators[entry].available = True
+    page.locators[option].available = True
+
+    result = asyncio.run(uploader_wrapper._apply_xhs_source_declaration(page, source))
+
+    assert result.status == "applied"
+    assert page.locators[entry].clicks == 1
+    assert page.locators[option].clicks == 1
+    assert page.screenshots == []
+
+
+def test_xhs_source_missing_or_changed_is_diagnosed() -> None:
+    source = "笔记含AI合成内容"
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    page = _XhsStubPage({entry: _XhsStubLocator(True)})
+
+    result = asyncio.run(uploader_wrapper._apply_xhs_source_declaration(page, source))
+
+    assert result.status == "warning"
+    assert result.reason == "option_selectors_missed"
+    assert result.warning
+    assert len(page.screenshots) == 1
+
+
+def test_xhs_source_click_failure_is_fail_closed_with_screenshot() -> None:
+    entry = uploader_wrapper.XHS_SOURCE_ENTRY_SELECTORS[0]
+    page = _XhsStubPage(
+        {entry: _XhsStubLocator(True, click_error=TimeoutError("detached"))}
+    )
+
+    result = asyncio.run(
+        uploader_wrapper._apply_xhs_source_declaration(page, "笔记含AI合成内容")
+    )
+
+    assert result.status == "warning"
+    assert result.reason == "dom_operation_failed"
+    assert len(page.screenshots) == 1
+
+
+def test_xhs_class_hook_blocks_original_when_source_fails(monkeypatch) -> None:
+    async def unexpected_original_check(self: Any, _page: Any) -> None:
+        raise AssertionError("source failure must block original declaration flow")
+
+    monkeypatch.setattr(
+        uploader_wrapper._OriginalXiaoHongShuVideo,
+        "check_original_declaration",
+        unexpected_original_check,
+    )
+    video = object.__new__(uploader_wrapper._XiaoHongShuVideoWithStrategy)
+    with (
+        uploader_wrapper._declaration_context(
+            {"platform": 1, "fields": {"source": "笔记含AI合成内容"}}
+        ),
+        pytest.raises(uploader_wrapper.WrapperExecutionError, match="入口未渲染"),
+    ):
+        asyncio.run(video.check_original_declaration(_XhsStubPage({})))

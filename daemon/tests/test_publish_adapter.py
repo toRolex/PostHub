@@ -392,7 +392,6 @@ def test_normalization_rejects_malformed_platform_field_values(
 @pytest.mark.parametrize(
     ("platform_type", "platform_fields", "expected_field"),
     [
-        (1, {"xiaohongshu": {"source": "self_declare"}}, "source"),
         (1, {"xiaohongshu": {"origin": True}}, "origin"),
         (2, {"wechat": {"origin": False}}, "origin"),
     ],
@@ -431,7 +430,7 @@ def test_normalization_omits_null_account_default_fields() -> None:
     assert "platformFields" not in command
 
 
-def test_normalization_rejects_unsupported_account_default_before_execution() -> None:
+def test_normalization_accepts_supported_xhs_account_default() -> None:
     payload = {
         "fileList": ["video.mp4"],
         "accountList": ["xhs.json"],
@@ -442,8 +441,10 @@ def test_normalization_rejects_unsupported_account_default_before_execution() ->
     accounts = deepcopy(ACCOUNT_FIXTURES)
     accounts[0]["default_platform_fields"] = {"xiaohongshu": {"source": "self_declare"}}
 
-    with pytest.raises(NormalizationError, match="source"):
-        normalize_publish_payloads([payload], accounts)
+    item = normalize_publish_payloads([payload], accounts).effective[0]
+    assert item.effective["platformFields"] == {
+        "xiaohongshu": {"source": "self_declare"}
+    }
 
 
 def test_execution_adapter_normalizes_before_invoking_official_seam() -> None:
@@ -479,9 +480,9 @@ def test_execution_adapter_normalizes_before_invoking_official_seam() -> None:
         "type": 1,
         "title": "未支持声明",
         "tags": [],
-        "platformFields": {"xiaohongshu": {"source": "self_declare"}},
+        "platformFields": {"xiaohongshu": {"origin": True}},
     }
-    with pytest.raises(NormalizationError, match="source"):
+    with pytest.raises(NormalizationError, match="origin"):
         adapter.execute([unsupported], ACCOUNT_FIXTURES)
     assert calls == []
 
@@ -1207,3 +1208,24 @@ def test_wechat_effective_snapshot_recomputes_from_frontend_submitted_raw_time()
     assert item.effective["timerFinalTime"] == "00:00"
     assert item.effective["startDays"] == 1
     assert item.effective["publishDatetimes"] == ["2026-08-29T00:00:00"]
+
+
+def test_xhs_ai_synthesized_source_reaches_effective_item() -> None:
+    payload = {
+        "fileList": ["xhs.mp4"],
+        "accountList": ["xhs.json"],
+        "type": 1,
+        "title": "小红书 AI 声明",
+        "tags": [],
+        "platformFields": {"xiaohongshu": {"source": "ai_synthesized"}},
+    }
+
+    item = normalize_publish_payloads([payload], ACCOUNT_FIXTURES).effective[0]
+
+    assert item.effective["platformFields"] == {
+        "xiaohongshu": {"source": "ai_synthesized"}
+    }
+    assert uploader_wrapper._declaration_item_for_effective(item) == {
+        "platform": 1,
+        "fields": {"source": "笔记含AI合成内容"},
+    }

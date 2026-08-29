@@ -36,7 +36,8 @@ _PLATFORM_FIELD_KEYS = {
 # 只有确实能在官方执行链路中应用的字段才能进入 effective 命令；
 # 没有可靠 DOM/构造参数 seam 时必须拒绝，而不是返回 200 后静默丢字段。
 _UNSUPPORTED_EXECUTION_FIELDS = {
-    "xiaohongshu": {"source", "origin"},
+    # source 由 PostHub XHS DOM wrapper 执行；origin 仍无可靠 seam，继续 fail-closed。
+    "xiaohongshu": {"origin"},
     "wechat": {"origin"},
 }
 
@@ -744,9 +745,9 @@ class PublishExecutionAdapter:
     def __init__(self, invoke_official: Callable[[dict[str, Any]], Any]) -> None:
         self._invoke_official = invoke_official
 
-    def execute_item(self, item: EffectiveBatchItem) -> None:
+    def execute_item(self, item: EffectiveBatchItem) -> Any:
         """执行一个已完成规范化的 item；供官方 route wrapper 复用。"""
-        self._invoke_official(deepcopy(item.effective))
+        return self._invoke_official(deepcopy(item.effective))
 
     def execute(
         self,
