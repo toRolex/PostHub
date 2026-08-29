@@ -19,7 +19,7 @@ PostHub 让短视频创作者「一个视频，一键或定时发布到抖音 / 
 
 | 术语 | 定义 |
 |---|---|
-| **官方后端** | social-auto-upload 自带的 Flask 服务 `sau_backend.py`（含 `myUtils` / `uploader/*` / `conf.py` / 自带 `database.db`）。提供 `/upload`、`/login`(SSE) 、`/getValidAccounts`、`/postVideo`、`/postVideoBatch` 等接口；PostHub 发布的能力真源。 |
+| **官方后端** | social-auto-upload 自带的 Flask 服务 `sau_backend.py`（含 `myUtils` / `uploader/*` / `conf.py` / 自带 `database.db`）。提供 `/upload`、`/login`(SSE)、`/getValidAccounts`、`/postVideo` 等官方接口；副本仍注册 `/postVideoBatch`，但组合层固定返回 410，PostHub 批量只走 `/postRuns`。 |
 | **官方前端** | social-auto-upload 自带的 `sau_frontend`（Vue 3）。PostHub 不直接使用，仅作为功能对照标准；PostHub 用 React 技术栈重写其功能。 |
 | **桌面壳** | PostHub 的 React 前端 + Tauri 2 打包。负责桌面交互，并通过组合入口启动官方后端与受限本机扩展；**不常驻托盘，点叉即关**。 |
 | **PostHub-owned 组合入口** | PostHub 侧唯一的后端组合边界：一次性初始化官方数据库、注册 PostHub-owned 路由与生命周期钩子，并返回可运行的官方 Flask 应用；重复调用必须幂等。它不替代官方发布执行，也不修改上游副本。 |

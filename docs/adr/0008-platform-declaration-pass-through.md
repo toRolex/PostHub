@@ -2,7 +2,7 @@
 
 - **状态**：已批准（grill-with-docs 收口）
 - **日期**：2026-08-21
-- **范围**：执行规范，含代码。PostHub 任务级 `platform_fields.<platform>` JSON 子键的命名与透传边界。
+- **范围**：执行规范，含代码。PostHub 任务级 `platformFields.<platform>` JSON 子键的命名与透传边界。
 
 ## 背景
 
@@ -35,7 +35,7 @@ PostHub 任务级 `platformFields` JSON 字段按 **CONTEXT.md glossary 已定�
 
 ### 决策二：内部枚举 + 中文文案映射
 
-PostHub 这层定义英文枚举值（`no_label` / `ai_generated` / `fictional` / ...），`daemon/sau_backend.py` 在调用 social-auto-upload 时映射成上游能识别的中文文案（如 `no_label → "无需标注"`）。
+PostHub 这层定义英文枚举值（`no_label` / `ai_generated` / `fictional` / ...），独立的 `daemon/posthub` wrapper 在委托 social-auto-upload 时映射成上游能识别的中文文案（如 `no_label → "无需标注"`）；官方 `sau_backend.py` 副本不承担该业务逻辑。
 
 不直接让前端传中文文案的理由：UI 文案随平台版本变动，存英文枚举可避免持久化数据失效。
 
@@ -73,4 +73,6 @@ social-auto-upload 上游支持度（实测）：
 - ADR-0001：历史 `platform_fields` JSON 字段位由本 ADR 收窄为 PostHub `platformFields` 输入
 - ADR-0006：约束「不 fork 上游」由本 ADR 决策三继承
 - `CONTEXT.md` glossary：内容声明 / 平台声明字段 / `platformFields.<platform>` / `declaration` / `source` / `origin` / 平台默认声明
+- `daemon/posthub/publish_adapter.py`：canonical `platformFields` 校验、账号默认合并与无可靠执行 seam 字段的 fail-closed gate
+- `daemon/posthub/uploader_wrapper.py`：仅负责已校验字段的官方调用适配，不修改官方副本
 - `docs/research/2026-08-21-three-platform-aigc-declaration-fields.md`：三家 UI 调研证据

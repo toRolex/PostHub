@@ -259,7 +259,7 @@ def test_get_account_defaults_returns_empty_dict_initially(
 def test_post_video_with_platform_fields_pass_through(
     backend: tuple[str, Path],
 ) -> None:
-    """issue #43：/postVideo 接受 platform_fields 字段。
+    """issue #43：/postVideo 接受 platformFields 字段。
 
     这里只验证 seam 接受该字段且校验失败时返 400（不会触发真实发布流程）。
     """

@@ -75,8 +75,6 @@ def _parse_publish_datetimes(raw: Any) -> list[datetime] | None:
 
 
 def _parse_daily_time(raw: Any) -> time:
-    if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 23:
-        return time(raw)
     if not isinstance(raw, str):
         raise TypeError("dailyTimes 必须是 HH:MM 字符串数组")
     value = time.fromisoformat(raw)

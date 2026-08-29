@@ -19,9 +19,9 @@ PostHub（中文「发布中枢」）—— 三平台短视频自动发布工具
 
 ## 关键术语
 
-- **账号（Account）**：绑定单平台、单本机 Chrome 调试端口
-- **任务（Task）**：一次发布动作，含 N 个平台子任务（Job）
-- **批次（Batch）**：文件夹 + `manifest.json` 的批量导入单元
+- **账号（Account）**：官方 `user_info` 行 + `cookiesFile/*.json` 登录态，绑定单平台；无独立 CDP Chrome/调试端口
+- **任务（Task）**：一次发布动作；立即/批量先由 `/postRuns` 受理，run worker 按账号粒度委托官方 `/postVideo`
+- **批次（Batch）**：前端矩阵条目集合；统一由 `/postRuns` 受理，`/postVideoBatch` 仅保留 410 废弃边界
 
 ## Agent skills
 

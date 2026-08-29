@@ -1191,3 +1191,11 @@
 - 变更 Python 文件 `uv run --with ruff ruff check ...` 与 `ruff format --check ...` 通过；daemon 全量 Ruff 仍包含官方副本/既有 `conf.py` 基线问题，未修改上游以保持 hash gate。
 - Tauri `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地忽略的空 resources 目录。
 - `shasum -a 256 daemon/sau_backend.py` → `6f2f49180cf24f17003ab7f50be5b098d472e735f765ec607e334becf41fc61d`；生产 web 无 prototype import、无请求级伪结果、无旧 batch API 调用。
+
+### Reviewer 复核（2026-08-29）
+
+- 已读取 reviewer 指令、Issue #100、`git diff develop..HEAD`、CONTEXT、CLAUDE、相关 ADR 与验收文档；当前审查重点为删除性 gate、accepted-only、官方副本边界、静态扫描和自动化验收。
+- 初步注意到 gate 仅按源码文本检查 prototype/import，且 `/postRuns` 定时 accepted 测试未等待 worker 终态；先运行完整自动化验收，再据实际失败/边界证据决定最小修补。
+- 自动化验收线通过：daemon `240 passed`、壳启停无残留、web `23 files / 246 tests`、typecheck/Vite build 通过。静态复核另发现 `publish_records._parse_daily_time()` 仍接受整数时间，以及 CLAUDE/ADR/声明模块注释残留旧模型表述；按删除性 gate 与文档同步要求补强拒绝测试并修正。
+- Red→Green：新增整数时间记录解析拒绝、生产 web 不得包含 `/postVideoBatch`/`itemResults`/`expandItemResults`、prototype import 静态 gate；移除记录回退解析的整数兼容。同步将 CLAUDE、CONTEXT、ADR-0001/0005/0008 与声明映射 docstring 标明当前 canonical/accepted-only/官方副本边界；gate 定向 `8 passed`，记录相关定向 `16 passed`。
+- 全量复验（修补后）：daemon `241 passed`；web `23 files / 246 tests passed`；web typecheck/Vite build、Tauri `17 passed`、相关 Ruff/format 与 `git diff --check` 均通过。web 保留既有 jsdom navigation stderr 非阻断噪声。

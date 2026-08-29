@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 from flask import Flask
-
 from posthub.composition import compose_posthub_backend, shutdown_posthub_backend
 from posthub.publish_adapter import NormalizationError, normalize_publish_payload
+from posthub.publish_records import _parse_daily_time
 from posthub.uploader_wrapper import _fields_for
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -147,17 +148,38 @@ def test_removed_legacy_declaration_context_shapes_are_rejected(
         _fields_for(legacy_context, 3)
 
 
+def test_removed_number_time_parser_rejects_legacy_values() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        _parse_daily_time(10)
+
+
 def test_official_copy_hash_is_pinned_and_prototype_is_not_in_source_bundle() -> None:
     official_path = ROOT / "daemon" / "sau_backend.py"
     actual = hashlib.sha256(official_path.read_bytes()).hexdigest()
     assert actual == OFFICIAL_SAU_BACKEND_SHA256
 
     source_root = ROOT.parent / "web" / "src"
-    source_files = list(source_root.rglob("*.ts")) + list(source_root.rglob("*.tsx"))
-    prototype_references = [
+    source_files = [
         path
-        for path in source_files
-        if "prototype" in path.read_text(encoding="utf-8").lower()
-        and "docs/prototypes" in path.read_text(encoding="utf-8").lower()
+        for path in source_root.rglob("*")
+        if path.is_file() and path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs"}
     ]
-    assert prototype_references == []
+    prototype_imports = []
+    import_pattern = re.compile(
+        r"(?:from\s+|import\s*\(|require\s*\()['\"][^'\"]*prototype(?:s)?/",
+        re.IGNORECASE,
+    )
+    for path in source_files:
+        text = path.read_text(encoding="utf-8")
+        if import_pattern.search(text):
+            prototype_imports.append(path)
+    assert prototype_imports == []
+
+    production_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in source_files
+        if not path.name.endswith(".test.ts") and not path.name.endswith(".test.tsx")
+    )
+    assert "postVideoBatch" not in production_text
+    assert "itemResults" not in production_text
+    assert "expandItemResults" not in production_text

@@ -1,8 +1,10 @@
 # ADR-0005: 调度与状态迁移规则单一真源（rules module）
 
-- **状态**：已批准（架构审查 #Candidate1「收敛双实现的状态迁移与调度规则」grilling 收口）
+- **状态**：历史设计，已由 ADR-0006/0009 supersede
 - **日期**：2026-08-16
-- **范围**：执行规范，含代码。将 `TaskStore` 双实现里的状态迁移与调度 frontier 规则收敛为纯函数单一真源；本 ADR 记录决策，代码实现随后的实现轮落地。
+- **范围**：历史执行规范，含代码。曾将已废弃自研 `TaskStore` 的状态迁移与调度 frontier 规则收敛为纯函数单一真源。
+
+> 本 ADR 保留作历史决策记录。当前不再使用 `TaskStore`、通用 scheduler 或其 rules/state 真源；批量由 `/postRuns` 受理，实际执行委托官方 `/postVideo`，当前边界以 ADR-0006、ADR-0008、ADR-0009 和 `CONTEXT.md` 为准。
 
 ## 背景
 
