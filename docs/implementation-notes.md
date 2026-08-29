@@ -1154,3 +1154,11 @@
 - 最终 web：`pnpm test -- --run` → `23 files / 249 tests passed`；`pnpm run build` → tsc 与 Vite 通过（1708 modules transformed）；保留既有 jsdom navigation stderr。
 - 最终 Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`。
 - #99 合并与全量验证通过；Windows `taskkill /F /T` 未在 Windows 实机验证，继续作为 concern 记录。
+
+### 本轮 Merger summarizing（2026-08-29）
+
+- 目标分支：`develop`；按 `96→97→99` 完成拓扑合并，merge commits 分别为 `75e300d`、`94a5a8d`、`94f399c`；另提交合并回归修复 `728badc`。
+- #96/#97/#99 均已关闭；对应 worktree 与本地分支均已通过 `wt remove afk/issue-{96,97,99} -D --foreground` 清理。
+- 最终验证：daemon `241 passed`；web `23 files / 249 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；runs.py Ruff/format 与 `git diff --check` 通过。
+- Windows `taskkill /F /T` 未实机验证，作为 concern 保留；web 既有 jsdom navigation stderr 非阻断。
+- 父 Issue #80 未关闭；全程未 push、未创建 PR。
