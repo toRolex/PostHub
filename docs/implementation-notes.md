@@ -873,3 +873,19 @@
 - 五个目标 Issue 均已关闭；对应 `afk/issue-89`、`91`、`92`、`93`、`94` worktree 与本地分支均已清理。
 - 各轮最终验证通过；最后一轮结果为 daemon `216 passed`、web `21 files / 232 tests passed`、web build 通过、Tauri lib `17 passed`/bin `0 tests`，Python Ruff 与冲突标记检查通过。
 - 全程未 push、未创建 PR；保留既有 web jsdom navigation stderr 作为非阻断测试噪声。
+
+## AFK Merger：#95/#98（2026-08-29）
+
+### 准备
+
+- 目标仓库：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop`，当前分支 `develop`，初始工作树干净；根仓库 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub` 的既有用户改动不触碰。
+- 待合入分支：`afk/issue-95`、`afk/issue-98`；严格按顺序执行 `git merge <branch> --no-edit`，不使用 squash、`-X`，不 push、不创建 PR。
+- 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；冲突仅逐侧读取后做最小整合。全部成功后清理对应 worktree/branch、关闭 #95/#98，并提交本轮 summarizing commit。
+
+### Deviations
+
+- 暂无。
+
+### 实现进展
+
+- 已完成目标仓库、分支和 worktree 初检；下一步获取 #95/#98 标题与 labels，随后提交本准备记录以满足 Git merge 工作树保护。
