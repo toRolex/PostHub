@@ -6,6 +6,7 @@ export type BatchRunItem = PrototypeBatchRunItem;
 export type BatchRun = PrototypeBatchRun;
 
 export const {
+  parseBatchRun,
   isRetryableItemStatus,
   isTerminalRunStatus,
   retryableItems,

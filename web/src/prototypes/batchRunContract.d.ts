@@ -36,7 +36,12 @@ declare global {
     error?: string;
   };
 
+  type PrototypeBatchRunParseResult =
+    | { ok: true; value: PrototypeBatchRun }
+    | { ok: false; error: string };
+
   var PostHubBatchRunContract: {
+    parseBatchRun(candidate: unknown): PrototypeBatchRunParseResult;
     isRetryableItemStatus(status: PrototypeItemStatus): boolean;
     isTerminalRunStatus(status: PrototypeRunStatus): boolean;
     retryableItems(items: readonly PrototypeBatchRunItem[]): PrototypeBatchRunItem[];
@@ -51,7 +56,7 @@ declare global {
     ): PrototypeBatchRun;
     mergePollResult(
       local: PrototypeBatchRun,
-      remote: PrototypeBatchRun,
+      remote: unknown,
     ): PrototypeBatchRun;
     getSyntheticRun(runId: string): PrototypeBatchRun;
   };

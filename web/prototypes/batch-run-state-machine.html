@@ -65,39 +65,68 @@
   </section>
 </main>
 
-<script src="./batch-run-contract.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  function showPrototypeError(message) {
+    const errorElement = document.getElementById('prototypeError');
+    if (!errorElement) return;
+    errorElement.textContent = message;
+    errorElement.style.display = 'block';
+  }
+
+  globalThis.showPrototypeError = showPrototypeError;
+  globalThis.prototypeContractLoadFailed = false;
+  globalThis.showPrototypeContractLoadError = () => {
+    globalThis.prototypeContractLoadFailed = true;
+    showPrototypeError('原型加载错误：共享 contract 请求失败。');
+  };
+  window.addEventListener('error', (event) => {
+    showPrototypeError(`原型加载错误：${event.message}`);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    showPrototypeError(`原型异步错误：${String(event.reason)}`);
+  });
+})();
+</script>
+<script src="./batch-run-contract.js" onerror="showPrototypeContractLoadError()"></script>
 <script>
 (() => {
   'use strict';
 
   const STORAGE_VERSION = 1;
   const STORAGE_KEY = 'posthub-prototype-batch-run-v1';
+  const errorElement = document.getElementById('prototypeError');
+  const showError = globalThis.showPrototypeError;
+  const REQUIRED_CONTRACT_METHODS = [
+    'parseBatchRun',
+    'getSyntheticRun',
+    'isTerminalRunStatus',
+    'retryRun',
+    'mergePollResult',
+  ];
   const contract = globalThis.PostHubBatchRunContract;
-  const ITEM_STATUSES = new Set(['pending', 'running', 'success', 'failure', 'skipped', 'interrupted', 'invalid']);
-  const RUN_STATUSES = new Set(['running', 'completed', 'completed_with_failures', 'interrupted', 'invalid']);
+  if (!contract || REQUIRED_CONTRACT_METHODS.some((name) => typeof contract[name] !== 'function')) {
+    if (!globalThis.prototypeContractLoadFailed) {
+      showError('原型加载错误：共享 contract 未导出预期接口。');
+    }
+    return;
+  }
 
-  let run = contract.getSyntheticRun('run-101');
+  let run;
+  try {
+    run = contract.getSyntheticRun('run-101');
+  } catch (error) {
+    showError(`原型初始化错误：${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   let log = '已加载 synthetic run-101';
   const statePanel = document.getElementById('statePanel');
   const items = document.getElementById('items');
   const logElement = document.getElementById('log');
-  const errorElement = document.getElementById('prototypeError');
 
-  function showError(message) { errorElement.textContent = message; errorElement.style.display = 'block'; }
   function clearError() { errorElement.textContent = ''; errorElement.style.display = 'none'; }
-
-  function validateRun(candidate, requireVersion) {
-    if (!candidate || typeof candidate !== 'object') return '快照不是对象';
-    if (requireVersion && candidate.version !== STORAGE_VERSION) return `不支持的快照版本：${String(candidate.version)}`;
-    if (typeof candidate.runId !== 'string' || candidate.runId.trim() === '') return '快照缺少 runId';
-    if (!RUN_STATUSES.has(candidate.status)) return `未知 run 状态：${String(candidate.status)}`;
-    if (!Array.isArray(candidate.items)) return '快照缺少 items 数组';
-    for (const item of candidate.items) {
-      if (!item || typeof item.id !== 'string' || typeof item.file !== 'string') return '快照 item 缺少 id/file';
-      if (!ITEM_STATUSES.has(item.status)) return `未知 item 状态：${String(item.status)}`;
-    }
-    return null;
-  }
 
   function safeStorage(operation, action) {
     try {
@@ -121,17 +150,53 @@
       showError(`快照 JSON 已损坏：${error instanceof Error ? error.message : String(error)}\n请点击“清理损坏快照”。`);
       return null;
     }
-    const validationError = validateRun(parsed, true);
-    if (validationError) {
-      showError(`拒绝恢复旧版本或错误 schema：${validationError}\n请点击“清理损坏快照”。`);
+    if (!parsed || typeof parsed !== 'object' || parsed.version !== STORAGE_VERSION) {
+      showError(`拒绝恢复旧版本或错误 schema：不支持的快照版本：${String(parsed?.version)}\n请点击“清理损坏快照”。`);
       return null;
     }
-    return parsed;
+    const validation = contract.parseBatchRun(parsed.run);
+    if (!validation.ok) {
+      showError(`拒绝恢复旧版本或错误 schema：${validation.error}\n请点击“清理损坏快照”。`);
+      return null;
+    }
+    return validation.value;
   }
 
   function render() {
-    statePanel.innerHTML = `<dt>runId</dt><dd>${run.runId}</dd><dt>parentRunId</dt><dd>${run.parentRunId || '—'}</dd><dt>status</dt><dd>${run.status}</dd><dt>pollTimerActive</dt><dd>${contract.isTerminalRunStatus(run.status) ? 'false' : 'true'}</dd>`;
-    items.innerHTML = `<table><thead><tr><th>文件</th><th>状态</th><th>原因</th></tr></thead><tbody>${run.items.map((item) => `<tr><td>${item.file}</td><td><span class="pill ${item.status}">${item.status}</span></td><td>${item.reason || ''}</td></tr>`).join('')}</tbody></table>`;
+    statePanel.replaceChildren();
+    for (const [label, value] of [
+      ['runId', run.runId],
+      ['parentRunId', run.parentRunId || '—'],
+      ['status', run.status],
+      ['pollTimerActive', contract.isTerminalRunStatus(run.status) ? 'false' : 'true'],
+    ]) {
+      const term = document.createElement('dt');
+      term.textContent = label;
+      const detail = document.createElement('dd');
+      detail.textContent = value;
+      statePanel.append(term, detail);
+    }
+
+    const table = document.createElement('table');
+    const head = table.createTHead();
+    const headRow = head.insertRow();
+    for (const label of ['文件', '状态', '原因']) {
+      const cell = document.createElement('th');
+      cell.textContent = label;
+      headRow.append(cell);
+    }
+    const body = table.createTBody();
+    for (const item of run.items) {
+      const row = body.insertRow();
+      row.insertCell().textContent = item.file;
+      const statusCell = row.insertCell();
+      const status = document.createElement('span');
+      status.className = `pill ${item.status}`;
+      status.textContent = item.status;
+      statusCell.append(status);
+      row.insertCell().textContent = item.reason || '';
+    }
+    items.replaceChildren(table);
     logElement.textContent = log + (run.error ? `\n${run.error}` : '');
   }
 
@@ -148,7 +213,7 @@
         log = `迟到 running 合并：${before} → ${run.status}（终态不回退）`;
       }
       if (action === 'save') {
-        const saved = safeStorage('写入', (storage) => { storage.setItem(STORAGE_KEY, JSON.stringify({ ...run, version:STORAGE_VERSION })); return true; });
+        const saved = safeStorage('写入', (storage) => { storage.setItem(STORAGE_KEY, JSON.stringify({ version:STORAGE_VERSION, run })); return true; });
         if (saved) log = `已保存 synthetic ${run.runId}`;
       }
       if (action === 'restore') {
@@ -174,8 +239,6 @@
     button.addEventListener('click', () => handleAction(button.dataset.action));
   });
 
-  window.addEventListener('error', (event) => showError(`原型加载错误：${event.message}`));
-  window.addEventListener('unhandledrejection', (event) => showError(`原型异步错误：${String(event.reason)}`));
   render();
 })();
 </script>

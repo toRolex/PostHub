@@ -26,11 +26,23 @@ describe("standalone Logic 原型", () => {
     }
   });
 
+  it("在外部 contract 前安装错误处理，并复用共享 run validator", () => {
+    const externalContract = '<script src="./batch-run-contract.js"';
+    const errorBootstrap = "globalThis.showPrototypeError";
+
+    expect(html.indexOf(errorBootstrap)).toBeGreaterThan(-1);
+    expect(html.indexOf(errorBootstrap)).toBeLessThan(html.indexOf(externalContract));
+    expect(html).toContain('onerror="showPrototypeContractLoadError()"');
+    expect(html).toContain("contract.parseBatchRun");
+    expect(html).not.toContain("function validateRun");
+  });
+
   it("提供加载错误、storage 错误与快照清理反馈", () => {
     expect(html).toContain('id="prototypeError"');
-    expect(html).toContain('<script src="./batch-run-contract.js"></script>');
+    expect(html).toContain('<script src="./batch-run-contract.js" onerror="showPrototypeContractLoadError()"></script>');
     expect(html).toContain("const STORAGE_VERSION = 1");
-    expect(html).toContain("candidate.version !== STORAGE_VERSION");
+    expect(html).toContain("parsed.version !== STORAGE_VERSION");
+    expect(html).toContain("contract.parseBatchRun(parsed.run)");
     expect(html).toContain("localStorage 不可用");
     expect(html).toContain("清理损坏快照");
     expect(html).toContain("模拟恢复");

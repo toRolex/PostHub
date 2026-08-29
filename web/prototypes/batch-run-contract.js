@@ -17,6 +17,7 @@
     "interrupted",
     "invalid",
   ]);
+  const PLATFORMS = new Set(["douyin", "xiaohongshu", "wechat"]);
   const RETRYABLE_ITEM_STATUSES = new Set([
     "failure",
     "skipped",
@@ -40,6 +41,80 @@
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function requiredString(value, path) {
+    if (typeof value !== "string" || value.trim() === "") {
+      return `${path} 必须是非空字符串`;
+    }
+    return null;
+  }
+
+  function optionalString(value, path) {
+    if (value !== undefined && typeof value !== "string") {
+      return `${path} 必须是字符串`;
+    }
+    return null;
+  }
+
+  function parseBatchRun(candidate) {
+    try {
+      if (!isObject(candidate)) {
+        return { ok: false, error: "run 必须是对象" };
+      }
+
+      const runIdError = requiredString(candidate.runId, "runId");
+      if (runIdError) return { ok: false, error: runIdError };
+      if (!RUN_STATUSES.has(candidate.status)) {
+        return { ok: false, error: `未知 run 状态：${String(candidate.status)}` };
+      }
+      if (!Array.isArray(candidate.items)) {
+        return { ok: false, error: "items 必须是数组" };
+      }
+
+      for (const field of ["parentRunId", "error"]) {
+        const fieldError = optionalString(candidate[field], field);
+        if (fieldError) return { ok: false, error: fieldError };
+      }
+
+      const itemIds = new Set();
+      for (let index = 0; index < candidate.items.length; index += 1) {
+        const item = candidate.items[index];
+        const path = `items[${index}]`;
+        if (!isObject(item)) {
+          return { ok: false, error: `${path} 必须是对象` };
+        }
+        for (const field of ["id", "file", "account", "scheduled"]) {
+          const fieldError = requiredString(item[field], `${path}.${field}`);
+          if (fieldError) return { ok: false, error: fieldError };
+        }
+        if (!PLATFORMS.has(item.platform)) {
+          return { ok: false, error: `未知 platform：${String(item.platform)}` };
+        }
+        if (!ITEM_STATUSES.has(item.status)) {
+          return { ok: false, error: `未知 item 状态：${String(item.status)}` };
+        }
+        for (const field of ["reason", "retriedFrom"]) {
+          const fieldError = optionalString(item[field], `${path}.${field}`);
+          if (fieldError) return { ok: false, error: fieldError };
+        }
+        if (itemIds.has(item.id)) {
+          return { ok: false, error: `重复 item ID：${item.id}` };
+        }
+        itemIds.add(item.id);
+      }
+
+      return { ok: true, value: candidate };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `run 校验失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   function isRetryableItemStatus(status) {
@@ -80,52 +155,60 @@
     };
   }
 
-  function invalidRun(local, message, invalidItem) {
+  function invalidRun(local, message) {
     return {
       ...local,
       status: "invalid",
       error: message,
-      items: invalidItem
-        ? local.items.map((item) =>
-            item.id === invalidItem.id
-              ? { ...item, status: "invalid", reason: message }
-              : item,
-          )
-        : local.items,
     };
   }
 
-  function mergePollResult(local, remote) {
-    if (!RUN_STATUSES.has(remote.status)) {
-      return invalidRun(local, `未知 run 状态：${String(remote.status)}`);
+  function sameItemIds(localItems, remoteItems) {
+    if (localItems.length !== remoteItems.length) return false;
+    const localIds = new Set(localItems.map((item) => item.id));
+    return remoteItems.every((item) => localIds.has(item.id));
+  }
+
+  function mergedReason(localItem, remoteItem) {
+    if (remoteItem.reason !== undefined) return remoteItem.reason;
+    if (localItem.status === "failure" && remoteItem.status !== "failure") {
+      return undefined;
     }
-    const invalidRemoteItem = remote.items.find(
-      (item) => !ITEM_STATUSES.has(item.status),
-    );
-    if (invalidRemoteItem) {
+    return isRetryableItemStatus(remoteItem.status) ? localItem.reason : undefined;
+  }
+
+  function mergePollResult(local, remoteInput) {
+    const parsed = parseBatchRun(remoteInput);
+    if (!parsed.ok) return invalidRun(local, parsed.error);
+
+    const remote = parsed.value;
+    if (remote.runId !== local.runId) {
       return invalidRun(
         local,
-        `未知 item 状态：${String(invalidRemoteItem.status)}`,
-        invalidRemoteItem,
+        `poll runId 不匹配：期望 ${local.runId}，收到 ${remote.runId}`,
       );
+    }
+    if (!sameItemIds(local.items, remote.items)) {
+      return invalidRun(local, "poll item ID 集合不完整或包含未知 item");
     }
     if (isTerminalRunStatus(local.status)) return local;
 
     const remoteById = new Map(remote.items.map((item) => [item.id, item]));
     const items = local.items.map((localItem) => {
       const remoteItem = remoteById.get(localItem.id);
-      if (!remoteItem) return localItem;
       return {
         ...localItem,
         ...remoteItem,
-        reason:
-          remoteItem.reason ??
-          (isRetryableItemStatus(remoteItem.status)
-            ? localItem.reason
-            : undefined),
+        reason: mergedReason(localItem, remoteItem),
       };
     });
-    return { ...local, ...remote, items };
+    return {
+      ...local,
+      ...remote,
+      runId: local.runId,
+      parentRunId: local.parentRunId,
+      items,
+    };
   }
 
   function getSyntheticRun(runId) {
@@ -159,6 +242,7 @@
   }
 
   global.PostHubBatchRunContract = Object.freeze({
+    parseBatchRun,
     isRetryableItemStatus,
     isTerminalRunStatus,
     retryableItems,
