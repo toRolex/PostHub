@@ -865,4 +865,11 @@
 - `git merge afk/issue-94 --no-edit` 仅冲突于 `daemon/tests/test_runs.py` 导入与本笔记；保留 #92 dispatcher、#93 部分成功/诊断，以及 #94 的 dedupe key、SQLite partial unique index、400/409 与前端 existingRunId 处理；未使用 `-X`。
 - 导入冲突已合并 `FailClosedUploader`、`ActiveRunConflict`、`DuplicateSubmissionError` 等两侧符号；笔记保留 #92 与 #94 全部实现/审查记录。
 - 合并后全量验证：daemon `uv run pytest -q` → `216 passed`；web `pnpm test -- --run` → `21 files / 232 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；#94 Python Ruff check/format 通过。
-- 下一步：提交 #94 merge commit，随后清理并关闭 #94；全部分支完成后再写 summarizing commit。
+- 已生成 #94 merge commit `989e175`；随后清理并关闭 #94。
+
+### 本轮 Merger summarizing（2026-08-29）
+
+- 目标分支：`develop`；#89、#91、#93 已判定 already up to date 并逐项完成全量验证，#92 生成 `589388b`，#94 生成 `989e175`。
+- 五个目标 Issue 均已关闭；对应 `afk/issue-89`、`91`、`92`、`93`、`94` worktree 与本地分支均已清理。
+- 各轮最终验证通过；最后一轮结果为 daemon `216 passed`、web `21 files / 232 tests passed`、web build 通过、Tauri lib `17 passed`/bin `0 tests`，Python Ruff 与冲突标记检查通过。
+- 全程未 push、未创建 PR；保留既有 web jsdom navigation stderr 作为非阻断测试噪声。
