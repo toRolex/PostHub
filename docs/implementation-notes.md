@@ -1162,3 +1162,13 @@
 - 最终验证：daemon `241 passed`；web `23 files / 249 tests passed`；web build 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；runs.py Ruff/format 与 `git diff --check` 通过。
 - Windows `taskkill /F /T` 未实机验证，作为 concern 保留；web 既有 jsdom navigation stderr 非阻断。
 - 父 Issue #80 未关闭；全程未 push、未创建 PR。
+
+## AFK Merger：#100（2026-08-29）
+
+### 准备
+
+- 目标仓库：`/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.develop`，当前分支 `develop`，初始工作树干净；根仓库 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub` 的既有用户改动不触碰。
+- 待处理分支：`afk/issue-100`；严格执行 `git merge afk/issue-100 --no-edit`，只做本地拓扑合并，不 squash、不使用 `-X`，不 push、不创建 PR。
+- Issue #100 当前 OPEN，标签为 `ready-for-agent`；父 PRD #80 当前 OPEN，阻塞列表已全部完成（#83/#84/#88/#89/#91/#92/#96/#97/#98/#99 均已关闭）。
+- 分支 tip `0021626` 已是 develop 的祖先；仍按模板执行 merge 命令，若结果为 already up to date 则不伪造 merge commit。
+- 每个实际 merge 后立即运行 daemon、web、build、Tauri 全量验证；本轮保留真实四平台账号与 Windows `taskkill` 未实测 concern，不以本地 fake 验证冒充真实平台验收。
