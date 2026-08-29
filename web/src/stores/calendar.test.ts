@@ -59,4 +59,45 @@ describe("账号日历 store", () => {
       loading: false,
     });
   });
+
+  it("较早周查询的迟到响应不会覆盖较新周", async () => {
+    let resolveOld!: (value: typeof record[]) => void;
+    let resolveNew!: (value: typeof record[]) => void;
+    const oldResponse = new Promise<typeof record[]>((resolve) => {
+      resolveOld = resolve;
+    });
+    const newRecord = {
+      ...record,
+      id: 2,
+      effectiveScheduledFor: "2026-09-07 10:00:00",
+      scheduledFor: "2026-09-07 10:00:00",
+    };
+    const newResponse = new Promise<typeof record[]>((resolve) => {
+      resolveNew = resolve;
+    });
+    vi.spyOn(officialApi, "getPublishRecords")
+      .mockImplementationOnce(() => oldResponse)
+      .mockImplementationOnce(() => newResponse);
+
+    const oldFetch = useCalendarStore
+      .getState()
+      .fetchRecords("http://127.0.0.1:5409", "2026-08-31", "2026-09-06");
+    const newFetch = useCalendarStore
+      .getState()
+      .fetchRecords("http://127.0.0.1:5409", "2026-09-07", "2026-09-13");
+
+    resolveOld([record]);
+    await oldFetch;
+    expect(useCalendarStore.getState().records).toEqual([]);
+
+    resolveNew([newRecord]);
+    await newFetch;
+    expect(useCalendarStore.getState()).toMatchObject({
+      records: [newRecord],
+      from: "2026-09-07",
+      to: "2026-09-13",
+      loading: false,
+      error: "",
+    });
+  });
 });

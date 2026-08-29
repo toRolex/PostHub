@@ -69,7 +69,7 @@ export function buildCalendarRows(
   records: PublishRecord[],
 ): CalendarAccount[] {
   const rows = new Map<string, CalendarAccount>();
-  for (const account of accounts) rows.set(calendarAccountKey(account), account);
+  // 历史快照优先：当前账号可能已改名或换平台，不能覆盖记录当时的展示值。
   for (const record of records) {
     const key = recordAccountKey(record);
     if (!rows.has(key)) {
@@ -80,6 +80,10 @@ export function buildCalendarRows(
         platform: record.platform,
       });
     }
+  }
+  for (const account of accounts) {
+    const key = calendarAccountKey(account);
+    if (!rows.has(key)) rows.set(key, account);
   }
   return [...rows.values()].sort((a, b) =>
     `${a.name}${a.file}`.localeCompare(`${b.name}${b.file}`),

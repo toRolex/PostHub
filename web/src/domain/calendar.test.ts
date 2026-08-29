@@ -55,4 +55,16 @@ describe("账号周日历日期与分桶", () => {
     const buckets = recordsByAccountDate(records);
     expect(buckets.get("1|2026-08-31")).toEqual(records);
   });
+
+  it("账号改名或换平台后仍以历史记录快照作为日历行", () => {
+    const currentAccount: CalendarAccount = {
+      id: 1,
+      file: "douyin.json",
+      name: "新名称",
+      platform: "wechat",
+    };
+    expect(buildCalendarRows([currentAccount], records)).toEqual([
+      { id: 1, file: "douyin.json", name: "抖音号", platform: "douyin" },
+    ]);
+  });
 });

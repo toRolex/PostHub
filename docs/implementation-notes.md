@@ -908,3 +908,13 @@
 - Tauri：`cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 resources 目录，未入 Git。
 - Python：涉及文件 `uv run --project daemon --with ruff ruff check`、`ruff format --check`、`git diff --check` 均通过；web 测试保留既有 jsdom navigation stderr。
 - Deviations：尝试启动独立 HTTP runtime 验证服务时被当前执行权限拦截，未以此宣称 runtime 通过；daemon HTTP/记录行为由临时 Flask seam 测试覆盖，未触发真实平台发布。
+
+### Reviewer 复核与修补（2026-08-29）
+
+- 全量复验：daemon `220 passed`；web `23 files / 237 tests passed`；web build、Tauri `17 passed` 均通过。
+- 发现 P1：账号改名后，`buildCalendarRows` 先写当前账号，导致历史记录的显示名/平台快照被当前账号覆盖，违反历史不随账号改名变化；另发现周导航并发查询时旧响应可覆盖新周数据。
+- 修复计划：日历行以记录快照优先、当前账号仅补充无历史记录的行；calendar store 以递增请求序列丢弃过期成功/失败响应，并补回归测试。
+- Green：`buildCalendarRows` 先写历史记录快照，再补当前账号；calendar store 用单调请求序列保护成功与失败分支，旧周响应不再覆盖新周。
+- 回归测试：账号改名/换平台仍显示历史快照；周导航并发查询的迟到响应被丢弃。
+- 最终验证：daemon `220 passed`；web `23 files / 239 tests passed`；`pnpm run build` 通过；Tauri lib `17 passed`、bin `0 tests`；`git diff --check` 通过。保留既有 jsdom navigation stderr。
+- 结论：已修复 P1，未修改官方源码；准备提交 `refine:`，不 push、merge 或关闭 Issue #98。
