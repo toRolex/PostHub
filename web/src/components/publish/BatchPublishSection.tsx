@@ -12,6 +12,7 @@ import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
 import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
+import { useRunStore } from "../../stores/runs";
 import type { Platform, PlatformFields } from "../../api/types";
 import { PLATFORM_NAMES, PLATFORMS } from "../../api/platformNames";
 import { cn } from "../../lib/utils";
@@ -186,6 +187,8 @@ export function BatchPublishSection() {
   const accounts = useAccountsStore((s) => s.accounts);
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const connected = useDaemonStore((s) => s.connected);
+  const daemonUrl = useDaemonStore((s) => s.url);
+  const openRun = useRunStore((s) => s.openRun);
 
   const items = useBatchPublishStore((s) => s.items);
   const dailyTimes = useBatchPublishStore((s) => s.dailyTimes);
@@ -741,6 +744,16 @@ export function BatchPublishSection() {
                   </span>
                 </p>
                 {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
+                {r.existingRunId && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="mt-1 h-7 px-2"
+                    onClick={() => void openRun(daemonUrl, r.existingRunId!)}
+                  >
+                    打开已有 run
+                  </Button>
+                )}
               </div>
             </div>
           ))}

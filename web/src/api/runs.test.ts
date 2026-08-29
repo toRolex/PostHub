@@ -57,6 +57,35 @@ describe("accepted run API", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(payload);
   });
 
+  it("acceptRun 409 保留 HTTP status/code/data 中的 existingRunId", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response(
+          {
+            code: 409,
+            msg: "已有相同视频×账号的运行正在执行",
+            data: { existingRunId: "run-existing" },
+          },
+          false,
+          409,
+        ),
+      ),
+    );
+
+    try {
+      await officialApi.acceptRun("http://127.0.0.1:5409", PAYLOAD);
+      throw new Error("expected acceptRun to reject");
+    } catch (error) {
+      expect(error).toMatchObject({
+        message: "已有相同视频×账号的运行正在执行",
+        status: 409,
+        code: 409,
+        data: { existingRunId: "run-existing" },
+      });
+    }
+  });
+
   it("查询 API 保留 completed_with_failures、seq 与错误详情", async () => {
     const snapshot = {
       runId: "run-partial",

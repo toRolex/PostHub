@@ -41,6 +41,19 @@ describe("run store（查询 API 是生命周期事实来源）", () => {
     expect(JSON.parse(localStorage.getItem(LATEST_RUN_ID_KEY)!)).toBe("run-1");
   });
 
+  it("打开 409 返回的已有 run，并以查询结果切换当前详情", async () => {
+    vi.spyOn(officialApi, "getRun").mockResolvedValue(SNAPSHOT);
+
+    await useRunStore.getState().openRun("http://127.0.0.1:5409", "run-existing");
+
+    expect(officialApi.getRun).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409",
+      "run-existing",
+    );
+    expect(useRunStore.getState().runId).toBe("run-1");
+    expect(useRunStore.getState().snapshot?.items[0].status).toBe("success");
+  });
+
   it("刷新恢复最近 run，并以查询结果更新为 completed/success", async () => {
     vi.spyOn(officialApi, "getLatestRun").mockResolvedValue(SNAPSHOT);
 

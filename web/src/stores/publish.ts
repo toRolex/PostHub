@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import { officialApi, buildPostVideoRequest } from "../api/official";
+import {
+  officialApi,
+  buildPostVideoRequest,
+  existingRunIdFromError,
+} from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
@@ -115,7 +119,9 @@ export interface PublishFormValues {
 interface PublishState extends PublishFormValues {
   submitting: boolean;
   /** 各平台受理结果（ok 表示请求已受理，不表示 item 已发布成功）。key = 平台。 */
-  results: Partial<Record<Platform, { ok: boolean; msg: string; runId?: string }>>;
+  results: Partial<
+    Record<Platform, { ok: boolean; msg: string; runId?: string; existingRunId?: string }>
+  >;
   setForm: (patch: PublishPatch) => void;
   setPlatforms: (platforms: Platform[], accounts: Account[]) => void;
   /** 定时设置页：整体写入默认定时配置并持久化到 localStorage。 */
@@ -289,10 +295,17 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
               results[p] = { ok: true, msg: "发布任务已提交" };
             }
           } catch (e) {
-            results[p] = {
-              ok: false,
-              msg: e instanceof Error ? e.message : String(e),
-            };
+            const existingRunId = existingRunIdFromError(e);
+            results[p] = existingRunId
+              ? {
+                  ok: false,
+                  msg: `本次未受理：已有运行 ${existingRunId}`,
+                  existingRunId,
+                }
+              : {
+                  ok: false,
+                  msg: e instanceof Error ? e.message : String(e),
+                };
           }
         }
         set({ results });

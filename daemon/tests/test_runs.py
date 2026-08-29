@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,7 +19,13 @@ from posthub.publish_adapter import (
     normalize_publish_payload,
     normalize_publish_payloads,
 )
-from posthub.runs import FailClosedUploader, RunStore, RunWorker
+from posthub.runs import (
+    ActiveRunConflict,
+    DuplicateSubmissionError,
+    FailClosedUploader,
+    RunStore,
+    RunWorker,
+)
 
 
 @pytest.fixture
@@ -110,7 +117,10 @@ def test_accept_immediate_batch_creates_one_run_with_all_effective_items(
     run_app: tuple[Flask, Path],
 ) -> None:
     app, _official_db = run_app
-    payload = [immediate_payload(), {**immediate_payload(), "title": "第二个 item"}]
+    payload = [
+        immediate_payload(),
+        {**immediate_payload(), "fileList": ["video-2.mp4"], "title": "第二个 item"},
+    ]
 
     with app.test_client() as client:
         response = client.post("/postRuns", json=payload)
@@ -716,9 +726,9 @@ def test_worker_continues_after_one_item_failure_and_aggregates_partial_success(
         "default_platform_fields": None,
     }
     payloads = [
-        immediate_payload(),
-        {**immediate_payload(), "title": "失败 item"},
-        {**immediate_payload(), "title": "成功 item"},
+        {**immediate_payload(), "fileList": ["video-1.mp4"]},
+        {**immediate_payload(), "fileList": ["video-2.mp4"], "title": "失败 item"},
+        {**immediate_payload(), "fileList": ["video-3.mp4"], "title": "成功 item"},
     ]
     normalized = normalize_publish_payloads(payloads, [account])
     run_id = store.create_run(normalized.effective)
@@ -771,8 +781,8 @@ def test_run_detail_returns_items_in_seq_order_with_queryable_error_detail(
     }
     normalized = normalize_publish_payloads(
         [
-            {**immediate_payload(), "title": "第三"},
-            {**immediate_payload(), "title": "第一"},
+            {**immediate_payload(), "fileList": ["video-3.mp4"], "title": "第三"},
+            {**immediate_payload(), "fileList": ["video-1.mp4"], "title": "第一"},
         ],
         [account],
     )
@@ -841,12 +851,162 @@ def test_old_run_schema_migrates_to_partial_completion_status(tmp_path: Path) ->
     assert "completed_with_failures" in sql
 
 
+def test_old_schema_duplicate_active_items_are_quarantined_and_release_key_after_completion(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "old-duplicate-runs.db"
+    effective = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "旧重复 item",
+        "tags": [],
+        "enableTimer": False,
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE run_items (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed')),
+                submitted_json TEXT NOT NULL,
+                effective_json TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO runs VALUES ('run-old', 'running', 'a', 'a', NULL);
+            """
+        )
+        for ordinal in range(2):
+            conn.execute(
+                "INSERT INTO run_items VALUES (?, 'run-old', ?, 'pending', ?, ?, NULL, 'a', 'a')",
+                (
+                    f"item-old-{ordinal}",
+                    ordinal,
+                    json.dumps(effective),
+                    json.dumps(effective),
+                ),
+            )
+        conn.commit()
+
+    store = RunStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        active = conn.execute(
+            "SELECT status, dedupe_key FROM run_items WHERE status = 'pending'"
+        ).fetchall()
+        quarantined = conn.execute(
+            "SELECT status, dedupe_key, error FROM run_items WHERE status = 'failed'"
+        ).fetchone()
+    assert len(active) == 1
+    assert active[0][1]
+    assert quarantined is not None
+    assert quarantined[1]
+    assert "迁移" in quarantined[2]
+
+    with pytest.raises(ActiveRunConflict, match="已有相同视频×账号"):
+        store.create_run(
+            (
+                normalize_publish_payload(
+                    effective,
+                    [
+                        {
+                            "id": 1,
+                            "type": 3,
+                            "filePath": "douyin.json",
+                            "userName": "抖音测试号",
+                            "status": 1,
+                            "default_platform_fields": None,
+                        }
+                    ],
+                ).effective[0],
+            )
+        )
+
+    claimed = store.claim_next_item("migration-owner")
+    assert claimed is not None
+    store.finish_item("run-old", claimed[1], owner_token="migration-owner")
+    released = normalize_publish_payload(
+        effective,
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    ).effective[0]
+    assert store.create_run((released,)) != "run-old"
+
+
+def test_existing_dedupe_keys_are_reconciled_before_unique_index_creation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "partially-migrated-runs.db"
+    effective = {
+        "fileList": ["video.mp4"],
+        "accountList": ["douyin.json"],
+        "type": 3,
+        "title": "重复活动 item",
+        "tags": [],
+        "enableTimer": False,
+    }
+    RunStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP INDEX idx_run_items_active_dedupe")
+        conn.execute(
+            "INSERT INTO runs (id, status, created_at, updated_at) VALUES (?, 'pending', ?, ?)",
+            ("run-partial", "2026-08-29T00:00:00+00:00", "2026-08-29T00:00:00+00:00"),
+        )
+        for ordinal in range(2):
+            conn.execute(
+                """
+                INSERT INTO run_items (
+                    id, run_id, ordinal, status, submitted_json, effective_json,
+                    dedupe_key, created_at, updated_at
+                ) VALUES (?, 'run-partial', ?, 'pending', ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"item-partial-{ordinal}",
+                    ordinal,
+                    json.dumps(effective),
+                    json.dumps(effective),
+                    '["video.mp4","douyin.json"]',
+                    f"2026-08-29T00:00:0{ordinal}+00:00",
+                    f"2026-08-29T00:00:0{ordinal}+00:00",
+                ),
+            )
+        conn.commit()
+
+    RunStore(db_path)
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT status, dedupe_key FROM run_items ORDER BY ordinal"
+        ).fetchall()
+    assert rows[0][0] == "pending"
+    assert rows[1][0] == "failed"
+    assert rows[0][1] == rows[1][1] == '["video.mp4","douyin.json"]'
+
+
 def test_mixed_immediate_timer_run_detail_matches_fake_uploader_effective_payload(
     tmp_path: Path,
 ) -> None:
-    immediate = immediate_payload()
+    immediate = {**immediate_payload(), "fileList": ["immediate.mp4"]}
     timer = {
-        **immediate,
+        **immediate_payload(),
+        "fileList": ["timer.mp4"],
         "title": "分钟定时",
         "enableTimer": True,
         "videosPerDay": 1,
@@ -960,6 +1120,140 @@ def test_platform_rejection_only_fails_current_item_and_next_item_runs(
     assert [item["status"] for item in detail["items"]] == ["failed", "success"]
     assert detail["items"][0]["error"] == "平台拒绝当前 item"
     assert detail["items"][1]["error"] is None
+
+
+def test_duplicate_video_account_within_one_submission_is_rejected_before_run(
+    run_app: tuple[Flask, Path],
+) -> None:
+    app, official_db = run_app
+    payload = immediate_payload()
+
+    with app.test_client() as client:
+        response = client.post("/postRuns", json=[payload, {**payload}])
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["code"] == 400
+    assert "重复视频×账号" in body["msg"]
+    assert body["data"] is None
+    run_db = official_db.parent / "posthub-runs.db"
+    with sqlite3.connect(run_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM run_items").fetchone()[0] == 0
+
+
+def test_post_runs_conflict_preserves_http_status_code_and_existing_run_id(
+    run_app: tuple[Flask, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, _official_db = run_app
+    service = app.extensions["_posthub_run_service"]
+
+    def raise_conflict(_items: object) -> str:
+        raise ActiveRunConflict("run-existing", "video.mp4 × douyin.json")
+
+    monkeypatch.setattr(service["store"], "create_run", raise_conflict)
+
+    with app.test_client() as client:
+        response = client.post("/postRuns", json=immediate_payload())
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "code": 409,
+        "msg": "已有相同视频×账号的运行正在执行：video.mp4 × douyin.json",
+        "data": {"existingRunId": "run-existing"},
+    }
+
+
+def test_concurrent_connections_use_sqlite_single_flight_and_return_existing_run(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "posthub-runs.db"
+    first_store = RunStore(db_path)
+    second_store = RunStore(db_path)
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+    barrier = threading.Barrier(2)
+
+    def submit(store: RunStore) -> tuple[str, str | None]:
+        barrier.wait()
+        try:
+            return "accepted", store.create_run(normalized.effective)
+        except ActiveRunConflict as err:
+            return "conflict", err.existing_run_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(submit, (first_store, second_store)))
+
+    assert sorted(result[0] for result in results) == ["accepted", "conflict"]
+    accepted_id = next(result[1] for result in results if result[0] == "accepted")
+    conflict_id = next(result[1] for result in results if result[0] == "conflict")
+    assert accepted_id == conflict_id
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM run_items").fetchone()[0] == 1
+
+
+def test_conflict_rolls_back_all_items_from_the_rejected_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "runs.db"
+    account = {
+        "id": 1,
+        "type": 3,
+        "filePath": "douyin.json",
+        "userName": "抖音测试号",
+        "status": 1,
+        "default_platform_fields": None,
+    }
+    normalized = normalize_publish_payloads(
+        [
+            {**immediate_payload(), "fileList": ["video-existing.mp4"]},
+            {**immediate_payload(), "fileList": ["video-new.mp4"], "title": "新 item"},
+        ],
+        [account],
+    )
+    first_store = RunStore(db_path)
+    first_store.create_run((normalized.effective[0],))
+
+    with pytest.raises(ActiveRunConflict):
+        RunStore(db_path).create_run((normalized.effective[1], normalized.effective[0]))
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM run_items").fetchone()[0] == 1
+
+
+def test_store_rejects_duplicate_video_account_even_without_http_route(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.db")
+    normalized = normalize_publish_payload(
+        immediate_payload(),
+        [
+            {
+                "id": 1,
+                "type": 3,
+                "filePath": "douyin.json",
+                "userName": "抖音测试号",
+                "status": 1,
+                "default_platform_fields": None,
+            }
+        ],
+    )
+
+    with pytest.raises(DuplicateSubmissionError, match="重复视频×账号"):
+        store.create_run((*normalized.effective, *normalized.effective))
+
+    assert store.latest_run() is None
 
 
 def test_item_detail_persists_dom_warning_and_debug_screenshot(

@@ -809,4 +809,60 @@
 - 冲突解决后补齐小红书 source DOM 的成功、候选缺失、点击失败与 fail-closed 测试；将旧 source 拒绝断言更新为 #92 已提供安全执行 seam，origin 仍保持拒绝。
 - 合并后定向验证：daemon 147 passed；web 21 files / 228 tests passed，tsc/Vite build 通过；Python 相关 Ruff 全部通过；Tauri lib 17 passed、bin 0 tests。
 - 合并后全量验证：daemon `uv run pytest -q` → `209 passed`；web `pnpm test -- --run` → `21 files / 228 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；Python Ruff check/format 与 `git diff --check` 通过。web 保留既有 jsdom navigation stderr。
-- 下一步：提交 `Merge branch 'afk/issue-92' into develop`，随后清理并关闭 #92。
+- 已生成 merge commit `589388b`；随后清理并关闭 #92。
+
+## Issue #94：批内重复阻断与单飞行 409
+
+### 目标与计划
+
+- 只处理同一提交内的视频×账号重复硬阻断，以及跨提交活动 run 的数据库级单飞行；不引入跨提交成功记录软警示、retry 或新的调度语义。
+- TDD 垂直切片：先锁定重复提交在持久化前返回 400，再锁定跨连接 SQLite 并发提交只有一个成功、另一个保留 existingRunId 返回 409，最后接通前端错误保真与打开已有 run 操作。
+- 继续复用现有 `RunStore`/`/postRuns`/official API seam；不使用内存锁作为跨连接约束，不修改官方源码，不 push、建 PR、merge 或关闭 issue。
+
+### 初始状态与 Red
+
+- 已确认工作目录为 `/Users/rolex/Documents/Codes/githubProject/MyProject/PostHub.afk-issue-94`、分支 `afk/issue-94`；已有未提交实现与测试继续复用，未 reset/stash/覆盖。
+- 已读取 `CONTEXT.md`、父 issue #80、阻塞 issue #86、现有 #93 合并记录及当前全部差异。
+- 先运行既有/新增后端定向测试：`cd daemon && uv run pytest tests/test_runs.py -q` → `4 failed, 30 passed`。失败全部为既有多 item 测试沿用同一 `video.mp4 × douyin.json`，与本 issue 新增硬阻断契约冲突；未发现实现路径的异常失败。
+
+### 当前实现
+
+- `RunStore` 新增 `dedupe_key`、活动 item partial unique index，并在 `BEGIN IMMEDIATE` 事务内写入；同批重复先在内存校验并抛 `DuplicateSubmissionError`，数据库冲突映射 `ActiveRunConflict`。
+- `/postRuns` 将同批重复映射 JSON 400；活动组合冲突映射 HTTP 409，响应保留 `code` 和 `data.existingRunId`。
+- 前端官方错误对象保留 HTTP status/code/data；单视频与矩阵批量受理都显示“本次未受理”，不写 accepted run，且提供“打开已有 run”按钮。
+
+### TDD 收口与边界修复
+
+- Green：修正 #94 引入硬阻断后既有多 item fixture 的同批素材重复，改为使用不同视频路径，保持原有顺序/失败隔离断言；后端定向 `36 passed`。
+- Green：补充 `/postRuns` 409 响应契约、事务冲突回滚、前端 `openRun` 查询切换回归；矩阵批量反馈也提供“打开已有 run”操作。
+- Red → Green：发现旧 runs schema 迁移遇到重复活动 item 时，原逻辑会留下无 `dedupe_key` 的 pending 项绕过唯一约束；迁移现将重复项隔离为带错误详情的 failed，并保留首项占用键，补充 key 释放回归。
+- 运行验证：隔离真实 `run_backend.py` HTTP 服务观察到同批重复返回 `code=400/data=null`；并发两个 `/postRuns` 请求分别返回 `200 已受理` 与 `409`，409 的 `data.existingRunId` 与已受理 runId 一致。验证使用安全 fake/无真实平台账号，服务已停止。
+
+### 最终验证
+
+- `cd daemon && uv run pytest -q` → `209 passed`。
+- `cd web && pnpm test -- --run` → `20 files / 229 tests passed`；保留既有 jsdom navigation stderr。
+- `cd web && pnpm run build` → `tsc --noEmit` 与 Vite build 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` → lib `17 passed`、bin `0 tests`；仅补齐本地空 resources 目录，未进入 Git。
+- `daemon/posthub/runs.py`、`daemon/tests/test_runs.py` Ruff check/format check 通过；`git diff --check` 通过。
+
+### Deviations
+
+- 旧库若已有重复活动 item，采用迁移时保守隔离重复项而非继续并发执行，避免其绕过数据库单飞行约束；原始 run 与错误详情仍保留可查询。
+- 真实平台账号与 Windows 环境未驱动；当前 macOS 仅验证本机 HTTP/安全 fake seam。
+
+### Reviewer refinement（2026-08-29）
+
+- 已按要求读取 `git diff develop..HEAD`、Issue #94、`CONTEXT.md` 与 ADR-0009；当前实现覆盖批内重复 400、SQLite 跨连接单飞行 409、existingRunId 保真及前端打开已有 run。
+- 全量验证首轮：daemon `210 passed`；web `20 files / 229 tests passed`；web build 通过；Tauri lib `17 passed`、bin `0 tests`。web 保留既有 jsdom navigation stderr。
+- 发现 P1：若数据库已写入 `dedupe_key` 但唯一索引创建失败/丢失，重启时原迁移只扫描 NULL 键，重复活动 item 会使建索引再次 IntegrityError，daemon 无法启动。
+- 修复：迁移按 `created_at/ordinal/id` 重新核对所有活动 item（含已有键），重复项保守隔离为 failed 后再建唯一索引；新增部分迁移 schema 回归，覆盖已有重复键。定向 daemon `38 passed`，ruff check/format 通过。
+- 最终全量验证：daemon `211 passed`；web `20 files / 229 tests passed`；web build 通过；Tauri lib `17 passed`、bin `0 tests`；`git diff --check` 通过。web 仍有既有 jsdom navigation stderr。
+- 准备提交一个 `refine:` commit；不 push、不 merge、不关闭 Issue #94。
+
+### AFK Merger #94（2026-08-29）
+
+- `git merge afk/issue-94 --no-edit` 仅冲突于 `daemon/tests/test_runs.py` 导入与本笔记；保留 #92 dispatcher、#93 部分成功/诊断，以及 #94 的 dedupe key、SQLite partial unique index、400/409 与前端 existingRunId 处理；未使用 `-X`。
+- 导入冲突已合并 `FailClosedUploader`、`ActiveRunConflict`、`DuplicateSubmissionError` 等两侧符号；笔记保留 #92 与 #94 全部实现/审查记录。
+- 合并后全量验证：daemon `uv run pytest -q` → `216 passed`；web `pnpm test -- --run` → `21 files / 232 tests passed`，`pnpm run build` 的 tsc/Vite 通过；Tauri lib `17 passed`、bin `0 tests`；#94 Python Ruff check/format 通过。
+- 下一步：提交 #94 merge commit，随后清理并关闭 #94；全部分支完成后再写 summarizing commit。

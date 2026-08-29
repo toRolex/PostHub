@@ -18,13 +18,14 @@ export interface RunState {
   snapshot: RunSnapshot | null;
   error: string;
   rememberAcceptedRun: (accepted: AcceptedRun) => void;
+  openRun: (base: string, runId: string) => Promise<void>;
   refresh: (base: string) => Promise<void>;
   restoreLatestRun: (base: string) => Promise<void>;
 }
 
 export const initialRunState: Omit<
   RunState,
-  "rememberAcceptedRun" | "refresh" | "restoreLatestRun"
+  "rememberAcceptedRun" | "openRun" | "refresh" | "restoreLatestRun"
 > = {
   runId: null,
   status: null,
@@ -125,6 +126,19 @@ export const useRunStore = create<RunState>()((set, get) => {
         snapshot: null,
         error: "",
       });
+    },
+
+    openRun: async (base, runId) => {
+      // 用户明确打开已有 run：使在途查询失效，成功后再切换当前详情。
+      mutationVersion += 1;
+      const requestId = ++readSequence;
+      const version = mutationVersion;
+      try {
+        const snapshot = await officialApi.getRun(base, runId);
+        if (canCommit(requestId, version)) applySnapshot(snapshot);
+      } catch (error) {
+        if (canCommit(requestId, version)) set({ error: messageOf(error) });
+      }
     },
 
     refresh: async (base) => {

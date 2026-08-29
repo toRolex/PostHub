@@ -224,6 +224,30 @@ export async function openLoginSse(options: {
   };
 }
 
+/** 官方 JSON 错误：保留 HTTP status、响应 code 与 data，供冲突 UI 使用。 */
+export class OfficialApiError extends Error {
+  readonly status: number;
+  readonly code: number;
+  readonly data: unknown;
+
+  constructor(message: string, status: number, code: number, data: unknown) {
+    super(message);
+    this.name = "OfficialApiError";
+    this.status = status;
+    this.code = code;
+    this.data = data;
+  }
+}
+
+/** 从 409 受理冲突中提取后端保留的已有 run id。 */
+export function existingRunIdFromError(error: unknown): string | undefined {
+  if (!(error instanceof OfficialApiError) || error.status !== 409) return undefined;
+  const data = error.data;
+  if (!data || typeof data !== "object") return undefined;
+  const runId = (data as { existingRunId?: unknown }).existingRunId;
+  return typeof runId === "string" && runId ? runId : undefined;
+}
+
 interface RequestOptions {
   signal?: AbortSignal;
 }
@@ -305,7 +329,7 @@ async function parseOfficialResponse<T>(res: Response): Promise<T> {
   }
   if (!res.ok || (typeof body.code === "number" && body.code !== 200)) {
     const label = body.msg ?? `HTTP ${res.status}`;
-    throw new Error(label);
+    throw new OfficialApiError(label, res.status, body.code ?? res.status, body.data);
   }
   return body.data as T;
 }
