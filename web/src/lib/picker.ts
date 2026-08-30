@@ -9,24 +9,6 @@ import { open, type OpenDialogOptions } from "@tauri-apps/plugin-dialog";
 
 import { isTauri } from "./isTauri";
 
-export async function pickVideoPath(): Promise<string | null> {
-  return pickFile({
-    title: "选择视频",
-    filters: [{ name: "视频", extensions: ["mp4", "mov", "mkv", "avi", "webm"] }],
-  });
-}
-
-export async function pickImagePath(): Promise<string | null> {
-  return pickFile({
-    title: "选择封面",
-    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp"] }],
-  });
-}
-
-export async function pickFolderPath(): Promise<string | null> {
-  return pickFile({ title: "选择批次文件夹", directory: true });
-}
-
 /**
  * 选择本地 Chrome 可执行文件路径（登录/上传用，作为 `LOCAL_CHROME_PATH`）。
  * 跨平台：Windows 选 `chrome.exe`，macOS 选 `Google Chrome.app` 内的二进制。

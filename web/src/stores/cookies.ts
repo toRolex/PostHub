@@ -10,20 +10,10 @@
  *   - exportCookie   → GET /downloadCookie（下载附件供备份/迁移）
  */
 import { create } from "zustand";
-import { api } from "../api/client";
-import type {
-  CookiedAccount,
-  OfficialAccountRow,
-  OfficialCookieStatus,
-  OfficialPlatform,
-} from "../api/types";
+import { officialApi } from "../api/official";
+import type { CookiedAccount } from "../api/types";
 import { useDaemonStore } from "./daemon";
-
-/** 官方 user_info 数组行 → 解析对象。 */
-export function rowToCookiedAccount(row: OfficialAccountRow): CookiedAccount {
-  const [id, type, filePath, userName, status] = row;
-  return { id, type: type as OfficialPlatform, filePath, userName, status: status as OfficialCookieStatus };
-}
+import { withMutation } from "./_withMutation";
 
 interface CookiesState {
   accounts: CookiedAccount[];
@@ -48,76 +38,56 @@ export const initialCookiesState = {
 export const useCookiesStore = create<CookiesState>()((set) => ({
   ...initialCookiesState,
 
-  fetchAccounts: async () => {
-    set({ loading: true });
-    try {
-      const rows = await api.officialAccounts(useDaemonStore.getState().url);
-      set({ accounts: rows.map(rowToCookiedAccount), error: "" });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ loading: false });
-    }
-  },
+  fetchAccounts: () =>
+    withMutation(
+      set,
+      async () => {
+        const accounts = await officialApi.getAccounts(useDaemonStore.getState().url);
+        set({ accounts, error: "" });
+      },
+      { begin: { loading: true }, end: { loading: false } },
+    ),
 
-  validateAll: async () => {
-    set({ validating: true });
-    try {
-      const rows = await api.officialValidAccounts(useDaemonStore.getState().url);
-      set({ accounts: rows.map(rowToCookiedAccount), error: "" });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ validating: false });
-    }
-  },
+  validateAll: () =>
+    withMutation(
+      set,
+      async () => {
+        const accounts = await officialApi.getValidAccounts(useDaemonStore.getState().url);
+        set({ accounts, error: "" });
+      },
+      { begin: { validating: true }, end: { validating: false } },
+    ),
 
-  importCookie: async (file, id) => {
-    set({ importingId: id });
-    try {
-      const base = useDaemonStore.getState().url;
-      const account = useCookiesStore.getState().accounts.find((a) => a.id === id);
-      if (!account) throw new Error(`账号 ${id} 未加载，请先刷新列表`);
-      await api.uploadCookie(base, file, id, account.type);
-      // 导入后立即校验一次，让「导入 → 可校验账号」闭环（验收 1）。
-      const rows = await api.officialValidAccounts(base);
-      set({ accounts: rows.map(rowToCookiedAccount), error: "" });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
-    } finally {
-      set({ importingId: null });
-    }
-  },
+  importCookie: (file, id) =>
+    withMutation(
+      set,
+      async () => {
+        const base = useDaemonStore.getState().url;
+        const account = useCookiesStore.getState().accounts.find((a) => a.id === id);
+        if (!account) throw new Error(`账号 ${id} 未加载，请先刷新列表`);
+        await officialApi.uploadCookie(base, file, id, account.type);
+        // 导入后立即校验一次，让「导入 → 可校验账号」闭环（验收 1）。
+        const accounts = await officialApi.getValidAccounts(base);
+        set({ accounts, error: "" });
+      },
+      { begin: { importingId: id }, end: { importingId: null }, rethrow: true },
+    ),
 
-  exportCookie: async (filePath, fallbackName) => {
-    try {
-      const base = useDaemonStore.getState().url;
-      const res = await api.downloadCookie(base, filePath);
-      if (!res.ok) {
-        // 官方 /downloadCookie 出错返回 {code, msg}（如「Cookie文件不存在」），
-        // 优先透传官方 msg，避免丢失体验信息。
-        const text = await res.text().catch(() => "");
-        let msg = "";
-        try {
-          msg = (JSON.parse(text) as { msg?: string }).msg ?? "";
-        } catch {
-          // 非 JSON 错误体按空处理
-        }
-        throw new Error(msg || `下载失败（HTTP ${res.status}）`);
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fallbackName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      throw e;
-    }
-  },
+  exportCookie: (filePath, fallbackName) =>
+    withMutation(
+      set,
+      async () => {
+        const base = useDaemonStore.getState().url;
+        const blob = await officialApi.downloadCookie(base, filePath);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fallbackName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      },
+      { rethrow: true },
+    ),
 }));

@@ -14,9 +14,11 @@
  * - GET  /deleteFile?id=N   删磁盘文件 + 删数据库记录；
  * - GET  /getFile?filename= 返回文件内容（预览/下载）。
  *
- * 与旧 daemon REST 客户端 `api/client.ts` 并存；本模块只承载官方 seam 相关端点。
+ * 前端到官方后端的唯一 HTTP seam：所有官方端点（含 cookie 导入/导出）都经
+ * `officialApi`；统一响应 `{ code, msg, data }`：code=200 成功；否则视为错误并抛 msg
+ * （错误解析约定单点在 `request<T>`，downloadCookie 的文件流除外）。
  * 设计：SSE 相关纯函数（parseSseDataLine/parseSseChunk）可单测；`openLoginSse`
- * 返回可中止句柄。统一响应 `{ code, msg, data }`：code=200 成功；否则视为错误并抛 msg。
+ * 返回可中止句柄。
  */
 import type {
   DaoUserInfo,
@@ -25,8 +27,15 @@ import type {
   Platform,
 } from "./types";
 import { OFFICIAL_PLATFORM_TYPE } from "./types";
-import { trimPlatformFields, type PlatformFields } from "./declarations";
-import type { BatchItem } from "../types/batch";
+import { trimPlatformFields, type PlatformFields } from "../domain/declarations";
+import { parseTags } from "../domain/tags";
+import { buildBatchItemRefs, type BatchItem } from "../domain/batch";
+import {
+  normalizeDailyTimes,
+  normalizeHHMM,
+  resolveWechatTimer,
+  type WechatTimerResolution,
+} from "../domain/time";
 
 /** 官方 /login SSE 事件类型。 */
 export type LoginSseEvent =
@@ -214,8 +223,158 @@ export async function openLoginSse(options: {
   };
 }
 
+/** 官方 JSON 错误：保留 HTTP status、响应 code 与 data，供冲突 UI 使用。 */
+export class OfficialApiError extends Error {
+  readonly status: number;
+  readonly code: number;
+  readonly data: unknown;
+
+  constructor(message: string, status: number, code: number, data: unknown) {
+    super(message);
+    this.name = "OfficialApiError";
+    this.status = status;
+    this.code = code;
+    this.data = data;
+  }
+}
+
+/** 从 409 受理冲突中提取后端保留的已有 run id。 */
+export function existingRunIdFromError(error: unknown): string | undefined {
+  if (!(error instanceof OfficialApiError) || error.status !== 409) return undefined;
+  const data = error.data;
+  if (!data || typeof data !== "object") return undefined;
+  const runId = (data as { existingRunId?: unknown }).existingRunId;
+  return typeof runId === "string" && runId ? runId : undefined;
+}
+
+export function duplicateRecordsFromError(error: unknown): PublishRecord[] {
+  if (!(error instanceof OfficialApiError) || error.status !== 409) return [];
+  const data = error.data;
+  if (!data || typeof data !== "object") return [];
+  const duplicates = (data as { kind?: unknown; duplicates?: unknown }).duplicates;
+  return (data as { kind?: unknown }).kind === "history_duplicate" && Array.isArray(duplicates)
+    ? (duplicates as PublishRecord[])
+    : [];
+}
+
 interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export type RunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_failures"
+  | "interrupted";
+export type RunItemStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "skipped"
+  | "interrupted";
+
+export interface AcceptedRun {
+  runId: string;
+  status: "pending" | "running";
+  itemCount: number;
+  parentRunId?: string;
+}
+
+export interface RunSummary {
+  itemCount: number;
+  pendingCount: number;
+  runningCount: number;
+  successCount: number;
+  failedCount: number;
+  completedCount: number;
+}
+
+export interface RunItemDiagnostic {
+  level: "warning" | "info";
+  kind: string;
+  account?: string;
+  reason?: string;
+  message?: string;
+  selector?: string;
+  entrySelector?: string;
+  selectors?: string[];
+  requestedValue?: string;
+  displayValue?: string;
+  screenshot?: string | null;
+}
+
+export interface RunItemSnapshot {
+  itemId: string;
+  /** 人类可读的 1-based 执行顺序。旧 daemon 响应可能没有。 */
+  seq?: number;
+  status: RunItemStatus;
+  /** 兼容旧 daemon 的错误字段；新响应与 errorSummary 相同。 */
+  error: string | null;
+  /** 单行短摘要，用于列表展示。 */
+  errorSummary?: string | null;
+  /** 可查询的完整错误（通常含 traceback）。 */
+  errorDetail?: string | null;
+  /** DOM wrapper warning/debug screenshot 等结构化诊断；旧 daemon 响应可能没有。 */
+  diagnostics?: RunItemDiagnostic[];
+  /** 受理时的调用方 payload 快照；旧 daemon 响应可能没有。 */
+  submitted?: PostVideoRequest;
+  /** 账号粒度 effective payload；抖音 timer 含 naive ISO publishDatetimes。 */
+  effective?: PostVideoRequest & { publishDatetimes?: string[] };
+  /** retry 新 run 中对应首次受理 run item 的 id。 */
+  sourceItemId?: string;
+}
+
+export interface RunSnapshot {
+  runId: string;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  /** 后端按持久化 run_items 聚合的事实汇总。 */
+  summary: RunSummary;
+  items: RunItemSnapshot[];
+  /** retry 链的父 run；首次受理 run 没有该字段。 */
+  parentRunId?: string;
+}
+
+export type PublishRecordStatus = "scheduled" | "published" | "failed" | "canceled";
+
+/** 本机 publish_record 的账号/时间快照；不随官方账号变更而更新。 */
+export interface PublishRecord {
+  id: number;
+  accountId: number;
+  accountFile: string;
+  accountName: string;
+  platform: Platform;
+  videoId: string;
+  videoTitle: string;
+  effectiveScheduledFor: string | null;
+  scheduledFor: string | null;
+  status: PublishRecordStatus;
+  publishedAt: string | null;
+  runId: string | null;
+  runItemId: string | null;
+  recordedAt: string;
+}
+
+export interface PublishDuplicateResponse {
+  duplicates: PublishRecord[];
+}
+
+/** 展示跨提交历史重复并取得用户确认；非浏览器环境按取消处理。 */
+export function confirmDuplicateRecords(records: PublishRecord[]): boolean {
+  if (records.length === 0) return true;
+  const detail = records
+    .map(
+      (record) =>
+        `${record.videoId} · ${record.accountName} · ${record.publishedAt ?? "未知时间"}`,
+    )
+    .join("\n");
+  return typeof window !== "undefined" && window.confirm(
+    `发现 ${records.length} 条历史成功发布记录：\n${detail}\n\n仍要重新发布吗？`,
+  );
 }
 
 async function parseOfficialResponse<T>(res: Response): Promise<T> {
@@ -232,7 +391,7 @@ async function parseOfficialResponse<T>(res: Response): Promise<T> {
   }
   if (!res.ok || (typeof body.code === "number" && body.code !== 200)) {
     const label = body.msg ?? `HTTP ${res.status}`;
-    throw new Error(label);
+    throw new OfficialApiError(label, res.status, body.code ?? res.status, body.data);
   }
   return body.data as T;
 }
@@ -286,7 +445,7 @@ function takeTrailing(sseBuffer: string): string {
   return lastBreak === -1 ? sseBuffer : sseBuffer.slice(lastBreak + 2);
 }
 
-/** 官方 user_info 行 [id,type,filePath,userName,status] -> DaoUserInfo。type 须在 1-4 内，否则抛错。 */
+/** 官方 user_info 行 [id,type,filePath,userName,status] -> DaoUserInfo。type 须在 1-4、status 须在 0/1 内，否则抛错。 */
 const OFFICIAL_TYPE_VALUES = new Set<number>([1, 2, 3, 4]);
 
 function mapRows(data: unknown[], from: string): DaoUserInfo[] {
@@ -299,12 +458,16 @@ function mapRows(data: unknown[], from: string): DaoUserInfo[] {
     if (!OFFICIAL_TYPE_VALUES.has(typeNum)) {
       throw new Error(`${from}: 未知平台类型 ${typeNum}（应为 1-4）`);
     }
+    const statusNum = Number(status);
+    if (statusNum !== 0 && statusNum !== 1) {
+      throw new Error(`${from}: 未知账号状态 ${statusNum}（应为 0/1）`);
+    }
     return {
       id: Number(id),
       type: typeNum as DaoUserInfo["type"],
       filePath: String(filePath),
       userName: String(userName),
-      status: Number(status),
+      status: statusNum as DaoUserInfo["status"],
     };
   });
 }
@@ -315,8 +478,54 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
 }
 
 export const officialApi = {
+  /**
+   * 官方 `/uploadCookie`：把所选 cookie 文件写入该账号的 filePath。
+   * multipart：file（.json 文件）+ id（user_info.id）+ platform（官方 type）。
+   */
+  uploadCookie: (base: string, file: File, id: number, platform: number) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("id", String(id));
+    form.append("platform", String(platform));
+    return request<null>(base, "/uploadCookie", { method: "POST", body: form });
+  },
+
+  /**
+   * 官方 `/downloadCookie`：按 filePath 下载 cookie 文件附件（备份/迁移），返回 blob。
+   * 不走 JSON 包装：成功是文件附件流，失败才是 {code,msg}；错误解析（!res.ok →
+   * 官方 msg → throw）收敛在本函数内，调用方只管 blob 落盘。
+   */
+  downloadCookie: async (base: string, filePath: string): Promise<Blob> => {
+    const res = await fetch(
+      `${base}/downloadCookie?filePath=${encodeURIComponent(filePath)}`,
+    );
+    if (!res.ok) {
+      // 官方 /downloadCookie 出错返回 {code, msg}（如「Cookie文件不存在」），优先透传官方 msg。
+      const text = await res.text().catch(() => "");
+      let msg = "";
+      try {
+        msg = (JSON.parse(text) as { msg?: string }).msg ?? "";
+      } catch {
+        // 非 JSON 错误体按空处理
+      }
+      throw new Error(msg || `下载失败（HTTP ${res.status}）`);
+    }
+    return res.blob();
+  },
+
   getFiles: (base: string): Promise<OfficialFileRecord[]> =>
     request<OfficialFileRecord[]>(base, "/getFiles"),
+
+  /** 查询本机 scheduled/published 记录；空结果是 []，查询失败由 request 抛错。 */
+  getPublishRecords: (
+    base: string,
+    from: string,
+    to: string,
+  ): Promise<PublishRecord[]> =>
+    request<PublishRecord[]>(
+      base,
+      `/publishRecords?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
 
   /** 单视频发布：走官方 /postVideo（仅契约级提交，真实发布需登录态）。 */
   postVideo: (base: string, payload: PostVideoRequest) =>
@@ -325,12 +534,51 @@ export const officialApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  /** 批量发布：走官方 /postVideoBatch（请求体 = postVideo 对象数组，契约级提交）。 */
-  postVideoBatch: (base: string, payload: PostVideoRequest[]) =>
-    request<null>(base, "/postVideoBatch", {
+  /** 查询即将提交的素材×账号是否有本地 published 历史。 */
+  checkPublishRecords: (
+    base: string,
+    payload: PostVideoRequest | PostVideoRequest[],
+  ): Promise<PublishRecord[]> =>
+    request<PublishDuplicateResponse>(base, "/publishRecords/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+    }).then((result) => result.duplicates),
+  /** PostHub-owned immediate accepted run；可显式确认跨提交历史重复。 */
+  acceptRun: (
+    base: string,
+    payload: PostVideoRequest | PostVideoRequest[],
+    options?: { confirmDuplicates?: boolean },
+  ) =>
+    request<AcceptedRun>(
+      base,
+      `/postRuns${options?.confirmDuplicates ? "?confirmDuplicates=true" : ""}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(options?.confirmDuplicates
+            ? { "X-PostHub-Confirm-Duplicates": "true" }
+            : {}),
+        },
+        body: JSON.stringify(payload),
+      },
+    ),
+  /** 查询 run/item 的持久化生命周期快照。 */
+  getRun: (base: string, runId: string) =>
+    request<RunSnapshot>(base, `/postRuns/${encodeURIComponent(runId)}`),
+  /** 刷新后读取最近一次受理的 run；空库返回 null。 */
+  getLatestRun: (base: string) => request<RunSnapshot | null>(base, "/postRuns/latest"),
+  /** 重试指定或全部可重试 item；只复制后端首次受理时的 effective 快照。 */
+  retryRun: (
+    base: string,
+    runId: string,
+    itemIds?: string[],
+  ): Promise<AcceptedRun> =>
+    request<AcceptedRun>(base, `/postRuns/${encodeURIComponent(runId)}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(itemIds ? { itemIds } : {}),
     }),
   /** 上传并记录素材：走 /uploadSave，文件同时进入磁盘与官方 file_records。 */
   upload: (base: string, file: File, customName?: string) => {
@@ -406,9 +654,8 @@ export const officialApi = {
  * - `type`       平台整型：1 小红书 2 视频号 3 抖音 4 快手。
  * - `tags`       字符串数组（上线器逐项加 # 前缀）。
  * - `enableTimer` 为 false 时立即发布；true 才用到 videosPerDay/dailyTimes/startDays。
- *   @see daemon/.venv/.../utils/files_times.py `generate_schedule_time_next_day`：
- *   dailyTimes 为「整点小时」数组（0-23），videosPerDay 每日条数（<=0 或 > len(dailyTimes) 时官方抛错），
- *   startDays 为起始天数（0 = 明天起）。
+ *   dailyTimes 在 PostHub seam 上统一为 HH:MM 字符串数组，分钟必须保真；
+ *   videosPerDay 每日条数（<=0 或 > len(dailyTimes) 时官方抛错），startDays 为起始天数（0 = 明天起）。
  * - `category=0` 官方会置为 None；typing 上沿用官方默认 LIFESTYLE。
  */
 export interface PostVideoRequest {
@@ -420,7 +667,7 @@ export interface PostVideoRequest {
   category?: number;
   enableTimer?: boolean;
   videosPerDay?: number;
-  dailyTimes?: number[];
+  dailyTimes?: string[];
   startDays?: number;
   thumbnail?: string;
   isDraft?: boolean;
@@ -428,6 +675,16 @@ export interface PostVideoRequest {
   productTitle?: string;
   /** 平台内容声明按平台分键透传（issue #43 / ADR-0008）。任务级覆盖账号默认。 */
   platformFields?: PlatformFields;
+  /** 视频号 timer 的原始时刻、最终整点与降级原因（PostHub-owned metadata）。 */
+  timerOriginalTime?: string;
+  timerFinalTime?: string;
+  timerDowngradeReason?: string;
+  /** 窗口风险仅提示，不阻断提交。 */
+  timerWindowWarning?: string;
+  /** 视频号各 dailyTimes 槽位的完整降级结果；首项字段保留兼容。 */
+  timerResolutions?: WechatTimerResolution[];
+  /** 绝对执行时刻快照；由 daemon 结合本地日期写入/消费。 */
+  publishDatetimes?: string[];
 }
 
 /** 前端表单（发布页语义）→ 官方 /postVideo 请求体的纯函数。 */
@@ -449,7 +706,7 @@ export function buildPostVideoRequest(input: {
   timer?: {
     enableTimer: boolean;
     videosPerDay: number;
-    dailyTimes: number[];
+    dailyTimes: string[];
     startDays: number;
   };
 }): PostVideoRequest {
@@ -467,8 +724,21 @@ export function buildPostVideoRequest(input: {
   if (input.timer?.enableTimer) {
     body.enableTimer = true;
     body.videosPerDay = input.timer.videosPerDay;
-    body.dailyTimes = input.timer.dailyTimes;
+    body.dailyTimes = normalizeDailyTimes(input.timer.dailyTimes);
     body.startDays = input.timer.startDays;
+    if (input.platform === "wechat") {
+      const resolutions: WechatTimerResolution[] = body.dailyTimes.map(resolveWechatTimer);
+      const first = resolutions[0];
+      // 保留原始 HH:MM 和用户 startDays 交给 daemon；daemon 是最终 effective
+      // producer，避免前端先降级后端再次规范化时丢失原值或重复进位。
+      if (first) {
+        body.timerOriginalTime = first.originalTime;
+        body.timerFinalTime = first.finalTime;
+        body.timerDowngradeReason = first.reason;
+        body.timerWindowWarning = first.warning;
+        body.timerResolutions = resolutions;
+      }
+    }
   }
   // 平台声明：仅当调用方显式传入时透传。后端 `_merge_platform_fields` 会按
   // 「任务级 > 账号级 > 不传」合并，调用方未给 = 后端走账号默认。
@@ -486,54 +756,24 @@ export function mergeTitleWithCaption(title: string, caption?: string): string {
   return title ? `${title}\n${trimmed}` : trimmed;
 }
 
-/**
- * 前端 tags 输入态字符串 → 官方 tags 数组。按空白/逗号（中英文）拆，去前缀 `#`，去空白，去空串。
- */
-export function parseTagsInput(tags: string): string[] {
-  if (!tags) return [];
-  return tags
-    .split(/[\s,，]+/)
-    .map((t) => t.replace(/^#+/, "").trim())
-    .filter(Boolean);
-}
-
 /* ───────────────────────── 矩阵批量（每视频×每账号展开）───────────────────────── */
 
 /**
- * 把 "HH:MM" 字符串解析为官方整型小时（0-23）。非整点按 Math.floor 取整；
- * 越界（>= 24 或负数 / 非数字）抛错。不静默丢弃（验收硬要求）。
- *
- * 例：parseHHMMToHour("10:00") -> 10；"14:30" -> 14；"24:00" -> 抛错。
- */
-export function parseHHMMToHour(hm: string): number {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hm);
-  if (!m) throw new Error(`dailyTimes 格式非法：${hm}（应为 HH:MM）`);
-  const hour = Number(m[1]);
-  if (!Number.isInteger(hour) || hour < 0 || hour >= 24) {
-    throw new Error(`dailyTimes 越界：${hm}（小时应在 0–23）`);
-  }
-  // 分钟字段语义保留（用于将来支持半点等）；当前版本按整点取整，丢弃 minute。
-  void m[2];
-  return Math.floor(hour);
-}
-
-/**
- * 矩阵批量表单 → 官方 /postVideoBatch 请求体（issue #38）。
+ * 矩阵批量表单 → `/postRuns` 受理请求体（issue #38）。
  *
  * 与 buildPostVideoRequest（单视频）的语义差异：
- * - 旧：按平台笛卡尔展开（一个平台一项，fileList = 全部所选文件，accountList = 该平台账号）。
- * - 新：按「每视频×每账号」展开（一个 (item, platform, accountId) 一个 postVideo 项）；
+ * - 按「每视频×每账号」展开（一个 (item, platform, accountId) 一个受理项）；
  *       同一平台多账号展开为多个 postVideo 项（result 维度变化的原因）。
  *
  * 模式：
  * - mode='immediate'：enableTimer: false；严格不带 timer 四字段
  *   （enableTimer/videosPerDay/dailyTimes/startDays 都不在请求体键集合里）。
  * - mode='timer'：enableTimer: true；videosPerDay 硬写 1（不暴露）；dailyTimes
- *   从 item.timeOfDay 解析（按整点取整回官方 0–23 整数）；startDays 透传。
+ *   从 item.timeOfDay 读取并保留分钟；startDays 透传。
  *
  * 校验：
- * - item.timeOfDay 必须命中 dailyTimes 池（防止 UI 与提交语义漂移）。
- * - dailyTimes 越界（HH:MM 解析后 hour >= 24）抛错。
+ * - item.timeOfDay 必须命中规范化后的 dailyTimes 池（防止 UI 与提交语义漂移）。
+ * - dailyTimes 中任一 HH:MM 非法时显式抛错。
  *
  * 命名约定：函数名 buildBatchItemsFromMatrix 沿用 issue #37 PRD 命名。
  */
@@ -541,21 +781,11 @@ export function buildBatchItemsFromMatrix(
   items: BatchItem[],
   dailyTimes: string[],
 ): PostVideoRequest[] {
-  const dailyTimesSet = new Set(dailyTimes);
-  const result: PostVideoRequest[] = [];
-  for (const item of items) {
-    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
-      Platform,
-      string[],
-    ][]) {
-      if (!accounts || accounts.length === 0) continue;
-      // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
-      for (const accountCookie of accounts) {
-        result.push(buildOneMatrixItem(item, platform, accountCookie, dailyTimesSet));
-      }
-    }
-  }
-  return result;
+  const dailyTimesSet = new Set(normalizeDailyTimes(dailyTimes));
+  // 每账号一个 postVideo 项（矩阵维度 = 每视频×每账号）。
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) =>
+    buildOneMatrixItem(item, platform, cookie, dailyTimesSet),
+  );
 }
 
 /** 单个 (item, platform, account) → PostVideoRequest。 */
@@ -565,7 +795,7 @@ function buildOneMatrixItem(
   accountCookie: string,
   dailyTimesSet: Set<string>,
 ): PostVideoRequest {
-  const tags = parseTagsInput(item.tags);
+  const tags = parseTags(item.tags);
   const base = {
     fileList: [item.filePath],
     accountList: [accountCookie],
@@ -593,17 +823,29 @@ function buildOneMatrixItem(
       `mode='timer' 必须提供 startDays 与 timeOfDay（item=${item.filePath}）`,
     );
   }
-  if (!dailyTimesSet.has(item.timeOfDay)) {
+  const timeOfDay = normalizeHHMM(item.timeOfDay);
+  if (!dailyTimesSet.has(timeOfDay)) {
     throw new Error(
       `item.timeOfDay="${item.timeOfDay}" 不在 dailyTimes 池中（${Array.from(dailyTimesSet).join(", ")}）`,
     );
   }
-  const hour = parseHHMMToHour(item.timeOfDay);
+  const timer = {
+    enableTimer: true as const,
+    videosPerDay: 1,
+    dailyTimes: [timeOfDay],
+    startDays: item.startDays,
+  };
+  if (platform !== "wechat") return { ...base, ...timer };
+
+  const resolution = resolveWechatTimer(timeOfDay);
   return {
     ...base,
-    enableTimer: true,
-    videosPerDay: 1,
-    dailyTimes: [hour],
-    startDays: item.startDays,
+    ...timer,
+    // 同一份 raw item 进入 daemon 后再产出 effective final，避免双重跨日进位。
+    timerOriginalTime: resolution.originalTime,
+    timerFinalTime: resolution.finalTime,
+    timerDowngradeReason: resolution.reason,
+    timerWindowWarning: resolution.warning,
+    timerResolutions: [resolution],
   };
 }

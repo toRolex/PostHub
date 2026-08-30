@@ -5,10 +5,7 @@ import {
   parseSseChunk,
   parseSseDataLine,
 } from "../api/official";
-import {
-  buildBatchItemsFromMatrix,
-  officialApi,
-} from "../api/official";
+import { buildBatchItemsFromMatrix, officialApi } from "../api/official";
 
 /** 构造一个 body 为 SSE 流的 mock Response（jsdom 支持 ReadableStream）。 */
 function sseResponse(chunks: string[]): Response {
@@ -213,6 +210,21 @@ describe("officialApi 账号接口（mock fetch）", () => {
     await expect(officialApi.getAccounts("http://127.0.0.1:9999")).rejects.toThrow("未知平台类型 9");
   });
 
+  it("getAccounts 非法账号状态 -> 抛校验错误", async () => {
+    const { officialApi } = await import("../api/official");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          code: 200,
+          msg: null,
+          data: [[1, 3, "a.json", "抖音", 7]],
+        }),
+      ),
+    );
+    await expect(officialApi.getAccounts("http://127.0.0.1:9999")).rejects.toThrow("未知账号状态 7");
+  });
+
   it("getValidAccounts 非 200 code 抛错", async () => {
     const { officialApi } = await import("../api/official");
     vi.stubGlobal(
@@ -236,47 +248,92 @@ describe("officialApi 账号接口（mock fetch）", () => {
   });
 });
 
-describe("officialApi.postVideoBatch（mock fetch）", () => {
-  it("POST /postVideoBatch 并携带数组合法请求体", async () => {
+describe("officialApi.uploadCookie / downloadCookie（mock fetch）", () => {
+  const jsonResponse = (body: unknown, ok = true, status = 200) => ({
+    ok,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  });
+
+  it("uploadCookie 构造 multipart：file/id/platform 三字段，POST /uploadCookie", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ code: 200, msg: "Cookie文件上传成功", data: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(['{"cookies":[]}'], "cookie.json", { type: "application/json" });
+    await officialApi.uploadCookie("http://127.0.0.1:5409", file, 3, 3);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:5409/uploadCookie");
+    expect(init.method).toBe("POST");
+    const fd = init.body as FormData;
+    expect(fd.get("file")).toStrictEqual(file);
+    expect(fd.get("id")).toBe("3");
+    expect(fd.get("platform")).toBe("3");
+  });
+
+  it("uploadCookie 缺参 400 -> 透传官方 msg", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 400, msg: "缺少参数", data: null }, false, 400),
+      ),
+    );
+    const file = new File(["{}"], "cookie.json");
+    await expect(
+      officialApi.uploadCookie("http://127.0.0.1:5409", file, 3, 3),
+    ).rejects.toThrow("缺少参数");
+  });
+
+  it("downloadCookie ok -> 返回 blob", async () => {
+    const blob = new Blob(['{"cookies":[]}'], { type: "application/json" });
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ code: 200, msg: null, data: null }),
-      text: async () => JSON.stringify({ code: 200, msg: null, data: null }),
+      blob: async () => blob,
     });
     vi.stubGlobal("fetch", fetchMock);
-    await officialApi.postVideoBatch("http://127.0.0.1:5409", [
-      { fileList: ["a.mp4"], accountList: ["d.json"], type: 3, title: "t", tags: [] },
-    ]);
+
+    const out = await officialApi.downloadCookie("http://127.0.0.1:5409", "abc.json");
+
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:5409/postVideoBatch",
-      expect.objectContaining({ method: "POST" }),
+      "http://127.0.0.1:5409/downloadCookie?filePath=abc.json",
     );
-    const sent = JSON.parse(
-      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
-    );
-    expect(Array.isArray(sent)).toBe(true);
-    expect(sent[0].type).toBe(3);
-    expect(sent[0].fileList).toEqual(["a.mp4"]);
+    expect(out).toBe(blob);
   });
 
-  it("官方校验错误（code 400）透传 msg", async () => {
+  it("downloadCookie 失败 -> 错误解析在 adapter 层，透传官方 msg", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 400,
-        json: async () => ({ code: 400, msg: "Expected a JSON array", data: null }),
-        text: async () => JSON.stringify({ code: 400, msg: "Expected a JSON array", data: null }),
-      }),
+      vi.fn().mockResolvedValue(
+        jsonResponse({ code: 500, msg: "Cookie文件不存在", data: null }, false, 404),
+      ),
     );
     await expect(
-      officialApi.postVideoBatch("http://127.0.0.1:5409", []),
-    ).rejects.toThrow("Expected a JSON array");
+      officialApi.downloadCookie("http://127.0.0.1:5409", "missing.json"),
+    ).rejects.toThrow("Cookie文件不存在");
+  });
+
+  it("downloadCookie filePath 经 encodeURIComponent 编码", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await officialApi.downloadCookie("http://127.0.0.1:5409", "带空格 名.json");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/downloadCookie?filePath=%E5%B8%A6%E7%A9%BA%E6%A0%BC%20%E5%90%8D.json",
+    );
   });
 });
 
-describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）", () => {
+describe("buildBatchItemsFromMatrix（矩阵批量 → /postRuns 受理契约）", () => {
+
   it("每视频×每账号展开一个 postVideo 项：单视频多平台多账号", () => {
     const body = buildBatchItemsFromMatrix(
       [
@@ -285,7 +342,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "标题 A",
           caption: "正文 A",
           tags: "标签A",
-          accountIdsByPlatform: {
+          accountCookiesByPlatform: {
             douyin: ["d1.json", "d2.json"],
             xiaohongshu: ["x1.json"],
           },
@@ -313,7 +370,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "立即发",
           caption: "",
           tags: "",
-          accountIdsByPlatform: { douyin: ["d1.json"] },
+          accountCookiesByPlatform: { douyin: ["d1.json"] },
           mode: "immediate",
         },
         {
@@ -321,7 +378,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "定时发",
           caption: "",
           tags: "",
-          accountIdsByPlatform: { douyin: ["d2.json"] },
+          accountCookiesByPlatform: { douyin: ["d2.json"] },
           mode: "timer",
           startDays: 1,
           timeOfDay: "10:00",
@@ -336,14 +393,14 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     expect("videosPerDay" in immediate).toBe(false);
     expect("dailyTimes" in immediate).toBe(false);
     expect("startDays" in immediate).toBe(false);
-    // timer 完整三字段
+    // timer 完整三字段，分钟不得被降级丢失
     expect(timer.enableTimer).toBe(true);
     expect(timer.videosPerDay).toBe(1);
-    expect(timer.dailyTimes).toEqual([10]);
+    expect(timer.dailyTimes).toEqual(["10:00"]);
     expect(timer.startDays).toBe(1);
   });
 
-  it("HH:MM 整点取整：'10:00' -> 10；'14:30' -> 14（按 Math.floor(hour)）", () => {
+  it("HH:MM 映射保留分钟：'10:00' 与 '14:30' 原样下发", () => {
     const body = buildBatchItemsFromMatrix(
       [
         {
@@ -351,7 +408,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "t",
           caption: "",
           tags: "",
-          accountIdsByPlatform: { douyin: ["d.json"] },
+          accountCookiesByPlatform: { douyin: ["d.json"] },
           mode: "timer",
           startDays: 0,
           timeOfDay: "14:30",
@@ -359,10 +416,10 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
       ],
       ["14:30"],
     );
-    expect(body[0].dailyTimes).toEqual([14]);
+    expect(body[0].dailyTimes).toEqual(["14:30"]);
   });
 
-  it("非整点（如 09:01）按整点取整为 9", () => {
+  it("非整点（如 09:01）仍保留分钟", () => {
     const body = buildBatchItemsFromMatrix(
       [
         {
@@ -370,7 +427,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "t",
           caption: "",
           tags: "",
-          accountIdsByPlatform: { douyin: ["d.json"] },
+          accountCookiesByPlatform: { douyin: ["d.json"] },
           mode: "timer",
           startDays: 0,
           timeOfDay: "09:01",
@@ -378,7 +435,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
       ],
       ["09:01"],
     );
-    expect(body[0].dailyTimes).toEqual([9]);
+    expect(body[0].dailyTimes).toEqual(["09:01"]);
   });
 
   it("越界（HH:MM 解析后 >= 24）-> 抛错，不静默丢弃", () => {
@@ -390,7 +447,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
             title: "t",
             caption: "",
             tags: "",
-            accountIdsByPlatform: { douyin: ["d.json"] },
+            accountCookiesByPlatform: { douyin: ["d.json"] },
             mode: "timer",
             startDays: 0,
             timeOfDay: "24:00",
@@ -410,7 +467,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
             title: "t",
             caption: "",
             tags: "",
-            accountIdsByPlatform: { douyin: ["d.json"] },
+            accountCookiesByPlatform: { douyin: ["d.json"] },
             mode: "timer",
             startDays: 0,
             timeOfDay: "10:00",
@@ -429,7 +486,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "标题",
           caption: "正文",
           tags: "",
-          accountIdsByPlatform: { douyin: ["d.json"] },
+          accountCookiesByPlatform: { douyin: ["d.json"] },
           mode: "immediate",
         },
       ],
@@ -446,7 +503,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "A",
           caption: "",
           tags: "tagA",
-          accountIdsByPlatform: { douyin: ["d.json"] },
+          accountCookiesByPlatform: { douyin: ["d.json"] },
           mode: "immediate",
         },
         {
@@ -454,7 +511,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "B",
           caption: "bCap",
           tags: "tagB",
-          accountIdsByPlatform: { xiaohongshu: ["x1.json"], kuaishou: ["k1.json"] },
+          accountCookiesByPlatform: { xiaohongshu: ["x1.json"], kuaishou: ["k1.json"] },
           mode: "immediate",
         },
       ],
@@ -476,7 +533,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "t",
           caption: "",
           tags: "",
-          accountIdsByPlatform: {
+          accountCookiesByPlatform: {
             xiaohongshu: ["x.json"],
             wechat: ["w.json"],
             douyin: ["d.json"],
@@ -498,7 +555,7 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
           title: "t",
           caption: "",
           tags: "",
-          accountIdsByPlatform: { wechat: ["w.json"], douyin: ["d.json"] },
+          accountCookiesByPlatform: { wechat: ["w.json"], douyin: ["d.json"] },
           mode: "immediate",
           platformFields: { wechat: { declaration: "no_label" } },
         },
@@ -511,5 +568,53 @@ describe("buildBatchItemsFromMatrix（矩阵批量 → /postVideoBatch 契约）
     expect(wechatBody.platformFields).toEqual({ wechat: { declaration: "no_label" } });
     // 抖音没在 platformFields 里 → 不写入键
     expect("platformFields" in douyinBody).toBe(false);
+  });
+
+  it("publish records 查询使用日期范围并保留响应数组", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: 200, msg: null, data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      officialApi.getPublishRecords("http://127.0.0.1:5409", "2026-08-31", "2026-09-06"),
+    ).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/publishRecords?from=2026-08-31&to=2026-09-06",
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("视频号 timer 保留原始时刻，并提交最近整点与跨日进位元数据", () => {
+    const [body] = buildBatchItemsFromMatrix(
+      [
+        {
+          filePath: "wechat.mp4",
+          title: "视频号",
+          caption: "",
+          tags: "",
+          accountCookiesByPlatform: { wechat: ["w.json"] },
+          mode: "timer",
+          timeOfDay: "23:30",
+          startDays: 0,
+        },
+      ],
+      ["23:30"],
+    );
+
+    expect(body).toMatchObject({
+      type: 2,
+      dailyTimes: ["23:30"],
+      startDays: 0,
+      timerOriginalTime: "23:30",
+      timerFinalTime: "00:00",
+    });
+    expect(body.timerDowngradeReason).toContain("跨日");
+    expect(body.timerWindowWarning).toContain("仅提示");
   });
 });

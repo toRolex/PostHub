@@ -17,7 +17,7 @@ describe("daemon store（官方后端探活）", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     );
 
-    await useDaemonStore.getState().checkHealth();
+    await useDaemonStore.getState().probeDaemon();
 
     const s = useDaemonStore.getState();
     expect(s.connected).toBe(true);
@@ -27,7 +27,7 @@ describe("daemon store（官方后端探活）", () => {
   it("请求失败 -> connected=false 且记录 error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connection refused")));
 
-    await useDaemonStore.getState().checkHealth();
+    await useDaemonStore.getState().probeDaemon();
 
     expect(useDaemonStore.getState().connected).toBe(false);
     expect(useDaemonStore.getState().error).toBe("connection refused");
@@ -39,7 +39,7 @@ describe("daemon store（官方后端探活）", () => {
       vi.fn().mockResolvedValue({ ok: false, status: 500 }),
     );
 
-    await useDaemonStore.getState().checkHealth();
+    await useDaemonStore.getState().probeDaemon();
 
     expect(useDaemonStore.getState().connected).toBe(false);
   });

@@ -104,16 +104,84 @@ describe("buildPostVideoRequest（表单 → /postVideo 契约）", () => {
       timer: {
         enableTimer: true,
         videosPerDay: 2,
-        dailyTimes: [10, 14, 20],
+        dailyTimes: ["20:05", "10:00", "14:30", "14:30"],
         startDays: 1,
       },
     });
     expect(body.enableTimer).toBe(true);
     expect(body.videosPerDay).toBe(2);
-    // dailyTimes 为「整点小时」数字数组（官方 generate_schedule_time_next_day 语义）。
-    expect(body.dailyTimes).toEqual([10, 14, 20]);
+    // 新写入只使用 HH:MM 字符串，并保留分钟。
+    expect(body.dailyTimes).toEqual(["10:00", "14:30", "20:05"]);
     expect(body.dailyTimes).toHaveLength(3);
     expect(body.startDays).toBe(1);
+  });
+
+  it("视频号定时按最近整点降级，保留原值、原因与跨日进位", () => {
+    const body = buildPostVideoRequest({
+      platform: "wechat",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+      timer: {
+        enableTimer: true,
+        videosPerDay: 1,
+        dailyTimes: ["23:30"],
+        startDays: 0,
+      },
+    });
+
+    // submitted payload 保留原值；最终整点和跨日由 daemon effective producer 落地。
+    expect(body.dailyTimes).toEqual(["23:30"]);
+    expect(body.startDays).toBe(0);
+    expect(body.timerOriginalTime).toBe("23:30");
+    expect(body.timerFinalTime).toBe("00:00");
+    expect(body.timerDowngradeReason).toContain("跨日");
+    expect(body.timerWindowWarning).toContain("仅提示");
+  });
+
+  it("视频号请求保留原始时刻与用户起始日，由 daemon 统一计算最终值", () => {
+    const body = buildPostVideoRequest({
+      platform: "wechat",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+      timer: {
+        enableTimer: true,
+        videosPerDay: 1,
+        dailyTimes: ["23:30"],
+        startDays: 0,
+      },
+    });
+
+    expect(body.dailyTimes).toEqual(["23:30"]);
+    expect(body.startDays).toBe(0);
+    expect(body.timerOriginalTime).toBe("23:30");
+    expect(body.timerFinalTime).toBe("00:00");
+    expect(body.timerResolutions).toEqual([
+      expect.objectContaining({ originalTime: "23:30", finalTime: "00:00", dayCarry: 1 }),
+    ]);
+  });
+
+  it("视频号定时时刻为空时不伪造首个降级结果，交给表单校验", () => {
+    const body = buildPostVideoRequest({
+      platform: "wechat",
+      files,
+      accounts,
+      title: "x",
+      tags: [],
+      timer: {
+        enableTimer: true,
+        videosPerDay: 1,
+        dailyTimes: [],
+        startDays: 0,
+      },
+    });
+
+    expect(body.dailyTimes).toEqual([]);
+    expect(body.timerOriginalTime).toBeUndefined();
+    expect(body.timerResolutions).toBeUndefined();
   });
 
   it("传入 platformFields 时透传到请求体（issue #43）", () => {

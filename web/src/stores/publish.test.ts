@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initialPublishState, usePublishStore, parseTags } from "./publish";
+import {
+  initialPublishState,
+  loadTimerPref,
+  TIMER_PREF_KEY,
+  usePublishStore,
+} from "./publish";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore, initialAccountsState } from "./accounts";
+import { useRunStore, initialRunState } from "./runs";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
@@ -32,24 +38,30 @@ const ACCOUNTS = [
 
 describe("publish store（发布表单 → 官方 /postVideo）", () => {
   beforeEach(() => {
+    localStorage.clear();
     useDaemonStore.setState({ url: "http://127.0.0.1:9999" });
     useAccountsStore.setState({ ...initialAccountsState, accounts: ACCOUNTS as never });
     usePublishStore.setState(initialPublishState);
+    useRunStore.setState(initialRunState);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("parseTags 拆分与去 #", () => {
-    expect(parseTags(" 春天 旅行 #美食，摄影 ")).toEqual(["春天", "旅行", "美食", "摄影"]);
-    expect(parseTags("  ")).toEqual([]);
-  });
-
   it("submit 成功 -> 每平台各调一次 /postVideo，携带官方契约体", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [] } }),
+      )
+      .mockResolvedValue(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "run-1", status: "pending", itemCount: 1 },
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     usePublishStore.setState({
@@ -63,11 +75,11 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
 
     await usePublishStore.getState().submit();
 
-    // 两个平台各一次 POST /postVideo
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    // 先一次跨平台历史预检，再各平台一次 accepted POST /postRuns
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const calls = fetchMock.mock.calls.slice(1) as [string, RequestInit][];
     for (const [url, init] of calls) {
-      expect(url).toBe("http://127.0.0.1:9999/postVideo");
+      expect(url).toBe("http://127.0.0.1:9999/postRuns");
       expect(init.method).toBe("POST");
       const body = JSON.parse(init.body as string);
       expect(body.fileList).toEqual(["uuid_a_春天.mp4"]);
@@ -86,8 +98,17 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(JSON.parse(wechatCall.body as string).accountList).toEqual(["wechat_a.json"]);
 
     const s = usePublishStore.getState();
-    expect(s.results.douyin?.ok).toBe(true);
-    expect(s.results.wechat?.ok).toBe(true);
+    expect(s.results.douyin).toEqual({
+      ok: true,
+      msg: "已受理，后台执行中",
+      runId: "run-1",
+    });
+    expect(s.results.wechat).toEqual({
+      ok: true,
+      msg: "已受理，后台执行中",
+      runId: "run-1",
+    });
+    expect(JSON.parse(localStorage.getItem("posthub.latestRunId")!)).toBe("run-1");
   });
 
   it("submit 校验失败 -> 抛错且不发起请求", async () => {
@@ -103,10 +124,17 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [] } }),
+      )
+      .mockResolvedValueOnce(
         jsonResponse({ code: 400, msg: "账号列表不能为空", data: null }, false, 400),
       )
       .mockResolvedValueOnce(
-        jsonResponse({ code: 200, msg: "发布任务已提交", data: null }),
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "run-2", status: "pending", itemCount: 1 },
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -132,6 +160,178 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     expect(s.results.wechat?.ok).toBe(true);
   });
 
+  it("跨提交历史重复先二次确认；取消不创建 run，确认后重发", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "发现已有成功发布记录，请确认是否重新发布",
+            data: { kind: "history_duplicate", duplicates: [duplicate] },
+          },
+          false,
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "new-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+    await usePublishStore.getState().submit();
+    expect(confirm).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePublishStore.getState().results.douyin?.msg).toBe(
+      "发现历史发布记录，已取消发布",
+    );
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValueOnce(true);
+    await usePublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const confirmedInit = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((confirmedInit.headers as Record<string, string>)["X-PostHub-Confirm-Duplicates"]).toBe("true");
+    expect(useRunStore.getState().runId).toBe("new-run");
+  });
+
+  it("多平台历史重复先统一确认，取消不创建任何 run", async () => {
+    const duplicate = {
+      id: 7,
+      accountId: 1,
+      accountFile: "douyin_a.json",
+      accountName: "抖音一号",
+      platform: "douyin",
+      videoId: "a.mp4",
+      videoTitle: "历史视频",
+      effectiveScheduledFor: null,
+      scheduledFor: null,
+      status: "published",
+      publishedAt: "2026-08-29 10:00:00",
+      runId: "old-run",
+      runItemId: "old-item",
+      recordedAt: "2026-08-29 10:00:00",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [duplicate] } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 200, msg: null, data: { duplicates: [duplicate] } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "douyin-run", status: "pending", itemCount: 1 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          code: 200,
+          msg: "已受理",
+          data: { runId: "wechat-run", status: "pending", itemCount: 1 },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin", "wechat"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: 2, kuaishou: null },
+    });
+
+    await expect(usePublishStore.getState().submit()).rejects.toThrow(
+      "历史发布记录",
+    );
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useRunStore.getState().runId).toBeNull();
+
+    confirm.mockReturnValueOnce(true);
+    await usePublishStore.getState().submit();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const [, init] of fetchMock.mock.calls.slice(2) as [string, RequestInit][]) {
+      expect((init.headers as Record<string, string>)["X-PostHub-Confirm-Duplicates"]).toBe(
+        "true",
+      );
+    }
+    expect(useRunStore.getState().runId).toBe("wechat-run");
+  });
+
+  it("409 冲突显示本次未受理并保留已有 run，不能生成本地成功状态", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            code: 409,
+            msg: "已有相同视频×账号的运行正在执行",
+            data: { existingRunId: "run-existing" },
+          },
+          false,
+          409,
+        ),
+      ),
+    );
+    usePublishStore.setState({
+      title: "x",
+      selectedFile: "a.mp4",
+      selectedPlatforms: ["douyin"],
+      accountByPlatform: { douyin: 1, xiaohongshu: null, wechat: null, kuaishou: null },
+    });
+
+    await usePublishStore.getState().submit();
+
+    expect(useRunStore.getState().runId).toBeNull();
+    expect(usePublishStore.getState().results.douyin).toEqual({
+      ok: false,
+      msg: "本次未受理：已有运行 run-existing",
+      existingRunId: "run-existing",
+    });
+  });
+
   it("setPlatforms 自动为已选平台填充默认账号", () => {
     usePublishStore
       .getState()
@@ -154,5 +354,41 @@ describe("publish store（发布表单 → 官方 /postVideo）", () => {
     });
     const noAccount = usePublishStore.getState().validate();
     expect(noAccount.some((e) => e.includes("账号"))).toBe(true);
+  });
+
+  it("旧整数定时配置安全回退默认值且不再兼容写入", () => {
+    localStorage.setItem(
+      TIMER_PREF_KEY,
+      JSON.stringify({
+        timerEnabled: true,
+        videosPerDay: 2,
+        dailyTimes: [20, 10, 20],
+        startDays: 3,
+      }),
+    );
+
+    expect(loadTimerPref()).toEqual({
+      timerEnabled: false,
+      videosPerDay: 1,
+      dailyTimes: ["10:00", "14:00", "20:00"],
+      startDays: 0,
+    });
+    expect(JSON.parse(localStorage.getItem(TIMER_PREF_KEY)!).dailyTimes).toEqual([
+      20,
+      10,
+      20,
+    ]);
+  });
+
+  it("默认定时配置新写入只保存 string[]，保留分钟", () => {
+    usePublishStore.getState().setTimerPref({
+      timerEnabled: true,
+      videosPerDay: 2,
+      dailyTimes: ["14:30", "09:05"],
+      startDays: 1,
+    });
+    const stored = JSON.parse(localStorage.getItem(TIMER_PREF_KEY)!);
+    expect(stored.dailyTimes).toEqual(["09:05", "14:30"]);
+    expect(stored.dailyTimes.every((value: unknown) => typeof value === "string")).toBe(true);
   });
 });

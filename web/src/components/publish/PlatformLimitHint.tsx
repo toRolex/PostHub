@@ -11,7 +11,7 @@
 import { cn } from "../../lib/utils";
 
 interface PlatformLimitHintProps {
-  /** 本批次该视频号账号累计定时任务数（由 selectWechatScheduledCount 派生）。 */
+  /** 本批次该视频号账号累计定时任务数（由 wechatScheduledCountsByCookie 派生）。 */
   count: number;
   /** 视频号单日上限（默认 5，与官方工作值对齐；待实测）。 */
   limit?: number;

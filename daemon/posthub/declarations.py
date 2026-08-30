@@ -14,7 +14,7 @@ PostHub 这层定义英文枚举值（如 `no_label` / `ai_generated`），通�
 设计原则：
 - 持久化层存英文枚举（不随平台 UI 文案变化失效）；
 - 映射集中维护在本文件，便于上游 UI 文案变更时单点更新；
-- 非法映射抛 `DeclarationMappingError`，由 `sau_backend.py` 兜底返回 400。
+- 非法映射抛 `DeclarationMappingError`，由组合层发布 seam hook 兜底返回 400。
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ class ResolvedDeclarations:
     """平台声明文案拆解，供 social-auto-upload 上层 dict 注入。
 
     三家平台分别独立：`tencent` 字段给视频号、`douyin` 给抖音、
-    `xiaohongshu` 给小红书。`origin` 是「声明原创」开关（透传 bool，
-    不参与合规声明语义），按平台直接放进各自 dict。
+    `xiaohongshu` 给小红书。该映射只负责把已通过 normalization 的字段转成
+    上游文案；没有可靠执行 seam 的字段由 normalization 在进入这里前拒绝。
     """
 
     tencent: dict[str, str]
@@ -125,21 +125,34 @@ def _resolve(
 def resolve_platform_fields(
     platform_fields: dict | None,
 ) -> ResolvedDeclarations:
-    """把 PostHub `platform_fields` 字典解析成各平台上游文案 + origin。
+    """把 PostHub `platformFields` 字典解析成各平台上游文案。
 
-    参数：来自官方 `/postVideo` 请求体 `platform_fields` 字段（任意 key 缺失视为「未设置」）。
-    返回：拆分到三家平台的 dict；上游 dict 注入时按 platform 选择对应字段。
+    参数：来自 PostHub `/postVideo` 请求体的 `platformFields` 字段；调用方应先
+    完成 canonical shape 与可执行字段校验。返回拆分到三家平台的 dict；上游
+    dict 注入时按 platform 选择对应字段。
     """
     wechat: dict = (platform_fields or {}).get("wechat") or {}
     douyin: dict = (platform_fields or {}).get("douyin") or {}
     xiaohongshu: dict = (platform_fields or {}).get("xiaohongshu") or {}
 
-    tencent_text = _resolve(wechat.get("declaration"), WECHAT_DECLARATION_TEXT, "wechat.declaration")
-    douyin_text = _resolve(douyin.get("declaration"), DOUYIN_DECLARATION_TEXT, "douyin.declaration")
-    xhs_text = _resolve(xiaohongshu.get("source"), XIAOHONGSHU_SOURCE_TEXT, "xiaohongshu.source")
+    tencent_text = _resolve(
+        wechat.get("declaration"), WECHAT_DECLARATION_TEXT, "wechat.declaration"
+    )
+    douyin_text = _resolve(
+        douyin.get("declaration"), DOUYIN_DECLARATION_TEXT, "douyin.declaration"
+    )
+    xhs_text = _resolve(
+        xiaohongshu.get("source"), XIAOHONGSHU_SOURCE_TEXT, "xiaohongshu.source"
+    )
 
-    tencent_origin = wechat.get("origin") if isinstance(wechat.get("origin"), bool) else None
-    xhs_origin = xiaohongshu.get("origin") if isinstance(xiaohongshu.get("origin"), bool) else None
+    tencent_origin = (
+        wechat.get("origin") if isinstance(wechat.get("origin"), bool) else None
+    )
+    xhs_origin = (
+        xiaohongshu.get("origin")
+        if isinstance(xiaohongshu.get("origin"), bool)
+        else None
+    )
 
     tencent: dict[str, str] = {}
     if tencent_text is not None:

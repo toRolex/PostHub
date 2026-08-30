@@ -3,13 +3,18 @@
  *
  * 注：本项目未装 @testing-library/react，本测试只覆盖纯逻辑 helper
  * （summarizeItem / summarizeDailyTimes）。DOM 渲染与交互（展开/折叠、
- * openPreview 触发、itemResults 逐项渲染）需 dev 环境手动验证
+ * openPreview 触发、RunStore 状态条展示）需 dev 环境手动验证
  * （见 acceptance criteria 第 1 条）。
  */
 
 import { describe, expect, it } from "vitest";
-import { summarizeItem, summarizeDailyTimes } from "./BatchPublishSection";
-import type { BatchItem } from "../../types/batch";
+import {
+  summarizeItem,
+  summarizeDailyTimes,
+  toggleBatchSelection,
+  selectAllBatchFiles,
+} from "./BatchPublishSection";
+import type { BatchItem } from "../../domain/batch";
 
 function mkItem(over: Partial<BatchItem>): BatchItem {
   return {
@@ -17,7 +22,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
     title: "标题",
     caption: "",
     tags: "",
-    accountIdsByPlatform: {},
+    accountCookiesByPlatform: {},
     mode: "immediate",
     ...over,
   };
@@ -25,7 +30,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
 
 describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("无账号勾选 → accountSummary = '未选账号'", () => {
-    const s = summarizeItem(mkItem({ accountIdsByPlatform: {} }));
+    const s = summarizeItem(mkItem({ accountCookiesByPlatform: {} }));
     expect(s.accountSummary).toBe("未选账号");
     expect(s.totalAccounts).toBe(0);
   });
@@ -33,7 +38,7 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("多平台多账号 → accountSummary = 'N 账号 / M 平台'", () => {
     const s = summarizeItem(
       mkItem({
-        accountIdsByPlatform: {
+        accountCookiesByPlatform: {
           douyin: ["d1.json", "d2.json"],
           xiaohongshu: ["x1.json"],
         },
@@ -72,13 +77,31 @@ describe("BatchPublishSection · summarizeItem（折叠态摘要）", () => {
   it("有账号 + timer 全配置 → accountSummary / timeOfDayLabel 都填充", () => {
     const s = summarizeItem(
       mkItem({
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
         mode: "timer",
         timeOfDay: "10:00",
       }),
     );
     expect(s.accountSummary).toBe("1 账号 / 1 平台");
     expect(s.timeOfDayLabel).toBe("10:00");
+  });
+});
+
+describe("BatchPublishSection · 多素材选择", () => {
+  it("切换素材选择并支持全选/取消全选", () => {
+    const selected = toggleBatchSelection(new Set<string>(), "a.mp4");
+    expect(selected).toEqual(new Set(["a.mp4"]));
+    expect(toggleBatchSelection(selected, "a.mp4")).toEqual(new Set());
+
+    const all = selectAllBatchFiles(["a.mp4", "b.mp4"], new Set());
+    expect(all).toEqual(new Set(["a.mp4", "b.mp4"]));
+    expect(selectAllBatchFiles(["a.mp4", "b.mp4"], all)).toEqual(new Set());
+  });
+
+  it("全选只作用于仍可加入的素材，已加入素材不重复", () => {
+    const available = ["a.mp4", "c.mp4"];
+    const selected = selectAllBatchFiles(available, new Set(["a.mp4", "b.mp4"]));
+    expect(selected).toEqual(new Set(["a.mp4", "c.mp4"]));
   });
 });
 

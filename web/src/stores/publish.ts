@@ -1,9 +1,19 @@
 import { create } from "zustand";
-import { officialApi, buildPostVideoRequest } from "../api/official";
+import {
+  officialApi,
+  buildPostVideoRequest,
+  confirmDuplicateRecords,
+  duplicateRecordsFromError,
+  existingRunIdFromError,
+} from "../api/official";
 import type { Account, Platform, PlatformFields } from "../api/types";
 import { useDaemonStore } from "./daemon";
 import { useAccountsStore } from "./accounts";
-import { trimPlatformFields, validatePlatformFields } from "../api/declarations";
+import { useRunStore } from "./runs";
+import { withMutation } from "./_withMutation";
+import { trimPlatformFields, validatePlatformFields } from "../domain/declarations";
+import { parseTags } from "../domain/tags";
+import { normalizeDailyTimes } from "../domain/time";
 
 const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
   douyin: null,
@@ -13,40 +23,43 @@ const EMPTY_ACCOUNTS: Partial<Record<Platform, number | null>> = {
 };
 
 /** localStorage 键：发布默认定时配置（「定时设置」页可编辑）。 */
-const TIMER_PREF_KEY = "posthub.timerPref";
+export const TIMER_PREF_KEY = "posthub.timerPref";
 
 export interface TimerPref {
   timerEnabled: boolean;
   videosPerDay: number;
-  dailyTimes: number[];
+  dailyTimes: string[];
   startDays: number;
 }
 
 const DEFAULT_TIMER_PREF: TimerPref = {
   timerEnabled: false,
   videosPerDay: 1,
-  dailyTimes: [10, 14, 20],
+  dailyTimes: ["10:00", "14:00", "20:00"],
   startDays: 0,
 };
 
-/** 读取持久化的默认定时配置；缺失/损坏时回退默认。 */
-function loadTimerPref(): TimerPref {
+/** 读取持久化的默认定时配置；旧格式或畸形值安全回退默认值，不再兼容写入。 */
+export function loadTimerPref(): TimerPref {
   try {
     const raw = localStorage.getItem(TIMER_PREF_KEY);
     if (!raw) return DEFAULT_TIMER_PREF;
     const parsed = JSON.parse(raw) as Partial<TimerPref>;
-    return {
-      timerEnabled: Boolean(parsed.timerEnabled) ?? DEFAULT_TIMER_PREF.timerEnabled,
+    const pref: TimerPref = {
+      timerEnabled:
+        typeof parsed.timerEnabled === "boolean"
+          ? parsed.timerEnabled
+          : DEFAULT_TIMER_PREF.timerEnabled,
       videosPerDay:
         typeof parsed.videosPerDay === "number"
           ? parsed.videosPerDay
           : DEFAULT_TIMER_PREF.videosPerDay,
-      dailyTimes: Array.isArray(parsed.dailyTimes)
-        ? parsed.dailyTimes
-        : DEFAULT_TIMER_PREF.dailyTimes,
+      dailyTimes: normalizeDailyTimes(parsed.dailyTimes),
       startDays:
         typeof parsed.startDays === "number" ? parsed.startDays : DEFAULT_TIMER_PREF.startDays,
     };
+    saveTimerPref(pref);
+    return pref;
   } catch {
     return DEFAULT_TIMER_PREF;
   }
@@ -96,18 +109,40 @@ export interface PublishFormValues {
   timerEnabled: boolean;
   /** 定时：每日条数（videosPerDay，官方要求 1..len(dailyTimes)）。 */
   videosPerDay: number;
-  /** 定时：每日时刻（dailyTimes，整点小时数组 0-23，官方取 dailyTimes[daily_video_index]）。 */
-  dailyTimes: number[];
+  /** 定时：每日时刻（dailyTimes，HH:MM 字符串数组，分钟保真）。 */
+  dailyTimes: string[];
   /** 定时：起始天（startDays，0 = 明天起）。 */
   startDays: number;
   /** 内容声明按平台分键（issue #43）。空字段视为不覆盖账号默认。 */
   platformFields: PlatformFields;
 }
 
+class DuplicateConfirmationCancelled extends Error {
+  constructor() {
+    super("发现历史发布记录，已取消发布");
+    this.name = "DuplicateConfirmationCancelled";
+  }
+}
+
+async function acceptWithDuplicateConfirmation(
+  base: string,
+  payload: ReturnType<typeof buildPostVideoRequest>,
+): Promise<Awaited<ReturnType<typeof officialApi.acceptRun>>> {
+  try {
+    return await officialApi.acceptRun(base, payload);
+  } catch (error) {
+    const duplicates = duplicateRecordsFromError(error);
+    if (duplicates.length === 0 || !confirmDuplicateRecords(duplicates)) throw error;
+    return officialApi.acceptRun(base, payload, { confirmDuplicates: true });
+  }
+}
+
 interface PublishState extends PublishFormValues {
   submitting: boolean;
-  /** 各平台提交结果（成功 / 官方错误消息）。key = 平台。 */
-  results: Partial<Record<Platform, { ok: boolean; msg: string }>>;
+  /** 各平台受理结果（ok 表示请求已受理，不表示 item 已发布成功）。key = 平台。 */
+  results: Partial<
+    Record<Platform, { ok: boolean; msg: string; runId?: string; existingRunId?: string }>
+  >;
   setForm: (patch: PublishPatch) => void;
   setPlatforms: (platforms: Platform[], accounts: Account[]) => void;
   /** 定时设置页：整体写入默认定时配置并持久化到 localStorage。 */
@@ -130,14 +165,6 @@ export const initialPublishState: PublishStateFields = {
   results: {},
 };
 
-/** 标签输入 → 数组（去空、去 #）。 */
-export function parseTags(raw: string): string[] {
-  return raw
-    .split(/[\s,，]+/)
-    .map((t) => t.replace(/^#+/, "").trim())
-    .filter(Boolean);
-}
-
 export const usePublishStore = create<PublishState>()((set, get) => ({
   ...initialPublishState,
 
@@ -155,7 +182,7 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
       saveTimerPref({
         timerEnabled: s.timerEnabled,
         videosPerDay: s.videosPerDay,
-        dailyTimes: s.dailyTimes,
+        dailyTimes: normalizeDailyTimes(s.dailyTimes),
         startDays: s.startDays,
       });
     }
@@ -163,13 +190,17 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
 
   /** 定时设置页：整体写入默认定时配置并持久化。 */
   setTimerPref: (pref) => {
+    const normalized: TimerPref = {
+      ...pref,
+      dailyTimes: normalizeDailyTimes(pref.dailyTimes),
+    };
     set({
-      timerEnabled: pref.timerEnabled,
-      videosPerDay: pref.videosPerDay,
-      dailyTimes: pref.dailyTimes,
-      startDays: pref.startDays,
+      timerEnabled: normalized.timerEnabled,
+      videosPerDay: normalized.videosPerDay,
+      dailyTimes: normalized.dailyTimes,
+      startDays: normalized.startDays,
     });
-    saveTimerPref(pref);
+    saveTimerPref(normalized);
   },
 
   setPlatforms: (platforms, accounts) => {
@@ -204,23 +235,23 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
     }
     const fieldError = validatePlatformFields(s.platformFields);
     if (fieldError) errors.push(fieldError);
-    // 定时：仅启用时校验，规则与官方 generate_schedule_time_next_day 对齐。
+    // 定时：仅启用时校验；时间值使用本地日内 HH:MM，不带时区。
     if (s.timerEnabled) {
       if (!Number.isInteger(s.videosPerDay) || s.videosPerDay <= 0) {
         errors.push("每日条数需为正整数");
       }
+      let timeCount = 0;
       if (!Array.isArray(s.dailyTimes) || s.dailyTimes.length === 0) {
         errors.push("每日时刻不能为空");
-      } else if (
-        s.dailyTimes.some((h) => !Number.isInteger(h) || h < 0 || h > 23)
-      ) {
-        errors.push("每日时刻须为整点小时（0-23）");
-      } else if (
-        s.videosPerDay > 0 &&
-        s.dailyTimes.length > 0 &&
-        s.videosPerDay > s.dailyTimes.length
-      ) {
-        errors.push(`每日条数不能超过时刻数量（${s.dailyTimes.length}）`);
+      } else {
+        try {
+          timeCount = normalizeDailyTimes(s.dailyTimes).length;
+        } catch {
+          errors.push("每日时刻须为 HH:MM（小时 0-23，分钟 0-59）");
+        }
+      }
+      if (s.videosPerDay > 0 && timeCount > 0 && s.videosPerDay > timeCount) {
+        errors.push(`每日条数不能超过时刻数量（${timeCount}）`);
       }
       if (!Number.isInteger(s.startDays) || s.startDays < 0) {
         errors.push("起始天需为非负整数");
@@ -246,46 +277,110 @@ export const usePublishStore = create<PublishState>()((set, get) => ({
     const tags = parseTags(s.tags);
     const results: PublishState["results"] = {};
 
-    set({ submitting: true });
-    try {
-      for (const p of s.selectedPlatforms) {
-        const accId = accounts[p];
-        // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
-        const cookieFile =
-          accountList.find((a) => a.id === accId && a.platform === p)?.cookieFile ?? "";
-        // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
-        const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
-        try {
-          await officialApi.postVideo(
-            base,
-            buildPostVideoRequest({
+    await withMutation(
+      set,
+      async () => {
+        const payloads: { platform: Platform; payload: ReturnType<typeof buildPostVideoRequest> }[] = [];
+        for (const p of s.selectedPlatforms) {
+          const accId = accounts[p];
+          // 取该平台账号的 cookie 文件名（官方 accountList 语义：cookiesFile 下相对名）。
+          const cookieFile =
+            accountList.find((a) => a.id === accId && a.platform === p)?.cookieFile ?? "";
+          // 仅传表单实际填了的平台子键（避免空对象被透传成覆盖账号默认）
+          const trimmed = p === "kuaishou" ? undefined : trimPlatformFields(s.platformFields, p);
+          try {
+            payloads.push({
               platform: p,
-              files: s.selectedFile ? [s.selectedFile] : [],
-              accounts: [cookieFile],
-              title: s.title,
-              caption: s.caption,
-              tags,
-              platformFields: trimmed,
-              timer: {
-                enableTimer: s.timerEnabled,
-                videosPerDay: s.videosPerDay,
-                dailyTimes: s.dailyTimes,
-                startDays: s.startDays,
-              },
-            }),
-          );
-          results[p] = { ok: true, msg: "发布任务已提交" };
-        } catch (e) {
-          results[p] = {
-            ok: false,
-            msg: e instanceof Error ? e.message : String(e),
-          };
+              payload: buildPostVideoRequest({
+                platform: p,
+                files: s.selectedFile ? [s.selectedFile] : [],
+                accounts: [cookieFile],
+                title: s.title,
+                caption: s.caption,
+                tags,
+                platformFields: trimmed,
+                timer: {
+                  enableTimer: s.timerEnabled,
+                  videosPerDay: s.videosPerDay,
+                  dailyTimes: s.dailyTimes,
+                  startDays: s.startDays,
+                },
+              }),
+            });
+          } catch (e) {
+            results[p] = {
+              ok: false,
+              msg: e instanceof Error ? e.message : String(e),
+            };
+          }
         }
-      }
-      set({ results });
-    } finally {
-      set({ submitting: false });
-    }
+
+        let confirmedDuplicates = false;
+        if (!s.timerEnabled && payloads.length > 1) {
+          const duplicates = await officialApi.checkPublishRecords(
+            base,
+            payloads.map(({ payload }) => payload),
+          );
+          if (duplicates.length > 0) {
+            if (!confirmDuplicateRecords(duplicates)) {
+              for (const { platform } of payloads) {
+                results[platform] = {
+                  ok: false,
+                  msg: "发现历史发布记录，已取消发布",
+                };
+              }
+              set({ results });
+              throw new DuplicateConfirmationCancelled();
+            }
+            confirmedDuplicates = true;
+          }
+        }
+
+        for (const { platform: p, payload } of payloads) {
+          try {
+            if (!s.timerEnabled) {
+              const accepted = confirmedDuplicates
+                ? await officialApi.acceptRun(base, payload, { confirmDuplicates: true })
+                : await acceptWithDuplicateConfirmation(base, payload);
+              useRunStore.getState().rememberAcceptedRun(accepted);
+              results[p] = {
+                ok: true,
+                msg: "已受理，后台执行中",
+                runId: accepted.runId,
+              };
+            } else {
+              await officialApi.postVideo(base, payload);
+              results[p] = { ok: true, msg: "发布任务已提交" };
+            }
+          } catch (e) {
+            const duplicates = duplicateRecordsFromError(e);
+            const existingRunId = existingRunIdFromError(e);
+            if (duplicates.length > 0) {
+              results[p] = { ok: false, msg: "发现历史发布记录，已取消发布" };
+            } else if (existingRunId) {
+              results[p] = {
+                ok: false,
+                msg: `本次未受理：已有运行 ${existingRunId}`,
+                existingRunId,
+              };
+            } else {
+              results[p] = {
+                ok: false,
+                msg: e instanceof Error ? e.message : String(e),
+              };
+            }
+          }
+        }
+        set({ results });
+      },
+      {
+        begin: { submitting: true },
+        end: { submitting: false },
+        // 平台级错误已逐条收敛进 results；外层异常不写 error、原样抛出。
+        onError: () => undefined,
+        rethrow: true,
+      },
+    );
   },
 
   reset: () => set({ ...initialPublishState }),

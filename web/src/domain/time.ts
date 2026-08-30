@@ -1,0 +1,135 @@
+/** 定时纯时间契约：只处理本地日内 HH:MM，不携带时区或日期。 */
+
+/** 解析 H:MM / HH:MM；返回 0..1439 的日内分钟，非法输入显式抛错。 */
+export function parseHHMM(value: unknown): number {
+  if (typeof value !== "string") {
+    throw new Error(`时间格式非法：${String(value)}（应为 HH:MM）`);
+  }
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
+  if (!match) {
+    throw new Error(`时间格式非法：${value}（应为 HH:MM）`);
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23) {
+    throw new Error(`时间越界：${value}（小时应在 0–23）`);
+  }
+  if (minute > 59) {
+    throw new Error(`时间越界：${value}（分钟应在 0–59）`);
+  }
+  return hour * 60 + minute;
+}
+
+/** 把可读的 H:MM / HH:MM 规范化为唯一写入格式 HH:MM。 */
+export function normalizeHHMM(value: unknown): string {
+  return formatHHMM(parseHHMM(value));
+}
+
+/** 把日内分钟格式化为唯一写入格式 HH:MM。 */
+export function formatHHMM(totalMinutes: number): string {
+  if (!Number.isInteger(totalMinutes) || totalMinutes < 0 || totalMinutes > 1439) {
+    throw new Error(`日内分钟越界：${totalMinutes}（应为 0–1439）`);
+  }
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+/** 读取唯一的 HH:MM 字符串数组，统一为排序去重的日内分钟。 */
+export function readTimeList(raw: unknown): number[] {
+  if (!Array.isArray(raw)) throw new Error("每日时刻必须为数组");
+  const minutes = raw.map((value) => parseHHMM(value));
+  return Array.from(new Set(minutes)).sort((a, b) => a - b);
+}
+
+/** 统一把日内分钟写成排序去重的 HH:MM 字符串数组。 */
+export function writeTimeList(minutes: number[]): string[] {
+  return Array.from(new Set(minutes)).sort((a, b) => a - b).map(formatHHMM);
+}
+
+/** 规范化唯一的 HH:MM 输入并产出排序去重的 HH:MM。 */
+export function normalizeDailyTimes(raw: unknown): string[] {
+  return writeTimeList(readTimeList(raw));
+}
+
+export interface LocalTime {
+  hour: number;
+  minute: number;
+}
+
+/** 读取机器本地时钟；不使用 UTC，传入 Date 便于测试冻结时间。 */
+export function localTimeOf(now: Date = new Date()): LocalTime {
+  if (Number.isNaN(now.getTime())) throw new Error("本地时间无效");
+  return { hour: now.getHours(), minute: now.getMinutes() };
+}
+
+export interface RoundedHour {
+  hour: number;
+  /** 取整跨过 23:xx → 00:00 时为 1，否则为 0。 */
+  dayCarry: 0 | 1;
+}
+
+/** 将时刻降级到最近整点；正好 30 分钟向后取整，并显式返回午夜进位。 */
+export function nearestWholeHour(value: string | number | Date): RoundedHour {
+  let totalMinutes: number;
+  if (typeof value === "string") {
+    totalMinutes = parseHHMM(value);
+  } else if (value instanceof Date) {
+    const local = localTimeOf(value);
+    totalMinutes = local.hour * 60 + local.minute;
+  } else {
+    totalMinutes = value;
+  }
+  if (!Number.isInteger(totalMinutes) || totalMinutes < 0 || totalMinutes > 1439) {
+    throw new Error(`日内分钟越界：${String(totalMinutes)}（应为 0–1439）`);
+  }
+  const rounded = Math.floor(totalMinutes / 60) + (totalMinutes % 60 >= 30 ? 1 : 0);
+  return {
+    hour: rounded % 24,
+    dayCarry: rounded >= 24 ? 1 : 0,
+  };
+}
+
+/** 视频号 timer 的原始值、最终整点、跨日和非阻断提示。 */
+export interface WechatTimerResolution {
+  originalTime: string;
+  finalTime: string;
+  dayCarry: 0 | 1;
+  reason: string;
+  warning: string;
+}
+
+/** 视频号只支持整点：最近整点，正好 30 分钟向后取整。 */
+export function resolveWechatTimer(value: string): WechatTimerResolution {
+  const minutes = parseHHMM(value);
+  const originalTime = formatHHMM(minutes);
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const roundedHour = hour + (minute >= 30 ? 1 : 0);
+  const finalTime = formatHHMM((roundedHour % 24) * 60);
+  const dayCarry: 0 | 1 = roundedHour >= 24 ? 1 : 0;
+  let reason: string;
+  if (minute === 0) {
+    reason = `原始时刻已是整点：${originalTime}`;
+  } else if (minute < 30) {
+    reason = `按最近整点降级：${originalTime} → ${finalTime}`;
+  } else {
+    reason = `按最近整点降级：${originalTime} → ${finalTime}（30 分钟向后取整）`;
+  }
+  if (dayCarry) reason += "，跨日 +1 天";
+  return {
+    originalTime,
+    finalTime,
+    dayCarry,
+    reason,
+    warning: "视频号定时窗口至少提前 2 小时，最终由平台校验（仅提示）",
+  };
+}
+
+/** 把最近整点的午夜进位并入起始天，保持 startDays 非负整数语义。 */
+export function carryStartDays(startDays: number, dayCarry: 0 | 1): number {
+  if (!Number.isInteger(startDays) || startDays < 0) {
+    throw new Error(`起始天无效：${String(startDays)}`);
+  }
+  return startDays + dayCarry;
+}

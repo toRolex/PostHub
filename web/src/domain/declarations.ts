@@ -69,6 +69,30 @@ const WECHAT_SET = new Set<string>(WECHAT_DECLARATIONS.map((o) => o.value));
 const DOUYIN_SET = new Set<string>(DOUYIN_DECLARATIONS.map((o) => o.value));
 const XHS_SET = new Set<string>(XIAOHONGSHU_SOURCES.map((o) => o.value));
 
+export interface ResolvedDouyinDeclaration {
+  /** 最终生效的稳定英文枚举；undefined 表示账号也未设置。 */
+  value: DouyinDeclaration | undefined;
+  /** 面向用户的上游中文文案；无值时保留“账号默认”语义。 */
+  label: string;
+}
+
+/**
+ * 解析抖音任务声明三态：任务值优先，其次账号默认，最后保留未设置。
+ * `no_need` 是普通的显式值，因此会明确覆盖账号默认。
+ */
+export function resolveDouyinDeclaration(
+  task: { declaration?: DouyinDeclaration } | undefined,
+  accountDefault: { declaration?: DouyinDeclaration } | undefined,
+): ResolvedDouyinDeclaration {
+  const value = task?.declaration ?? accountDefault?.declaration;
+  return {
+    value,
+    label: value
+      ? DOUYIN_DECLARATIONS.find((option) => option.value === value)?.label ?? value
+      : "账号默认",
+  };
+}
+
 /** 槽位 → 候选 ui 列表（badge 文案展示复用 + registry 单一来源）。 */
 const PLATFORM_OPTIONS: Record<string, readonly DeclarationOption<string>[]> = {
   wechat: WECHAT_DECLARATIONS,
@@ -77,7 +101,7 @@ const PLATFORM_OPTIONS: Record<string, readonly DeclarationOption<string>[]> = {
 };
 
 /**
- * 任务级 platform_fields 裁剪到单平台子键，剔除 null/undefined；
+ * 任务级 platformFields 裁剪到单平台子键，剔除 null/undefined；
  * 空对象 → undefined 避免覆盖账号默认。
  * publish.ts / official.ts 共用（issue #43 review：消除双份 stripping 实现）。
  */
@@ -112,8 +136,8 @@ export function renderDeclarationLabel(
 }
 
 /**
- * 校验任务级 platform_fields：值不在合法枚举内 → 返回错误信息。
- * 与 daemon `resolve_platform_fields` 的非法枚举检测对齐，
+ * 校验任务级 platformFields：值不在合法枚举内或 origin 无可靠 seam → 返回错误信息。
+ * 与 daemon 的非法枚举检测对齐，
  * 让前端校验失败而不是后端 500（user story #35）。
  */
 export function validatePlatformFields(fields: PlatformFields | null | undefined): string | null {
@@ -124,8 +148,8 @@ export function validatePlatformFields(fields: PlatformFields | null | undefined
       if (section.declaration && !WECHAT_SET.has(section.declaration)) {
         return `视频号「内容声明」取值非法：${section.declaration}`;
       }
-      if (section.origin !== undefined && typeof section.origin !== "boolean") {
-        return "视频号「声明原创」必须为布尔";
+      if (section.origin !== undefined) {
+        return "视频号「声明原创」当前不支持可靠下发";
       }
     } else if (platform === "douyin") {
       if (section.declaration && !DOUYIN_SET.has(section.declaration)) {
@@ -135,17 +159,17 @@ export function validatePlatformFields(fields: PlatformFields | null | undefined
       if (section.source && !XHS_SET.has(section.source)) {
         return `小红书「添加内容类型声明」取值非法：${section.source}`;
       }
-      if (section.origin !== undefined && typeof section.origin !== "boolean") {
-        return "小红书「声明原创」必须为布尔";
+      if (section.origin !== undefined) {
+        return "小红书「声明原创」当前不支持可靠下发";
       }
     }
   }
   return null;
 }
 
-/** platform_fields 子键形状（issue #43）。 */
+/** platformFields 子键形状（issue #43）；origin 无可靠执行 seam，故不纳入。 */
 export interface PlatformFields {
-  wechat?: { declaration?: WechatDeclaration; origin?: boolean };
+  wechat?: { declaration?: WechatDeclaration };
   douyin?: { declaration?: DouyinDeclaration };
-  xiaohongshu?: { source?: XiaohongshuSource; origin?: boolean };
+  xiaohongshu?: { source?: XiaohongshuSource };
 }
