@@ -1,6 +1,6 @@
 [package]
 name = "posthub"
-version = "0.1.6"
+version = "0.2.0"
 description = "PostHub 发布中枢 — 三平台短视频自动发布工具"
 authors = ["PostHub Contributors"]
 edition = "2021"

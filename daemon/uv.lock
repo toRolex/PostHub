@@ -422,7 +422,7 @@ wheels = [
 
 [[package]]
 name = "posthub-daemon"
-version = "0.1.7"
+version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "flask", extra = ["async"] },

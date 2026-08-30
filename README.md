@@ -29,13 +29,13 @@ PostHub 是一个桌面端的多平台短视频发布工具。它把「一个视
 
 ## 下载
 
-最新稳定版：**v0.1.7**（[Release 页](https://github.com/toRolex/PostHub/releases/tag/v0.1.7)）
+最新稳定版：**v0.2.0**（[Release 页](https://github.com/toRolex/PostHub/releases/tag/v0.2.0)）
 
 | 平台 | 安装包 | 大小 |
 |---|---|---|
-| macOS (Apple Silicon) | `PostHub_0.1.7_aarch64.dmg` | 19.7 MB |
-| Windows (NSIS) | `PostHub_0.1.7_x64-setup.exe` | 246 MB |
-| Windows (MSI) | `PostHub_0.1.7_x64_en-US.msi` | 343 MB |
+| macOS (Apple Silicon) | `PostHub_0.2.0_aarch64.dmg` | 19 MB |
+| Windows (NSIS) | `PostHub_0.2.0_x64-setup.exe` | 246 MB |
+| Windows (MSI) | `PostHub_0.2.0_x64_en-US.msi` | 343 MB |
 
 > [!NOTE]
 > 安装包未签名。macOS 首次打开需右键「打开」绕过 Gatekeeper；Windows 有 SmartScreen 提示，点「仍要运行」即可。
