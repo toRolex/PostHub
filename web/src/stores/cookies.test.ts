@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useCookiesStore, rowToCookiedAccount } from "./cookies";
+import { useCookiesStore } from "./cookies";
 import { useDaemonStore } from "./daemon";
+import type { CookiedAccount } from "../api/types";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return {
@@ -14,6 +15,15 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
 /** 官方 user_info 数组行：[id, type, filePath, userName, status] */
 const ROW_DOUYIN = [3, 3, "abc.json", "抖音号", 1] as const;
 const ROW_XHS = [1, 1, "xhs.json", "小红书号", 0] as const;
+
+/** 与 ROW_DOUYIN 对应的解析后账号对象（CookiedAccount = DaoUserInfo）。 */
+const ACCOUNT_DOUYIN: CookiedAccount = {
+  id: 3,
+  type: 3,
+  filePath: "abc.json",
+  userName: "抖音号",
+  status: 1,
+};
 
 describe("cookies store（cookie 导入/导出，官方 seam）", () => {
   beforeEach(() => {
@@ -29,16 +39,6 @@ describe("cookies store（cookie 导入/导出，官方 seam）", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("rowToCookiedAccount 将官方数组行解析为对象", () => {
-    expect(rowToCookiedAccount(ROW_DOUYIN)).toEqual({
-      id: 3,
-      type: 3,
-      filePath: "abc.json",
-      userName: "抖音号",
-      status: 1,
-    });
   });
 
   it("fetchAccounts 调 GET /getAccounts 并解析数组行", async () => {
@@ -78,7 +78,7 @@ describe("cookies store（cookie 导入/导出，官方 seam）", () => {
 
   it("importCookie 构造 multipart 并调 POST /uploadCookie，成功后触发校验", async () => {
     useCookiesStore.setState({
-      accounts: [rowToCookiedAccount(ROW_DOUYIN)],
+      accounts: [ACCOUNT_DOUYIN],
     });
     // 第一次 /uploadCookie 成功，随后自动调 /getValidAccounts 刷新
     const fetchMock = vi
@@ -114,7 +114,7 @@ describe("cookies store（cookie 导入/导出，官方 seam）", () => {
 
   it("importCookie 官方失败 -> 抛出且记录错误", async () => {
     useCookiesStore.setState({
-      accounts: [rowToCookiedAccount(ROW_DOUYIN)],
+      accounts: [ACCOUNT_DOUYIN],
     });
     vi.stubGlobal(
       "fetch",
@@ -135,7 +135,7 @@ describe("cookies store（cookie 导入/导出，官方 seam）", () => {
 
   it("validateAll 调 GET /getValidAccounts 并更新 status", async () => {
     useCookiesStore.setState({
-      accounts: [rowToCookiedAccount([3, 3, "abc.json", "抖音号", 1] as const)],
+      accounts: [ACCOUNT_DOUYIN],
     });
     // 官方校验后抖音号仍有效，小红书号被置为失效
     const rows = [

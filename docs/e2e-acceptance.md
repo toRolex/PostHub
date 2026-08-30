@@ -14,7 +14,8 @@
 | `/getAccounts` 契约 | HTTP 200 + 官方 `{code,msg,data}` 格式，`data` 为数组 | 同上 |
 | `/getFiles` 契约 | HTTP 200 + 官方格式 | 同上 |
 | `/postVideo` 校验错误中继 | 空/缺参 → 官方 400 + `code:400` + 非空 `msg` | 同上 |
-| `/postVideoBatch` 契约 | 非数组请求体 → 官方 400 拒绝 | 同上 |
+| `/postVideoBatch` 删除性 gate | 任意请求固定 410，不进入官方同步循环 | `daemon/tests/test_issue_100_gate.py`、同上 |
+| `/postRuns` accepted | immediate/timer 混合批量返回 runId，200 仅表示已受理 | `daemon/tests/test_runs.py`、同上 |
 | `/deleteFile` 契约 | 非法 `id` → 官方 400 校验错误中继 | 同上 |
 | 素材链往返 | `/uploadSave` → `/getFiles` 可见 → `/deleteFile` 移除 | 同上 |
 | `/downloadCookie` 契约 | 缺 `filePath` → HTTP 400 + 官方 `{code,msg,data}` 中继 | 同上 |
@@ -42,7 +43,7 @@ bash scripts/e2e-acceptance.sh    # 仓库根执行
 - 契约 smoke 在**隔离临时 BASE_DIR 目录**启动官方后端（`POSTHUB_BASE_DIR` 指向 pytest
   tmp），不触碰仓库 `daemon/db/`，也不读任何真实 cookie 凭证。
 - `/postVideo` 只走官方**参数校验失败**分支（缺 `fileList` 等即 400 返回，不会进入发布）；
-  `/postVideoBatch` 只走**请求级错误**分支。不遗留数据库/磁盘副作用（素材链测试完毕即删除）。
+  `/postVideoBatch` 只走固定 410 废弃分支；批量发布必须走 `/postRuns`，200 只表示已受理，item 终态由 run 查询提供。不遗留数据库/磁盘副作用（素材链测试完毕即删除）。
 
 ### 单独运行各段
 
@@ -62,3 +63,16 @@ cd web && pnpm test
 - 端口 5409 空闲（验收线会自行拉起/退出后端子进程；如被占用会失败并提示释放）。
 - daemon 依赖已安装：`cd daemon && uv sync`。
 - 前端依赖已安装：`cd web && pnpm install`。
+
+## Issue #100 真实平台发布门（人工、非 CI）
+
+本节必须使用四个平台的真实账号和可删除的测试素材执行；没有凭证时不得以本地 fake/pytest 代替并宣称通过。每个平台至少覆盖：
+
+| 平台 | timer / 精度 | 声明与结果 | 生命周期与历史 |
+|---|---|---|---|
+| 抖音 | 明日、较远日期、14:37、窗口边界 | 声明枚举实际展示值；非法 cookie | 409、daemon 重启 interrupted、retry、跨周日历 |
+| 小红书 | 明日、较远日期、14:37、窗口边界 | `ai_synthesized` DOM 注入；入口缺失 warning/screenshot | 部分成功、retry、历史账号快照 |
+| 视频号 | 14:29/14:30/23:30/23:59 整点降级与跨日 | `no_label`/`ai_generated`；DOM 最终文案 | 409、重启 interrupted、retry、历史保留 |
+| 快手 | 整点能力、分钟输入的显式降级/拒绝 | 无声明承诺 | 409、重启 interrupted、retry、历史保留 |
+
+另外执行混合 immediate/timer、同批重复硬阻断、跨提交成功记录软警示、网络断开保留最后快照、历史记录按 `effectiveScheduledFor ?? publishedAt` 回退。人工记录应附运行机器本地时间、runId、各 item 终态和截图；当前 macOS 环境无法替代 Windows `taskkill /F /T` 进程树实测。

@@ -3,9 +3,15 @@ import { CheckCircle2, FileVideo, RefreshCw, Send, XCircle } from "lucide-react"
 import { useAccountsStore } from "../stores/accounts";
 import { useDaemonStore } from "../stores/daemon";
 import { useFilesStore } from "../stores/files";
-import { usePublishStore, parseTags } from "../stores/publish";
+import { usePublishStore } from "../stores/publish";
+import { useRunStore } from "../stores/runs";
+import { parseTags } from "../domain/tags";
+import { resolveDouyinDeclaration } from "../domain/declarations";
+import { normalizeDailyTimes, resolveWechatTimer } from "../domain/time";
+import type { RunItemDiagnostic } from "../api/official";
 import type { Platform, PlatformFields } from "../api/types";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../api/types";
+import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
+import { PLATFORM_NAMES, PLATFORMS } from "../api/platformNames";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
@@ -20,8 +26,6 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "../components/publish/PlatformDeclarationPicker";
-
-const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
 
 function ViewHead({ title, hint }: { title: string; hint: string }) {
   return (
@@ -243,11 +247,11 @@ function TargetSection() {
               checked={checked}
               disabled={!usable}
               onChange={() => togglePlatform(p)}
-              aria-label={`发布到${OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}`}
+              aria-label={`发布到${PLATFORM_NAMES[p]}`}
             />
             <PlatformMark platform={p} />
             <span className="text-body font-medium text-fg">
-              {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+              {PLATFORM_NAMES[p]}
             </span>
             <span className="ml-auto text-caption text-meta">
               {list.length > 1 ? `${list.length} 个账号` : list[0].name}
@@ -330,18 +334,17 @@ function TimerSection({ errors }: { errors: string[] }) {
   const videosPerDay = usePublishStore((s) => s.videosPerDay);
   const dailyTimes = usePublishStore((s) => s.dailyTimes);
   const startDays = usePublishStore((s) => s.startDays);
+  const selectedPlatforms = usePublishStore((s) => s.selectedPlatforms);
   const setForm = usePublishStore((s) => s.setForm);
 
-  // 时刻输入（整数小时）→ number[]：逗号/空格分隔，丢弃非 0-23 与重复项。
-  function parseDailyTimes(raw: string): number[] {
-    return Array.from(
-      new Set(
-        raw
-          .split(/[\s,，]+/)
-          .map(Number)
-          .filter((h) => Number.isInteger(h) && h >= 0 && h <= 23),
-      ),
-    ).sort((a, b) => a - b);
+  // 时刻输入（HH:MM）→ string[]：逗号/空格分隔，非法项不写入。
+  function parseDailyTimes(raw: string): string[] {
+    const values = raw.split(/[\s,，]+/).filter(Boolean);
+    try {
+      return normalizeDailyTimes(values);
+    } catch {
+      return [];
+    }
   }
 
   return (
@@ -378,7 +381,7 @@ function TimerSection({ errors }: { errors: string[] }) {
             <Input
               id="publish-timer-times"
               value={dailyTimes.join(" ")}
-              placeholder="整点小时，空格分隔，如 10 14 20"
+              placeholder="HH:MM，空格分隔，如 10:00 14:30 20:05"
               onChange={(e) => setForm({ dailyTimes: parseDailyTimes(e.target.value) })}
             />
             <span className="text-caption text-meta">当前 {dailyTimes.length} 个时刻</span>
@@ -399,6 +402,23 @@ function TimerSection({ errors }: { errors: string[] }) {
           {errors.filter((e) => e.includes("条数") || e.includes("时刻") || e.includes("起始")).map((e) => (
             <p key={e} className="text-label text-danger-deep">{e}</p>
           ))}
+          {timerEnabled && selectedPlatforms.includes("wechat") && dailyTimes.length > 0 && (
+            <div role="status" aria-live="polite" className="rounded-md bg-warn-tint px-3 py-2 text-label text-warn-deep">
+              <div className="font-medium">视频号整点降级提示（仅提醒，不阻断提交）</div>
+              {dailyTimes.map((value) => {
+                try {
+                  const resolution = resolveWechatTimer(value);
+                  return (
+                    <div key={value}>
+                      原始 {resolution.originalTime} → 最终 {resolution.finalTime}；{resolution.reason}；{resolution.warning}
+                    </div>
+                  );
+                } catch {
+                  return null;
+                }
+              })}
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -439,7 +459,7 @@ function DeclarationSection() {
             <div className="mb-2 flex items-center gap-2">
               <PlatformMark platform={p} />
               <span className="text-label font-medium text-fg-2">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
               </span>
               <span className="ml-auto text-caption text-meta">
                 账号默认：
@@ -463,9 +483,200 @@ function DeclarationSection() {
 
 /* ───────────────────────── 反馈 / 主行动 ───────────────────────── */
 
+export function runItemStatusLabel(status: string, error?: string | null): string {
+  if (status === "failed" && error?.includes("超时")) return "超时";
+  return {
+    pending: "待执行",
+    running: "执行中",
+    success: "成功",
+    failed: "失败",
+    skipped: "已跳过",
+    interrupted: "已中断",
+  }[status] ?? status;
+}
+
+export function isRetryableRunItemStatus(status: string): boolean {
+  return status === "failed" || status === "skipped" || status === "interrupted";
+}
+
+export function retryableRunItemIds(
+  items: Array<{ itemId: string; status: string }>,
+): string[] {
+  return items
+    .filter((item) => isRetryableRunItemStatus(item.status))
+    .map((item) => item.itemId);
+}
+
+export function runItemDiagnostics(
+  diagnostics:
+    | RunItemDiagnostic[]
+    | { warnings: string[]; debugScreenshots: string[] }
+    | null
+    | undefined,
+): string[] {
+  if (!diagnostics) return [];
+  if (Array.isArray(diagnostics)) {
+    return diagnostics.map(
+      (diagnostic) => diagnostic.message ?? diagnostic.reason ?? diagnostic.kind,
+    );
+  }
+  return [
+    ...diagnostics.warnings.map((warning) => `告警：${warning}`),
+    ...diagnostics.debugScreenshots.map((path) => `调试截图：${path}`),
+  ];
+}
+
+function RunDiagnosticList({ diagnostics }: { diagnostics: RunItemDiagnostic[] }) {
+  return (
+    <ul aria-label="运行诊断" className="mt-2 flex w-full flex-col gap-1.5">
+      {diagnostics.map((diagnostic, index) => (
+        <li
+          key={`${diagnostic.kind}-${diagnostic.reason ?? "unknown"}-${index}`}
+          className={cn(
+            "rounded border px-2 py-1.5 text-caption",
+            diagnostic.level === "warning"
+              ? "border-warning bg-warning-tint text-warning-deep"
+              : "border-border-soft bg-bg-2 text-muted",
+          )}
+        >
+          <p className="font-medium">
+            {diagnostic.level === "warning" ? "警告" : "信息"}：
+            {diagnostic.message ?? diagnostic.reason ?? diagnostic.kind}
+          </p>
+          <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
+            {diagnostic.account && <span>账号：{diagnostic.account}</span>}
+            {diagnostic.entrySelector && (
+              <span>入口 selector：{diagnostic.entrySelector}</span>
+            )}
+            {diagnostic.selector && <span>selector：{diagnostic.selector}</span>}
+            {diagnostic.requestedValue && <span>请求值：{diagnostic.requestedValue}</span>}
+            {diagnostic.displayValue && <span>展示值：{diagnostic.displayValue}</span>}
+          </div>
+          {diagnostic.screenshot && (
+            <p className="mt-0.5 break-all text-meta">
+              调试截图：<code>{diagnostic.screenshot}</code>
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** 最近 accepted run 详情：展示首次受理时冻结的最终 effective 声明。 */
+function RunDetailPanel() {
+  const snapshot = useRunStore((s) => s.snapshot);
+  const daemonUrl = useDaemonStore((s) => s.url);
+  const retryRun = useRunStore((s) => s.retryRun);
+  const retrying = useRunStore((s) => s.retrying);
+  const retryError = useRunStore((s) => s.error);
+  if (!snapshot) return null;
+  const retryableItemIds = retryableRunItemIds(snapshot.items);
+
+  return (
+    <section className="border-t border-border-soft py-6">
+      <div className="mb-4 flex items-baseline gap-3">
+        <h3 className="text-title font-semibold tracking-[-0.01em]">最近运行详情</h3>
+        <span className="text-label text-muted">展示首次受理时冻结的最终值</span>
+        {snapshot.parentRunId && (
+          <span className="text-caption text-meta">重试自 {snapshot.parentRunId.slice(0, 8)}</span>
+        )}
+        {retryableItemIds.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7"
+            disabled={retrying}
+            onClick={() => void retryRun(daemonUrl)}
+          >
+            <RefreshCw className="size-3.5" />
+            {retrying ? "重试中…" : `重试全部可重试项（${retryableItemIds.length}）`}
+          </Button>
+        )}
+      </div>
+      {retryError && <p className="mb-2 text-label text-danger-deep" role="alert">{retryError}</p>}
+      <div className="flex flex-col gap-2">
+        {snapshot.items.map((item, index) => {
+          const effective = item.effective;
+          const seq = item.seq ?? index + 1;
+          const errorSummary = item.errorSummary ?? item.error;
+          const errorDetail = item.errorDetail ?? item.error;
+          const platform = effective
+            ? OFFICIAL_TYPE_PLATFORM[effective.type]
+            : undefined;
+          const douyin =
+            platform === "douyin"
+              ? resolveDouyinDeclaration(effective?.platformFields?.douyin, undefined)
+              : undefined;
+          return (
+            <div
+              key={item.itemId}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border-soft bg-bg px-3 py-2 text-label"
+            >
+              <span className="font-mono text-caption text-meta">#{seq}</span>
+              <span className="font-mono text-caption text-meta">{item.itemId.slice(0, 8)}</span>
+              <span className="text-fg-2">{runItemStatusLabel(item.status, errorSummary)}</span>
+              {douyin && (
+                <span className="rounded-sm bg-accent-tint px-1.5 py-0.5 text-caption text-accent-ink">
+                  抖音声明：{douyin.value ? `${douyin.value} · ${douyin.label}` : douyin.label}
+                </span>
+              )}
+              {platform === "wechat" && effective?.timerFinalTime && (
+                <span className="rounded-sm bg-warn-tint px-1.5 py-0.5 text-caption text-warn-deep">
+                  视频号定时：
+                  {effective.timerResolutions?.length ? (
+                    effective.timerResolutions.map((resolution) => (
+                      <span key={`${resolution.originalTime}-${resolution.finalTime}`} className="ml-1">
+                        原始 {resolution.originalTime} → 最终 {resolution.finalTime}；{resolution.reason}；
+                        {resolution.warning}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="ml-1">
+                      原始 {item.submitted?.dailyTimes?.join("、") ?? effective.timerOriginalTime}
+                      → 最终 {effective.timerFinalTime}；{effective.timerDowngradeReason}
+                      {effective.timerWindowWarning && `；${effective.timerWindowWarning}`}
+                    </span>
+                  )}
+                </span>
+              )}
+              {errorSummary && <span className="text-danger-deep">{errorSummary}</span>}
+              {errorDetail && (
+                <details className="basis-full rounded-md bg-danger-tint px-2 py-1 text-caption text-danger-deep">
+                  <summary className="cursor-pointer select-none">查看详细错误</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono">
+                    {errorDetail}
+                  </pre>
+                </details>
+              )}
+              {item.diagnostics && item.diagnostics.length > 0 && (
+                <RunDiagnosticList diagnostics={item.diagnostics} />
+              )}
+              {isRetryableRunItemStatus(item.status) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-7"
+                  disabled={retrying}
+                  onClick={() => void retryRun(daemonUrl, [item.itemId])}
+                >
+                  <RefreshCw className="size-3.5" />
+                  重试此项
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function FeedbackPanel() {
   const results = usePublishStore((s) => s.results);
   const submitting = usePublishStore((s) => s.submitting);
+  const openRun = useRunStore((s) => s.openRun);
+  const daemonUrl = useDaemonStore((s) => s.url);
   const keys = Object.keys(results) as Platform[];
   if (keys.length === 0) return null;
   return (
@@ -489,12 +700,22 @@ function FeedbackPanel() {
             )}
             <div className="min-w-0">
               <p className="font-semibold">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
                 <span className="ml-2 font-normal text-muted">
-                  {r.ok ? "发布任务已提交" : "失败"}
+                  {r.ok ? r.msg : "失败"}
                 </span>
               </p>
               {!r.ok && <p className="mt-0.5 break-words text-danger-deep">{r.msg}</p>}
+              {r.existingRunId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-1 h-7 px-2"
+                  onClick={() => void openRun(daemonUrl, r.existingRunId!)}
+                >
+                  打开已有 run
+                </Button>
+              )}
             </div>
           </div>
         );
@@ -605,6 +826,7 @@ export function PublishView() {
       <ContentSection />
       <TimerSection errors={errors} />
       <DeclarationSection />
+      <RunDetailPanel />
       <PublishActions errors={errors} />
       <BatchPublishSection />
     </div>

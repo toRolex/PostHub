@@ -94,6 +94,29 @@ describe("平台声明候选表（registry）", () => {
   });
 });
 
+describe("抖音声明三态 effective 展示", () => {
+  it("空字段继承账号默认，no_need 和具体声明分别覆盖为稳定值/文案", async () => {
+    const { resolveDouyinDeclaration } = await import("./declarations");
+    expect(
+      resolveDouyinDeclaration(undefined, { declaration: "ai_generated" }),
+    ).toEqual({ value: "ai_generated", label: "内容由AI生成" });
+    expect(
+      resolveDouyinDeclaration({ declaration: "no_need" }, { declaration: "ai_generated" }),
+    ).toEqual({ value: "no_need", label: "无需添加自主声明" });
+    expect(
+      resolveDouyinDeclaration({ declaration: "marketing" }, { declaration: "ai_generated" }),
+    ).toEqual({ value: "marketing", label: "内容含营销推广信息" });
+  });
+
+  it("无任务覆盖且账号也无默认时保留账号默认语义", async () => {
+    const { resolveDouyinDeclaration } = await import("./declarations");
+    expect(resolveDouyinDeclaration(undefined, undefined)).toEqual({
+      value: undefined,
+      label: "账号默认",
+    });
+  });
+});
+
 describe("validatePlatformFields（前端预校验，与后端 _validate_platform_fields 镜像）", () => {
   it("空对象 → 通过", () => {
     expect(validatePlatformFields({})).toBeNull();
@@ -118,7 +141,7 @@ describe("validatePlatformFields（前端预校验，与后端 _validate_platfor
     ).toBeNull();
     expect(
       validatePlatformFields({
-        xiaohongshu: { source: "self_declare", origin: true },
+        xiaohongshu: { source: "self_declare" },
       }),
     ).toBeNull();
   });
@@ -130,7 +153,7 @@ describe("validatePlatformFields（前端预校验，与后端 _validate_platfor
     expect(validatePlatformFields(bad2)).toContain("小红书");
   });
 
-  it("origin 非布尔 → 错误", () => {
+  it("origin 无可靠 seam → 拒绝下发", () => {
     const bad = {
       wechat: { origin: "yes" },
     } as unknown as PlatformFields;

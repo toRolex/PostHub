@@ -15,7 +15,8 @@ import { Download, RefreshCw, Upload } from "lucide-react";
 import { useCookiesStore } from "../stores/cookies";
 import { useDaemonStore } from "../stores/daemon";
 import { useToastStore } from "../stores/toast";
-import { OFFICIAL_PLATFORM_NAMES } from "../api/types";
+import { PLATFORM_NAMES } from "../api/platformNames";
+import { OFFICIAL_TYPE_PLATFORM } from "../api/types";
 import type { CookiedAccount, OfficialCookieStatus } from "../api/types";
 import { Button } from "./ui/button";
 import { Empty } from "./ui/empty";
@@ -181,7 +182,7 @@ export function CookieManager() {
                     className="border-b border-border-soft last:border-b-0 hover:bg-surface-warm"
                   >
                     <td className="px-4 py-3">
-                      {OFFICIAL_PLATFORM_NAMES[a.type] ?? `平台 ${a.type}`}
+                      {PLATFORM_NAMES[OFFICIAL_TYPE_PLATFORM[a.type]] ?? `平台 ${a.type}`}
                     </td>
                     <td className="px-4 py-3 font-medium text-fg">{a.userName}</td>
                     <td className="px-4 py-3 font-mono text-caption text-muted">

@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { buildPreviewRows } from "./BatchPreviewDialog";
-import type { BatchItem } from "../../types/batch";
+import type { BatchItem } from "../../domain/batch";
 
 function mkItem(over: Partial<BatchItem>): BatchItem {
   return {
@@ -20,7 +20,7 @@ function mkItem(over: Partial<BatchItem>): BatchItem {
     title: "t",
     caption: "",
     tags: "",
-    accountIdsByPlatform: {},
+    accountCookiesByPlatform: {},
     mode: "immediate",
     ...over,
   };
@@ -35,7 +35,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d1.json"] },
+        accountCookiesByPlatform: { douyin: ["d1.json"] },
         mode: "immediate",
       }),
     ]);
@@ -55,7 +55,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: {
+        accountCookiesByPlatform: {
           douyin: ["d1.json", "d2.json"],
           xiaohongshu: ["x1.json"],
         },
@@ -71,11 +71,11 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
       }),
       mkItem({
         filePath: "b.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"], xiaohongshu: ["x.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"], xiaohongshu: ["x.json"] },
       }),
     ]);
     expect(rows).toHaveLength(3);
@@ -87,7 +87,7 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: ["d.json"] },
+        accountCookiesByPlatform: { douyin: ["d.json"] },
         mode: "timer",
         timeOfDay: "10:00",
         startDays: 1,
@@ -98,24 +98,84 @@ describe("BatchPreviewDialog · buildPreviewRows（纯逻辑）", () => {
     expect(rows[0].startDays).toBe(1);
   });
 
-  it("accountIdsByPlatform 字段空数组时该平台不产出行", () => {
+  it("preview 与 timer payload 一样规范化分钟格式，不丢 14:37", () => {
+    const rows = buildPreviewRows([
+      mkItem({
+        accountCookiesByPlatform: { douyin: ["d.json"] },
+        mode: "timer",
+        timeOfDay: "14:37",
+        startDays: 0,
+      }),
+    ]);
+    expect(rows[0].timeOfDay).toBe("14:37");
+  });
+
+  it("accountCookiesByPlatform 字段空数组时该平台不产出行", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "a.mp4",
-        accountIdsByPlatform: { douyin: [], xiaohongshu: ["x.json"] },
+        accountCookiesByPlatform: { douyin: [], xiaohongshu: ["x.json"] },
       }),
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].platform).toBe("xiaohongshu");
   });
 
-  it("itemKey 与 store itemResults.itemKey 稳定一致（filePath + '|' + cookieFile）", () => {
+  it("抖音预览显示最终有效声明：空字段继承默认，no_need/具体值覆盖默认", () => {
+    const rows = buildPreviewRows(
+      [
+        mkItem({
+          filePath: "inherit.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+        }),
+        mkItem({
+          filePath: "no-need.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+          platformFields: { douyin: { declaration: "no_need" } },
+        }),
+        mkItem({
+          filePath: "specific.mp4",
+          accountCookiesByPlatform: { douyin: ["d.json"] },
+          platformFields: { douyin: { declaration: "marketing" } },
+        }),
+      ],
+      { "d.json": { douyin: { declaration: "ai_generated" } } },
+    );
+
+    expect(rows.map((row) => row.declaration)).toEqual([
+      { value: "ai_generated", label: "内容由AI生成" },
+      { value: "no_need", label: "无需添加自主声明" },
+      { value: "marketing", label: "内容含营销推广信息" },
+    ]);
+  });
+
+  it("itemKey 与 run item 的稳定组合键一致（filePath + '|' + cookieFile）", () => {
     const rows = buildPreviewRows([
       mkItem({
         filePath: "video_x.mp4",
-        accountIdsByPlatform: { wechat: ["w_a.json"] },
+        accountCookiesByPlatform: { wechat: ["w_a.json"] },
       }),
     ]);
     expect(rows[0].itemKey).toBe("video_x.mp4|w_a.json");
+  });
+
+  it("视频号 timer 预览同时显示原值、最终整点、跨日原因和窗口 warning", () => {
+    const [row] = buildPreviewRows([
+      mkItem({
+        filePath: "wechat.mp4",
+        accountCookiesByPlatform: { wechat: ["w.json"] },
+        mode: "timer",
+        timeOfDay: "23:30",
+        startDays: 0,
+      }),
+    ]);
+
+    expect(row.timerResolution).toEqual({
+      originalTime: "23:30",
+      finalTime: "00:00",
+      dayCarry: 1,
+      reason: expect.stringContaining("跨日"),
+      warning: expect.stringContaining("仅提示"),
+    });
   });
 });

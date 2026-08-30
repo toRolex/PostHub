@@ -5,7 +5,9 @@ PostHub 的 Python 依赖薄层（uv 管理）。当前是官方 `social-auto-up
 - `conf` 模块：上游执行 `import conf` 所需的 6 个配置符号 + 字段校验
   （`BASE_DIR` 为 `pathlib.Path`，上游 `uploader/*/__init__.py` 依赖 `BASE_DIR / "cookies"`）
 - `sau_backend.py`：官方 Flask 主入口（`/getAccounts`、`/login`、`/postVideo` 等），**原样拷贝自上游**
-- `run_backend.py`：PostHub 侧 launcher（改监听 127.0.0.1，起后台前自动建 SQLite）
+- `posthub/composition.py`：独立组合入口，幂等注册 PostHub-owned 路由、数据库生命周期与 HTTP seam 钩子
+- `posthub/routes.py`：PostHub-owned 路由与官方发布 seam 适配，不修改官方模块
+- `run_backend.py`：PostHub 侧 launcher（经组合入口启动，监听 127.0.0.1）
 - `utils/stealth.min.js`：上游依赖产物
 
 ## 官方后端落地方式（不 fork / 不改官方源码）
@@ -52,6 +54,17 @@ uv run python run_backend.py
 启动后仅监听 `127.0.0.1:5409`（不暴露局域网；官方默认 `0.0.0.0` 的收紧见 ADR-0006 待确认项）。
 首次启动自动创建 `db/database.db` 与 `user_info` 表（幂等）。
 
+### 单 item 硬超时
+
+accepted-run 的每个 item 都在独立子进程中执行；默认超过 300 秒会强制回收该
+item 的子进程树并将 item 标为失败，后续 item 继续执行。可通过受控环境变量覆盖：
+
+```bash
+POSTHUB_ITEM_TIMEOUT_SECONDS=600 uv run python run_backend.py
+```
+
+该值必须是正数；超时失败仍可通过现有 retry 契约重试。
+
 ## 就绪探针轮询策略
 
 不依赖 `/health`（官方后端无此路由）。PostHub 侧用以下两项组合判定后端就绪：
@@ -65,7 +78,7 @@ uv run python run_backend.py
 ## 验证
 
 ```bash
-uv run pytest      # 9 passed（conf 六符号校验 + 官方后端 seam 契约 smoke）
+uv run pytest      # 当前全量测试通过（含组合入口、数据库与官方 seam smoke）
 ```
 
 契约 smoke：启动官方后端 → 探活 → `/getAccounts` 断言 200 + 官方 `code` 字段 → 停后端。

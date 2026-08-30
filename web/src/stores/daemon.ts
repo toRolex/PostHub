@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { DEFAULT_DAEMON_URL } from "../api/types";
+import { withMutation } from "./_withMutation";
 
 interface DaemonState {
   url: string;
@@ -7,8 +8,8 @@ interface DaemonState {
   checking: boolean;
   error: string;
   pollIntervalMs: number;
-  /** 探活官方后端：官方无 /health 路由，用 /getAccounts（无副作用、JSON 200）作就绪信号。 */
-  checkHealth: () => Promise<void>;
+  /** 探活官方后端：官方无 /health 路由，用 /getAccounts 的裸 fetch 判 res.ok 作就绪信号。 */
+  probeDaemon: () => Promise<void>;
 }
 
 export const initialDaemonState = {
@@ -22,16 +23,22 @@ export const initialDaemonState = {
 export const useDaemonStore = create<DaemonState>()((set, get) => ({
   ...initialDaemonState,
 
-  /** 探活官方后端 /getAccounts：2xx 视为就绪（官方无 /health 路由）。 */
-  checkHealth: async () => {
-    set({ checking: true });
-    try {
-      const res = await fetch(`${get().url}/getAccounts`);
-      set({ connected: res.ok, error: "" });
-    } catch (e) {
-      set({ connected: false, error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ checking: false });
-    }
-  },
+  /**
+   * 探活官方后端：官方无 /health 路由，用 /getAccounts 判 res.ok（2xx 视为就绪）。
+   * 保留裸 fetch 而不复用 officialApi.getAccounts：可达性 ≠ 数据完整性，
+   * user_info 脏行会让 mapRows 抛错，从而把「后端在线」误判为离线。
+   */
+  probeDaemon: () =>
+    withMutation(
+      set,
+      async () => {
+        const res = await fetch(`${get().url}/getAccounts`);
+        set({ connected: res.ok, error: "" });
+      },
+      {
+        begin: { checking: true },
+        end: { checking: false },
+        onError: (message) => ({ connected: false, error: message }),
+      },
+    ),
 }));

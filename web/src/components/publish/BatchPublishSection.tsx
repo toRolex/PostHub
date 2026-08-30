@@ -1,19 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Send,
-  XCircle,
-  X,
-  Plus,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Send, X, Plus } from "lucide-react";
 import { useAccountsStore } from "../../stores/accounts";
 import { useFilesStore } from "../../stores/files";
 import { useBatchPublishStore } from "../../stores/batchPublish";
 import { useDaemonStore } from "../../stores/daemon";
-import type { Platform } from "../../api/types";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
+import type { Platform, PlatformFields } from "../../api/types";
+import { PLATFORM_NAMES, PLATFORMS } from "../../api/platformNames";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -30,15 +22,17 @@ import {
   PlatformDeclarationPicker,
   PlatformDeclarationBadge,
 } from "./PlatformDeclarationPicker";
-import type { BatchItem } from "../../types/batch";
-
-const PLATFORMS: Platform[] = ["xiaohongshu", "wechat", "douyin", "kuaishou"];
+import {
+  validateBatch,
+  wechatScheduledCountsByCookie,
+  type BatchItem,
+} from "../../domain/batch";
 
 /* ─────────────────────── 纯逻辑 helper（可单测） ─────────────────────── */
 
 /** 折叠态条目摘要。 */
 export interface ItemSummary {
-  /** 所选账号总数（= Σ |accountIdsByPlatform[p]|）。 */
+  /** 所选账号总数（= Σ |accountCookiesByPlatform[p]|）。 */
   totalAccounts: number;
   /** 所选平台数。 */
   platformCount: number;
@@ -56,7 +50,7 @@ export interface ItemSummary {
  * 计算单视频条目折叠态摘要。纯函数，便于不挂 DOM 单测。
  */
 export function summarizeItem(item: BatchItem): ItemSummary {
-  const entries = Object.entries(item.accountIdsByPlatform) as [Platform, string[]][];
+  const entries = Object.entries(item.accountCookiesByPlatform) as [Platform, string[]][];
   const totalAccounts = entries.reduce(
     (acc, [, cookies]) => acc + (cookies ? cookies.length : 0),
     0,
@@ -94,6 +88,28 @@ export function summarizeDailyTimes(dailyTimes: string[]): string[] {
   return Array.from(new Set(dailyTimes)).sort();
 }
 
+/** 切换候选素材选择；返回新集合，避免把 Set 原地变更带入 React state。 */
+export function toggleBatchSelection(
+  selected: ReadonlySet<string>,
+  filePath: string,
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(filePath)) next.delete(filePath);
+  else next.add(filePath);
+  return next;
+}
+
+/** 对仍可加入的素材执行全选/取消全选；忽略已从候选列表消失的旧选择。 */
+export function selectAllBatchFiles(
+  availablePaths: readonly string[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  const available = new Set(availablePaths);
+  const current = new Set([...selected].filter((path) => available.has(path)));
+  if (current.size === available.size) return new Set();
+  return available;
+}
+
 /** 单条 BatchItem 的「内容声明」编辑块（issue #43）。仅在 item 已勾选至少一个非快手平台时渲染。 */
 function BatchItemDeclarationBlock({
   item,
@@ -103,7 +119,7 @@ function BatchItemDeclarationBlock({
   accounts: ReturnType<typeof useAccountsStore.getState>["accounts"];
 }) {
   const supported = PLATFORMS.filter(
-    (p) => p !== "kuaishou" && (item.accountIdsByPlatform[p]?.length ?? 0) > 0,
+    (p) => p !== "kuaishou" && (item.accountCookiesByPlatform[p]?.length ?? 0) > 0,
   ) as Array<"wechat" | "douyin" | "xiaohongshu">;
   const setItemPlatformField = useBatchPublishStore((s) => s.setItemPlatformField);
   // 把账号按 cookieFile 索引一次，避免每个平台重复 .find()。
@@ -115,7 +131,7 @@ function BatchItemDeclarationBlock({
 
   if (supported.length === 0) return null;
   const getAccountDefault = (p: "wechat" | "douyin" | "xiaohongshu") => {
-    const cookies = item.accountIdsByPlatform[p] ?? [];
+    const cookies = item.accountCookiesByPlatform[p] ?? [];
     return accountByCookie.get(cookies[0])?.defaultPlatformFields?.[p];
   };
 
@@ -128,7 +144,7 @@ function BatchItemDeclarationBlock({
             <div className="mb-2 flex items-center gap-2">
               <PlatformMark platform={p} />
               <span className="text-caption text-meta">
-                {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                {PLATFORM_NAMES[p]}
               </span>
               <span className="ml-auto text-caption text-meta">
                 默认：
@@ -162,11 +178,9 @@ export function BatchPublishSection() {
   const accounts = useAccountsStore((s) => s.accounts);
   const fetchAccounts = useAccountsStore((s) => s.fetchAccounts);
   const connected = useDaemonStore((s) => s.connected);
-
   const items = useBatchPublishStore((s) => s.items);
   const dailyTimes = useBatchPublishStore((s) => s.dailyTimes);
   const submitting = useBatchPublishStore((s) => s.submitting);
-  const itemResults = useBatchPublishStore((s) => s.itemResults);
   const previewOpen = useBatchPublishStore((s) => s.previewOpen);
   const openPreview = useBatchPublishStore((s) => s.openPreview);
   const closePreview = useBatchPublishStore((s) => s.closePreview);
@@ -192,35 +206,38 @@ export function BatchPublishSection() {
 
   // 当前勾选但未入 items 的素材 → 「加入批量」入口
   const itemsByPath = useMemo(() => new Set(items.map((i) => i.filePath)), [items]);
-  const availableToAdd = videos.filter((v) => !itemsByPath.has(v.file_path));
+  const availableToAdd = useMemo(
+    () => videos.filter((v) => !itemsByPath.has(v.file_path)),
+    [videos, itemsByPath],
+  );
 
-  // 整批错误聚合 + 每 item 错误
+  // 整批错误聚合 + 每 item 错误（对 domain 结构化错误按 filePath 分组重排版）
   const allErrors = useBatchPublishStore.getState().validate();
   const errorsByFilePath = useMemo(() => {
     const map = new Map<string, string[]>();
-    const dailyTimesSet = new Set(dailyTimes);
-    items.forEach((item) => {
-      const local: string[] = [];
-      if (!item.title.trim()) local.push("标题不能为空");
-      const hasAccount = (Object.values(item.accountIdsByPlatform) as string[][]).some(
-        (a) => a && a.length > 0,
-      );
-      if (!hasAccount) local.push("至少选一个账号");
-      if (item.mode === "timer") {
-        if (!item.timeOfDay || !dailyTimesSet.has(item.timeOfDay)) {
-          local.push("定时未选时刻");
-        }
-        if (item.startDays === undefined || item.startDays < 0) {
-          local.push("起始日非法");
-        }
-      }
-      if (local.length > 0) map.set(item.filePath, local);
-    });
+    for (const e of validateBatch(items, dailyTimes)) {
+      if (!e.filePath) continue;
+      const arr = map.get(e.filePath);
+      if (arr) arr.push(e.msg);
+      else map.set(e.filePath, [e.msg]);
+    }
     return map;
   }, [items, dailyTimes]);
 
   // 每行折叠/展开状态（key = filePath）
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const availablePaths = useMemo(
+    () => availableToAdd.map((file) => file.file_path),
+    [availableToAdd],
+  );
+  useEffect(() => {
+    setSelectedPaths((selected) =>
+      new Set([...selected].filter((path) => availablePaths.includes(path))),
+    );
+  }, [availablePaths]);
+  const allAvailableSelected =
+    availablePaths.length > 0 && selectedPaths.size === availablePaths.length;
   const expandedAll =
     items.length > 0 && items.every((i) => expandedMap[i.filePath]);
   const collapsedAll =
@@ -248,24 +265,27 @@ export function BatchPublishSection() {
     try {
       await submit();
     } catch {
-      // 错误已通过 itemResults 反馈；不动 UI。
+      // 提交错误由 RunStore.error / 全局状态条承载，不伪造 item 结果。
     }
   }
 
   // 整批共用 dailyTimes 池（每账号累计定时任务数依赖 items）
   // wechatCountsByAccount: accountCookie -> 本账号 timer 项数；用于视频号 chip 软提示
-  const wechatCountsByAccount = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of items) {
-      if (item.mode !== "timer") continue;
-      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
-        map.set(cookie, (map.get(cookie) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [items]);
+  const wechatCountsByAccount = useMemo(
+    () => wechatScheduledCountsByCookie(items),
+    [items],
+  );
 
   const sortedDailyTimes = useMemo(() => summarizeDailyTimes(dailyTimes), [dailyTimes]);
+  const accountDefaults = useMemo<Record<string, PlatformFields>>(() => {
+    const defaults: Record<string, PlatformFields> = {};
+    for (const account of accounts) {
+      if (account.defaultPlatformFields) {
+        defaults[account.cookieFile] = account.defaultPlatformFields;
+      }
+    }
+    return defaults;
+  }, [accounts]);
   const { removeItem, updateItem, setItemMode, setItemTimeOfDay } =
     useBatchPublishStore.getState();
 
@@ -273,7 +293,7 @@ export function BatchPublishSection() {
     <section className="border-t border-border-soft py-6">
       <div className="mb-4 flex items-baseline gap-3">
         <h3 className="text-title font-semibold tracking-[-0.01em]">批量发布</h3>
-        <span className="text-label text-muted">每视频独立配置 · 矩阵批量 / /postVideoBatch</span>
+        <span className="text-label text-muted">每视频独立配置 · 矩阵批量 / /postRuns</span>
       </div>
 
       {/* 顶部 dailyTimes chip 池 */}
@@ -281,7 +301,7 @@ export function BatchPublishSection() {
         <div className="mb-2 flex items-center gap-2">
           <span className="text-label font-medium text-fg-2">每日时刻（整批共用）</span>
           <span className="text-caption text-meta">
-            顶部 chip = 定时模式可选时刻池（HH:MM；提交时按整点取整映射回 0–23）
+            顶部 chip = 定时模式可选时刻池（HH:MM；提交时分钟保持）
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -318,29 +338,67 @@ export function BatchPublishSection() {
       {/* 视频加入批量入口 */}
       {availableToAdd.length > 0 && (
         <div className="mb-4 rounded-lg border border-border-soft bg-bg px-4 py-3">
-          <p className="mb-2 text-label font-medium text-fg-2">添加视频到批量</p>
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-label font-medium text-fg-2">添加视频到批量</p>
+            <span className="text-caption text-meta">已选 {selectedPaths.size}</span>
+            <button
+              type="button"
+              className="ml-auto text-caption font-medium text-accent-ink hover:underline"
+              onClick={() => setSelectedPaths(selectAllBatchFiles(availablePaths, selectedPaths))}
+            >
+              {allAvailableSelected ? "取消全选" : `全选（共 ${availableToAdd.length} 个素材）`}
+            </button>
+          </div>
           <div className="flex max-h-40 flex-col gap-1 overflow-y-auto pr-1">
-            {availableToAdd.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                className="flex items-center gap-2 rounded-md border border-border-soft px-3 py-1.5 text-label transition-colors hover:bg-surface-warm"
-                onClick={() =>
+            {availableToAdd.map((f) => {
+              const selected = selectedPaths.has(f.file_path);
+              return (
+                <label
+                  key={f.id}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-label transition-colors hover:bg-surface-warm",
+                    selected ? "border-accent bg-accent-tint" : "border-border-soft",
+                  )}
+                >
+                  <Checkbox
+                    checked={selected}
+                    onChange={() =>
+                      setSelectedPaths((current) =>
+                        toggleBatchSelection(current, f.file_path),
+                      )
+                    }
+                    aria-label={`选择素材 ${f.filename}`}
+                  />
+                  <Plus className="size-3 text-meta" aria-hidden="true" />
+                  <span className="min-w-0 truncate font-medium text-fg">{f.filename}</span>
+                  <span className="ml-auto text-caption text-meta">{f.filesize} MB</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={selectedPaths.size === 0}
+              onClick={() => {
+                for (const f of availableToAdd) {
+                  if (!selectedPaths.has(f.file_path)) continue;
                   useBatchPublishStore.getState().addItem({
                     filePath: f.file_path,
                     title: f.filename ?? "",
                     caption: "",
                     tags: "",
-                    accountIdsByPlatform: {},
+                    accountCookiesByPlatform: {},
                     mode: "immediate",
-                  })
+                  });
                 }
-              >
-                <Plus className="size-3 text-meta" />
-                <span className="min-w-0 truncate font-medium text-fg">{f.filename}</span>
-                <span className="ml-auto text-caption text-meta">{f.filesize} MB</span>
-              </button>
-            ))}
+                setSelectedPaths(new Set());
+              }}
+            >
+              <Plus className="size-4" />
+              加入所选（{selectedPaths.size}）
+            </Button>
           </div>
         </div>
       )}
@@ -500,12 +558,12 @@ export function BatchPublishSection() {
                               <div className="mb-1.5 flex items-center gap-2">
                                 <PlatformMark platform={p} />
                                 <span className="text-caption text-meta">
-                                  {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[p]]}
+                                  {PLATFORM_NAMES[p]}
                                 </span>
                               </div>
                               <div className="flex flex-wrap gap-1.5">
                                 {list.map((a) => {
-                                  const cur = item.accountIdsByPlatform[p] ?? [];
+                                  const cur = item.accountCookiesByPlatform[p] ?? [];
                                   const checked = cur.includes(a.cookieFile);
                                   const usable = a.status === 1;
                                   return (
@@ -525,8 +583,8 @@ export function BatchPublishSection() {
                                             ? cur.filter((c) => c !== a.cookieFile)
                                             : [...cur, a.cookieFile];
                                           updateItem(item.filePath, {
-                                            accountIdsByPlatform: {
-                                              ...item.accountIdsByPlatform,
+                                            accountCookiesByPlatform: {
+                                              ...item.accountCookiesByPlatform,
                                               [p]: next,
                                             },
                                           });
@@ -647,43 +705,12 @@ export function BatchPublishSection() {
         </Button>
       </div>
 
-      {/* 整体反馈（按 item 维度） */}
-      {itemResults && itemResults.length > 0 && (
-        <div className="mt-4 flex flex-col gap-2">
-          {itemResults.map((r) => (
-            <div
-              key={r.itemKey}
-              className={cn(
-                "flex items-start gap-2 rounded-lg border px-4 py-2.5 text-label",
-                r.ok
-                  ? "border-success bg-success-tint text-success-deep"
-                  : "border-danger bg-danger-tint text-danger-deep",
-              )}
-            >
-              {r.ok ? (
-                <CheckCircle2 className="size-4 shrink-0 translate-y-0.5" />
-              ) : (
-                <XCircle className="size-4 shrink-0 translate-y-0.5" />
-              )}
-              <div className="min-w-0">
-                <p className="font-semibold">
-                  <span className="tabular-nums">{r.fileName}</span>
-                  <span className="ml-2 text-caption text-muted">
-                    {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.itemKey.split("|")[1]}
-                  </span>
-                </p>
-                {!r.ok && <p className="mt-0.5 break-words">{r.msg}</p>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
+      {/* 受理后由 AppShell 的 RunStore 状态条/详情展示后端事实。 */}
       {/* 预览 Dialog */}
       <BatchPreviewDialog
         open={previewOpen}
         items={items}
-        results={itemResults}
+        accountDefaults={accountDefaults}
         onConfirm={() => void handleConfirmPreview()}
         onCancel={closePreview}
       />

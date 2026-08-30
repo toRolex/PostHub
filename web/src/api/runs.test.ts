@@ -1,0 +1,201 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { officialApi, type PostVideoRequest } from "./official";
+
+const PAYLOAD: PostVideoRequest = {
+  fileList: ["video.mp4"],
+  accountList: ["douyin.json"],
+  type: 3,
+  title: "立即 item",
+  tags: ["测试"],
+  enableTimer: false,
+};
+
+function response(body: unknown, ok = true, status = 200): Response {
+  return { ok, status, text: async () => JSON.stringify(body) } as Response;
+}
+
+describe("accepted run API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("acceptRun POST /postRuns 只解析 accepted run，不伪造 success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-1", status: "pending", itemCount: 1 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const accepted = await officialApi.acceptRun("http://127.0.0.1:5409", PAYLOAD);
+
+    expect(accepted).toEqual({ runId: "run-1", status: "pending", itemCount: 1 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/postRuns",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(PAYLOAD);
+  });
+
+  it("acceptRun 支持一次提交多个 immediate item，原样发送数组", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-many", status: "pending", itemCount: 3 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = [PAYLOAD, { ...PAYLOAD, fileList: ["second.mp4"] }];
+
+    await expect(officialApi.acceptRun("http://127.0.0.1:5409", payload)).resolves.toEqual({
+      runId: "run-many",
+      status: "pending",
+      itemCount: 3,
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(payload);
+  });
+
+  it("acceptRun 409 保留 HTTP status/code/data 中的 existingRunId", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response(
+          {
+            code: 409,
+            msg: "已有相同视频×账号的运行正在执行",
+            data: { existingRunId: "run-existing" },
+          },
+          false,
+          409,
+        ),
+      ),
+    );
+
+    try {
+      await officialApi.acceptRun("http://127.0.0.1:5409", PAYLOAD);
+      throw new Error("expected acceptRun to reject");
+    } catch (error) {
+      expect(error).toMatchObject({
+        message: "已有相同视频×账号的运行正在执行",
+        status: 409,
+        code: 409,
+        data: { existingRunId: "run-existing" },
+      });
+    }
+  });
+
+  it("retryRun 只发送选中的 itemIds，并解析 parentRunId", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: {
+          runId: "run-retry",
+          status: "pending",
+          itemCount: 1,
+          parentRunId: "run-parent",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      officialApi.retryRun("http://127.0.0.1:5409", "run-parent", ["item-2"]),
+    ).resolves.toEqual({
+      runId: "run-retry",
+      status: "pending",
+      itemCount: 1,
+      parentRunId: "run-parent",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:5409/postRuns/run-parent/retry",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ itemIds: ["item-2"] }),
+      }),
+    );
+  });
+
+  it("retryRun 省略 itemIds 时请求全部可重试项", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        code: 200,
+        msg: "已受理",
+        data: { runId: "run-retry", status: "pending", itemCount: 2 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await officialApi.retryRun("http://127.0.0.1:5409", "run-parent");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+  });
+
+  it("查询 API 保留 completed_with_failures、seq 与错误详情", async () => {
+    const snapshot = {
+      runId: "run-partial",
+      status: "completed_with_failures",
+      createdAt: "2026-08-27T00:00:00.000+00:00",
+      updatedAt: "2026-08-27T00:00:00.100+00:00",
+      completedAt: "2026-08-27T00:00:00.100+00:00",
+      summary: {
+        itemCount: 3,
+        pendingCount: 0,
+        runningCount: 0,
+        successCount: 2,
+        failedCount: 1,
+        completedCount: 3,
+      },
+      items: [
+        { itemId: "item-1", seq: 1, status: "success", error: null },
+        {
+          itemId: "item-2",
+          seq: 2,
+          status: "failed",
+          error: "平台拒绝",
+          errorSummary: "平台拒绝",
+          errorDetail: "平台拒绝：详细原因",
+        },
+        { itemId: "item-3", seq: 3, status: "success", error: null },
+      ],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(response({ code: 200, data: snapshot }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(officialApi.getRun("http://127.0.0.1:5409", "run-partial")).resolves.toEqual(
+      snapshot,
+    );
+  });
+
+  it("getRun 与 getLatestRun 返回查询 API 的事实状态", async () => {
+    const snapshot = {
+      runId: "run-1",
+      status: "completed",
+      createdAt: "2026-08-27T00:00:00.000+00:00",
+      updatedAt: "2026-08-27T00:00:00.100+00:00",
+      completedAt: "2026-08-27T00:00:00.100+00:00",
+      summary: {
+        itemCount: 1,
+        pendingCount: 0,
+        runningCount: 0,
+        successCount: 1,
+        failedCount: 0,
+        completedCount: 1,
+      },
+      items: [{ itemId: "item-1", status: "success", error: null }],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: 200, msg: null, data: snapshot }))
+      .mockResolvedValueOnce(response({ code: 200, msg: null, data: snapshot }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(officialApi.getRun("http://127.0.0.1:5409", "run-1")).resolves.toEqual(
+      snapshot,
+    );
+    await expect(officialApi.getLatestRun("http://127.0.0.1:5409")).resolves.toEqual(snapshot);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:5409/postRuns/run-1");
+    expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:5409/postRuns/latest");
+  });
+});

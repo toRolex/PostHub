@@ -4,16 +4,25 @@
  * 受控哑组件：props 由父组件（BatchPublishSection）传入；不读 store。
  * - 列项：视频名 / 目标平台与账号 / 模式 / 时刻 / 起始日。
  * - 「取消」调 onCancel；「确认发布」调 onConfirm（即 store.submit）。
- * - 视频号条目旁挂 PlatformLimitHint（issue #40），由 selectWechatScheduledCount
+ * - 视频号条目旁挂 PlatformLimitHint（issue #40），由 wechatScheduledCountsByCookie
  *   派生该账号本批次累计定时任务数；仅展示不拦截提交。
  *
  * 边界规则（issue #39）：不挂 store；只通过 props 渲染。
  */
 
-import { CheckCircle2, XCircle } from "lucide-react";
-import { OFFICIAL_PLATFORM_NAMES, OFFICIAL_PLATFORM_TYPE } from "../../api/types";
+import type { ReactNode } from "react";
+import { PLATFORM_NAMES } from "../../api/platformNames";
 import type { Platform } from "../../api/types";
-import type { BatchItem, BatchItemResult } from "../../types/batch";
+import {
+  resolveDouyinDeclaration,
+  type PlatformFields,
+} from "../../domain/declarations";
+import {
+  buildBatchItemRefs,
+  keyOf,
+  wechatScheduledCountsByCookie,
+  type BatchItem,
+} from "../../domain/batch";
 import {
   Dialog,
   DialogContent,
@@ -24,7 +33,11 @@ import {
 import { Button } from "../ui/button";
 import { PlatformMark } from "../ui/platform-mark";
 import { PlatformLimitHint } from "./PlatformLimitHint";
-import { cn } from "../../lib/utils";
+import {
+  normalizeHHMM,
+  resolveWechatTimer,
+  type WechatTimerResolution,
+} from "../../domain/time";
 
 /** 预览 Dialog 一行可渲染的对象（从 BatchItem × 账号展开）。 */
 export interface PreviewRow {
@@ -37,41 +50,90 @@ export interface PreviewRow {
   mode: BatchItem["mode"];
   timeOfDay?: string;
   startDays?: number;
+  /** 视频号 timer 的原始/最终时刻、跨日原因与非阻断窗口提示。 */
+  timerResolution?: WechatTimerResolution;
+  /** 抖音最终有效声明；任务空值已在此处按账号默认解析。 */
+  declaration?: {
+    value: string | undefined;
+    label: string;
+  };
 }
 
 /**
  * 把 BatchItem[] 展开为预览行（每账号一行）。
  * 纯函数，便于不挂 DOM 直接单测。
  */
-export function buildPreviewRows(items: BatchItem[]): PreviewRow[] {
-  const rows: PreviewRow[] = [];
-  for (const item of items) {
-    for (const [platform, accounts] of Object.entries(item.accountIdsByPlatform) as [
-      Platform,
-      string[],
-    ][]) {
-      if (!accounts) continue;
-      for (const cookie of accounts) {
-        rows.push({
-          itemKey: `${item.filePath}|${cookie}`,
-          fileName: item.filePath,
-          platform,
-          accountCookie: cookie,
-          mode: item.mode,
-          timeOfDay: item.timeOfDay,
-          startDays: item.startDays,
-        });
-      }
-    }
+export function buildPreviewRows(
+  items: BatchItem[],
+  accountDefaults: Record<string, PlatformFields> = {},
+): PreviewRow[] {
+  return buildBatchItemRefs(items).map(({ item, platform, cookie }) => {
+    const declaration =
+      platform === "douyin"
+        ? resolveDouyinDeclaration(
+            item.platformFields?.douyin,
+            accountDefaults[cookie]?.douyin,
+          )
+        : undefined;
+    const timerResolution =
+      platform === "wechat" && item.mode === "timer" && item.timeOfDay
+        ? (() => {
+            try {
+              return resolveWechatTimer(normalizeHHMM(item.timeOfDay));
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
+    return {
+      itemKey: keyOf(item.filePath, cookie),
+      fileName: item.filePath,
+      platform,
+      accountCookie: cookie,
+      mode: item.mode,
+      // preview 与提交 payload 共用 HH:MM 规范化；非法值保留原文供校验错误展示。
+      timeOfDay:
+        item.mode === "timer" && item.timeOfDay
+          ? (() => {
+              try {
+                return normalizeHHMM(item.timeOfDay);
+              } catch {
+                return item.timeOfDay;
+              }
+            })()
+          : item.timeOfDay,
+      startDays: item.startDays,
+      timerResolution,
+      declaration: declaration?.value
+        ? { value: declaration.value, label: declaration.label }
+        : declaration,
+    };
+  });
+
+}
+
+function renderTimerCell(row: PreviewRow): ReactNode {
+  if (row.mode !== "timer") return "—";
+  if (!row.timerResolution) {
+    return <span className="tabular-nums">{row.timeOfDay}</span>;
   }
-  return rows;
+
+  const { originalTime, finalTime, reason, warning } = row.timerResolution;
+  return (
+    <div className="space-y-0.5 text-caption">
+      <div className="tabular-nums">原始 {originalTime}</div>
+      <div className="tabular-nums font-medium">最终 {finalTime}</div>
+      <div className="text-warn-deep">{reason}</div>
+      <div className="text-warn-deep">{warning}</div>
+    </div>
+  );
 }
 
 interface BatchPreviewDialogProps {
   open: boolean;
   items: BatchItem[];
-  /** 提交反馈（用于在 Dialog 内展示）；可缺省。 */
-  results?: BatchItemResult[] | null;
+  /** 按 cookie 文件名索引的账号默认声明，用于计算预览 effective 值。 */
+  accountDefaults?: Record<string, PlatformFields>;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -82,25 +144,14 @@ interface BatchPreviewDialogProps {
 export function BatchPreviewDialog({
   open,
   items,
-  results,
+  accountDefaults,
   onConfirm,
   onCancel,
 }: BatchPreviewDialogProps) {
-  const rows = buildPreviewRows(items);
-  const resultsByKey = new Map<string, BatchItemResult>();
-  if (results) for (const r of results) resultsByKey.set(r.itemKey, r);
+  const rows = buildPreviewRows(items, accountDefaults);
 
   // 视频号单账号累计定时任务数（避免每行重复遍历 items）
-  const wechatScheduledCounts = (() => {
-    const map = new Map<string, number>();
-    for (const item of items) {
-      if (item.mode !== "timer") continue;
-      for (const cookie of item.accountIdsByPlatform.wechat ?? []) {
-        map.set(cookie, (map.get(cookie) ?? 0) + 1);
-      }
-    }
-    return map;
-  })();
+  const wechatScheduledCounts = wechatScheduledCountsByCookie(items);
 
   return (
     <Dialog
@@ -122,15 +173,14 @@ export function BatchPreviewDialog({
               <tr>
                 <th className="px-3 py-2 text-left font-medium">视频</th>
                 <th className="px-3 py-2 text-left font-medium">平台 / 账号</th>
+                <th className="px-3 py-2 text-left font-medium">最终声明</th>
                 <th className="px-3 py-2 text-left font-medium">模式</th>
                 <th className="px-3 py-2 text-left font-medium">时刻</th>
                 <th className="px-3 py-2 text-left font-medium">起始日</th>
-                <th className="px-3 py-2 text-left font-medium">状态</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const result = resultsByKey.get(r.itemKey);
                 return (
                   <tr key={r.itemKey} className="border-t border-border-soft">
                     <td className="max-w-[160px] truncate px-3 py-2 font-medium text-fg">
@@ -140,7 +190,7 @@ export function BatchPreviewDialog({
                       <div className="flex items-center gap-2">
                         <PlatformMark platform={r.platform} />
                         <span className="text-caption text-meta">
-                          {OFFICIAL_PLATFORM_NAMES[OFFICIAL_PLATFORM_TYPE[r.platform]]} · {r.accountCookie}
+                          {PLATFORM_NAMES[r.platform]} · {r.accountCookie}
                         </span>
                         {r.platform === "wechat" && (
                           <PlatformLimitHint
@@ -150,36 +200,20 @@ export function BatchPreviewDialog({
                       </div>
                     </td>
                     <td className="px-3 py-2 text-fg-2">
-                      {r.mode === "immediate" ? "立即" : "定时"}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-fg-2">
-                      {r.mode === "timer" ? r.timeOfDay : "—"}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-fg-2">
-                      {r.mode === "timer" && r.startDays !== undefined
-                        ? `+${r.startDays} 天`
+                      {r.declaration
+                        ? r.declaration.value
+                          ? `${r.declaration.value} · ${r.declaration.label}`
+                          : r.declaration.label
                         : "—"}
                     </td>
-                    <td className="px-3 py-2">
-                      {result ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption",
-                            result.ok
-                              ? "bg-success-tint text-success-deep"
-                              : "bg-danger-tint text-danger-deep",
-                          )}
-                        >
-                          {result.ok ? (
-                            <CheckCircle2 className="size-3" />
-                          ) : (
-                            <XCircle className="size-3" />
-                          )}
-                          {result.ok ? "成功" : "失败"}
-                        </span>
-                      ) : (
-                        <span className="text-caption text-meta">待提交</span>
-                      )}
+                    <td className="px-3 py-2 text-fg-2">
+                      {r.mode === "immediate" ? "立即" : "定时"}
+                    </td>
+                    <td className="px-3 py-2 text-fg-2">{renderTimerCell(r)}</td>
+                    <td className="px-3 py-2 tabular-nums text-fg-2">
+                      {r.mode === "timer" && r.startDays !== undefined
+                        ? `+${r.startDays + (r.timerResolution?.dayCarry ?? 0)} 天`
+                        : "—"}
                     </td>
                   </tr>
                 );
