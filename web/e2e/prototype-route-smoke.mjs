@@ -42,18 +42,24 @@ function start(command, args, label) {
   return { child, label, logs };
 }
 
+const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+function plainLogs(server) {
+  return server.logs.join("").replace(ANSI_ESCAPE_PATTERN, "");
+}
+
 async function waitForServer(server, url) {
   const deadline = Date.now() + 20_000;
   let lastError = "尚未连接";
   while (Date.now() < deadline) {
     if (server.child.exitCode !== null) {
       throw new Error(
-        `${server.label} 在就绪前退出（code=${server.child.exitCode}）\n${server.logs.join("")}`,
+        `${server.label} 在就绪前退出（code=${server.child.exitCode}）\n${plainLogs(server)}`,
       );
     }
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      const processIsReady = server.logs.join("").includes("Local:");
+      const processIsReady = plainLogs(server).includes("Local:");
       if (response.ok && processIsReady) return;
       lastError = response.ok ? "Vite 子进程尚未报告就绪" : `HTTP ${response.status}`;
     } catch (error) {
@@ -62,7 +68,7 @@ async function waitForServer(server, url) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
   }
   throw new Error(
-    `${server.label} 未就绪：${url}\n最后错误：${lastError}\n${server.logs.join("")}`,
+    `${server.label} 未就绪：${url}\n最后错误：${lastError}\n${plainLogs(server)}`,
   );
 }
 
