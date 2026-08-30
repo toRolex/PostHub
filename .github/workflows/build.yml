@@ -105,7 +105,7 @@ jobs:
           # Release 尚不存在时先创建（tag 触发可能早于 gh release create）；
           # --latest 确保直接发布为公开（非草稿）并设为最新版本
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --notes "PostHub $TAG 发布包" --latest
+            gh release create "$TAG" --title "$TAG" --generate-notes --latest
           fi
           # 上传 dmg / exe / msi 三个安装包（.app 为目录，不单独发布）
           while IFS= read -r f; do
