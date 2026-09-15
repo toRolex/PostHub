@@ -1,15 +1,18 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="PostHub" width="120" height="120">
+
 # PostHub（发布中枢）
 
 **一个视频，一键或定时发布到抖音、小红书、视频号**
 
-[![Release](https://img.shields.io/github/v/release/toRolex/PostHub?style=flat-square&color=blue)](https://github.com/toRolex/PostHub/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/toRolex/PostHub/build.yml?style=flat-square&label=build)](https://github.com/toRolex/PostHub/actions)
-[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
-[![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?style=flat-square&logo=tauri&logoColor=black)](https://tauri.app)
-[![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](https://react.dev)
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Release](https://img.shields.io/github/v/release/toRolex/PostHub?style=flat-square&label=release&labelColor=0045A6&color=0069E8)](https://github.com/toRolex/PostHub/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/toRolex/PostHub/build.yml?style=flat-square&label=build&labelColor=343335&color=E4E4E7)](https://github.com/toRolex/PostHub/actions)
+
+[![License](https://img.shields.io/badge/license-MIT-E4E4E7?style=flat-square&labelColor=343335)](LICENSE)
+[![Tauri](https://img.shields.io/badge/Tauri-2-E4E4E7?style=flat-square&labelColor=343335&logo=tauri&logoColor=343335)](https://tauri.app)
+[![React](https://img.shields.io/badge/React-19-E4E4E7?style=flat-square&labelColor=343335&logo=react&logoColor=343335)](https://react.dev)
+[![Python](https://img.shields.io/badge/Python-3.11+-E4E4E7?style=flat-square&labelColor=343335&logo=python&logoColor=343335)](https://python.org)
 
 [下载](#下载) · [特性](#特性) · [架构](#架构) · [快速上手](#快速上手) · [开发](#开发) · [打包](#打包--发布)
 
